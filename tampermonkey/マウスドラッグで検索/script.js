@@ -2,6 +2,9 @@
 // @name         マウスドラッグで検索
 // @match        *://*/*
 // @grant        GM_openInTab
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/マウスドラッグで検索/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/マウスドラッグで検索/script.js
@@ -9,7 +12,40 @@
 // ==/UserScript==
 
 (() => {
-  const SEARCH_URL = "https://duckduckgo.com/?q=";
+  "use strict";
+
+  /**********************
+   * Local settings (per-browser)
+   **********************/
+  const KEY_SEARCH_URL = "searchUrl";
+  const DEFAULT_SEARCH_URL = "https://duckduckgo.com/?q="; // ← GitHub側デフォルト
+
+  const getSearchUrl = () => GM_getValue(KEY_SEARCH_URL, DEFAULT_SEARCH_URL);
+
+  const setSearchUrlPrompt = () => {
+    const current = getSearchUrl();
+    const next = prompt(
+      "検索URLのベースを入力してください。\n例) https://www.google.com/search?q=\n例) https://duckduckgo.com/?q=\n現在:",
+      current
+    );
+    if (next == null) return;
+    GM_setValue(KEY_SEARCH_URL, next.trim());
+  };
+
+  // よく使う候補をワンクリで
+  const setSearchUrl = (url) => GM_setValue(KEY_SEARCH_URL, url);
+
+  GM_registerMenuCommand("Search engine: Google", () =>
+    setSearchUrl("https://www.google.com/search?q=")
+  );
+  GM_registerMenuCommand("Search engine: DuckDuckGo", () =>
+    setSearchUrl("https://duckduckgo.com/?q=")
+  );
+  GM_registerMenuCommand("Search engine: Custom…", setSearchUrlPrompt);
+
+  /**********************
+   * Behavior
+   **********************/
   const THRESHOLD = 50;
 
   let armed = false, fired = false;
@@ -23,7 +59,7 @@
   };
 
   addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;                 // 左ボタンのみ
+    if (e.button !== 0) return;                  // 左ボタンのみ
     const text = selText();
     if (!text || !inSelection(e.target)) return; // 選択済み & 選択上から開始だけ
     armed = true; fired = false;
@@ -39,7 +75,8 @@
     if (!text) return;
 
     fired = true;
-    GM_openInTab(SEARCH_URL + encodeURIComponent(text), { active: true, insert: true, setParent: true });
+    const base = getSearchUrl(); // ← ここがブラウザごとのローカル設定
+    GM_openInTab(base + encodeURIComponent(text), { active: true, insert: true, setParent: true });
   }, true);
 
   addEventListener("pointerup", () => { armed = false; fired = false; }, true);
