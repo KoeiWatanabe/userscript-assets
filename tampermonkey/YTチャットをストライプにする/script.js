@@ -28,7 +28,7 @@
   const KEY_DARK  = "darkStripe";
 
   // 重いと感じるなら false に（角丸を完全にやめる）
-  const ENABLE_ROUNDED = true;
+  const ENABLE_ROUNDED = false;
   const RADIUS_PX = "6px";
 
   const log = (...a) => console.log("[YTCS]", ...a);
