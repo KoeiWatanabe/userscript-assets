@@ -26,9 +26,15 @@
   };
   const KEY_LIGHT = "lightStripe";
   const KEY_DARK  = "darkStripe";
+  const DEFAULT_ENABLE_ROUNDED = false;
+  const KEY_ENABLE_ROUNDED = "enableRounded";
 
   // 重いと感じるなら false に（角丸を完全にやめる）
-  const ENABLE_ROUNDED = false;
+  const ENABLE_ROUNDED = GM_getValue(
+    KEY_ENABLE_ROUNDED,
+    DEFAULT_ENABLE_ROUNDED
+  );
+
   const RADIUS_PX = "6px";
 
   const log = (...a) => console.log("[YTCS]", ...a);
@@ -228,7 +234,12 @@
       });
       nextStriped = false;
     });
-  }
+    GM_registerMenuCommand("Toggle rounded corners", () => {
+      const current = GM_getValue(KEY_ENABLE_ROUNDED, DEFAULT_ENABLE_ROUNDED);
+      GM_setValue(KEY_ENABLE_ROUNDED, !current);
+      location.reload();
+    });
+};
 
   /**********************
    * Init
