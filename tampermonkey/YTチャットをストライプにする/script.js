@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YTチャットをストライプにする
 // @namespace    ytcs
-// @version      5.0.0
-// @description  YouTubeライブチャットを“到着順しましま”で読みやすく（Shadow DOM対応・軽量化）
+// @version      5.2.0
+// @description  YouTubeライブチャットを“到着順しましま”で読みやすく（省電力：#items直下監視 + CSS変数）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
 // @run-at       document-idle
@@ -18,58 +18,28 @@
   "use strict";
 
   /**********************
-   * Settings
+   * Settings (eye-friendly)
    **********************/
   const DEFAULTS = {
-    lightStripe: "rgba(0, 0, 0, 0.05)",
-    darkStripe:  "rgba(255, 255, 255, 0.08)",
+    // ライト：ほんのりグレー（白背景でチラつかない）
+    lightStripe: "rgba(0, 0, 0, 0.035)",
+    // ダーク：ほんのり白（黒背景で眩しすぎない）
+    darkStripe:  "rgba(255, 255, 255, 0.01)",
   };
+
   const KEY_LIGHT = "lightStripe";
   const KEY_DARK  = "darkStripe";
+
   const DEFAULT_ENABLE_ROUNDED = false;
   const KEY_ENABLE_ROUNDED = "enableRounded";
-
-  // 重いと感じるなら false に（角丸を完全にやめる）
-  const ENABLE_ROUNDED = GM_getValue(
-    KEY_ENABLE_ROUNDED,
-    DEFAULT_ENABLE_ROUNDED
-  );
-
   const RADIUS_PX = "6px";
 
-  const log = (...a) => console.log("[YTCS]", ...a);
-
-  /**********************
-   * Theme (cached)
-   **********************/
-  function prefersDarkOS() {
-    return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
-  }
-
-  function isYouTubeDarkTheme() {
-    const html = document.documentElement;
-    if (html?.hasAttribute("dark")) return true;
-    const app = document.querySelector("yt-live-chat-app");
-    if (app?.hasAttribute("dark-theme") || app?.hasAttribute("dark")) return true;
-    return false;
-  }
-
-  function isDark() {
-    return prefersDarkOS() || isYouTubeDarkTheme();
-  }
-
-  let cachedStripeColor = null;
-  function computeStripeColor() {
-    const light = GM_getValue(KEY_LIGHT, DEFAULTS.lightStripe);
-    const dark  = GM_getValue(KEY_DARK,  DEFAULTS.darkStripe);
-    return isDark() ? dark : light;
-  }
-  function updateStripeColorCache() {
-    cachedStripeColor = computeStripeColor();
+  function isRoundedEnabled() {
+    return GM_getValue(KEY_ENABLE_ROUNDED, DEFAULT_ENABLE_ROUNDED);
   }
 
   /**********************
-   * “Row” selector
+   * Row selector
    **********************/
   const ROW_SELECTOR = [
     "yt-live-chat-text-message-renderer",
@@ -82,124 +52,140 @@
     "yt-live-chat-sponsorships-header-renderer",
   ].join(",");
 
-  const STRIPED_SELECTOR = `${ROW_SELECTOR}[data-ytcs-striped="1"]`;
+  /**********************
+   * Theme detection
+   **********************/
+  function prefersDarkOS() {
+    return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
+  }
+  function isYouTubeDarkTheme() {
+    const html = document.documentElement;
+    if (html?.hasAttribute("dark")) return true;
+    const app = document.querySelector("yt-live-chat-app");
+    if (app?.hasAttribute("dark-theme") || app?.hasAttribute("dark")) return true;
+    return false;
+  }
+  function isDark() {
+    return prefersDarkOS() || isYouTubeDarkTheme();
+  }
+
+  function computeStripeColor() {
+    const light = GM_getValue(KEY_LIGHT, DEFAULTS.lightStripe);
+    const dark  = GM_getValue(KEY_DARK,  DEFAULTS.darkStripe);
+    return isDark() ? dark : light;
+  }
+
+    function isDarkReaderPresent() {
+  // 多くの環境で入るクラス/要素を軽く見る（失敗しても害なし）
+  if (document.documentElement.classList.contains("darkreader")) return true;
+  if (document.querySelector("style.darkreader, link.darkreader")) return true;
+  if (document.querySelector("meta[name='darkreader']")) return true;
+  return false;
+}
 
   /**********************
-   * Stripe assignment (no flicker)
+   * CSS injection
+   **********************/
+  let styleEl = null;
+
+  function ensureStyle() {
+  if (styleEl && styleEl.isConnected) return;
+
+  const selectors = ROW_SELECTOR
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(sel => `${sel}[data-ytcs-striped="1"]`)
+    .join(",\n");
+
+  styleEl = document.createElement("style");
+  styleEl.textContent = `
+/* 通常：背景ストライプ（読みやすさ最優先） */
+:root:not([data-ytcs-darkreader]) ${selectors}{
+  background-color: var(--ytcs-stripe-color) !important;
+  border-radius: var(--ytcs-radius, 0px) !important;
+}
+
+/* DarkReaderあり：背景を避けて“境界線ストライプ”にする（非干渉寄り） */
+:root[data-ytcs-darkreader] ${selectors}{
+  background-color: transparent !important; /* 背景塗りはしない */
+  border-radius: var(--ytcs-radius, 0px) !important;
+
+  /* 行の内側にうっすら線。DarkReaderが補正しても破綻しにくい */
+  box-shadow: inset 0 0 0 9999px rgba(127,127,127,0.08) !important;
+}
+  `;
+  (document.head || document.documentElement).appendChild(styleEl);
+}
+
+  function updateCssVars() {
+  ensureStyle();
+  document.documentElement.style.setProperty("--ytcs-stripe-color", computeStripeColor());
+  document.documentElement.style.setProperty("--ytcs-radius", isRoundedEnabled() ? RADIUS_PX : "0px");
+  document.documentElement.toggleAttribute("data-ytcs-darkreader", isDarkReaderPresent());
+}
+
+  /**********************
+   * Stripe assignment
    **********************/
   let nextStriped = false;
-
-  function applyStripeStyle(el) {
-    // 付与済み(縞)行だけ呼ばれる想定
-    el.style.setProperty("background-color", cachedStripeColor, "important");
-    if (ENABLE_ROUNDED) {
-      el.style.setProperty("border-radius", RADIUS_PX, "important");
-    } else {
-      el.style.removeProperty("border-radius");
-    }
-  }
-
-  function clearStripeStyle(el) {
-    el.style.removeProperty("background-color");
-    el.style.removeProperty("border-radius");
-  }
 
   function markIfNeeded(el) {
     if (!(el instanceof Element)) return;
     if (!el.matches(ROW_SELECTOR)) return;
-    if (el.dataset.ytcsDone === "1") return; // 二度触らない
+    if (el.dataset.ytcsDone === "1") return;
 
     el.dataset.ytcsDone = "1";
 
-    const striped = nextStriped;
-    if (striped) el.dataset.ytcsStriped = "1";
+    if (nextStriped) el.dataset.ytcsStriped = "1";
     nextStriped = !nextStriped;
-
-    if (striped) applyStripeStyle(el);
   }
 
   function markTree(node) {
     if (!(node instanceof Element)) return;
 
-    // 自身
     markIfNeeded(node);
 
-    // 子孫（追加ノードの範囲だけ）
-    node.querySelectorAll?.(ROW_SELECTOR).forEach(markIfNeeded);
-  }
-
-  // テーマ切り替え時：縞の付いた行だけ色を更新（順序は触らない）
-  function refreshStripedColorsEverywhere() {
-    updateStripeColorCache();
-
-    // document
-    document.querySelectorAll?.(STRIPED_SELECTOR)?.forEach(applyStripeStyle);
-
-    // shadow roots
-    for (const root of observedRoots) {
-      try {
-        root.querySelectorAll?.(STRIPED_SELECTOR)?.forEach(applyStripeStyle);
-      } catch {}
-    }
+    const list = node.querySelectorAll?.(ROW_SELECTOR);
+    if (!list || list.length === 0) return;
+    for (const el of list) markIfNeeded(el);
   }
 
   /**********************
-   * Shadow DOM aware observing (lighter)
+   * Observe only #items
    **********************/
-  const observedRoots = new Set();     // Document / ShadowRoot
-  const observedHosts = new WeakSet(); // shadowRoot持ち要素
+  let itemsObserver = null;
+  let observedItems = null;
 
-  function observeRoot(root) {
-    if (!root || observedRoots.has(root)) return;
-    observedRoots.add(root);
+  function findItemsContainer() {
+    let items = document.querySelector("yt-live-chat-item-list-renderer #items");
+    if (items) return items;
 
-    // 既存分を処理
-    try {
-      root.querySelectorAll?.(ROW_SELECTOR)?.forEach(markIfNeeded);
-    } catch {}
+    const app = document.querySelector("yt-live-chat-app");
+    if (app?.shadowRoot) {
+      items = app.shadowRoot.querySelector?.("yt-live-chat-item-list-renderer #items");
+      if (items) return items;
+    }
+    return null;
+  }
 
-    const mo = new MutationObserver((mutations) => {
+  function attachItemsObserver(items) {
+    if (!items || items === observedItems) return;
+
+    if (itemsObserver) itemsObserver.disconnect();
+    observedItems = items;
+
+    // 初期分（1回だけ）
+    items.querySelectorAll?.(ROW_SELECTOR)?.forEach(markIfNeeded);
+
+    itemsObserver = new MutationObserver((mutations) => {
       for (const m of mutations) {
-        for (const n of m.addedNodes) {
-          markTree(n);
-          discoverShadowRootsInSubtree(n); // 追加分だけ探索
-        }
+        for (const n of m.addedNodes) markTree(n);
       }
     });
 
-    mo.observe(root, { childList: true, subtree: true });
-  }
-
-  // querySelectorAll("*") をやめて、追加されたサブツリーだけ TreeWalker で走査
-  function discoverShadowRootsInSubtree(startNode) {
-    const startEl =
-      startNode instanceof Element ? startNode :
-      (startNode instanceof Document ? startNode.documentElement : null);
-
-    if (!startEl) return;
-
-    // startEl 自身が host なら
-    if (startEl.shadowRoot && !observedHosts.has(startEl)) {
-      observedHosts.add(startEl);
-      observeRoot(startEl.shadowRoot);
-    }
-
-    // 追加された範囲だけを走査
-    const walker = document.createTreeWalker(
-      startEl,
-      NodeFilter.SHOW_ELEMENT,
-      null
-    );
-
-    let cur = walker.currentNode;
-    while (cur) {
-      const el = /** @type {Element} */ (cur);
-      if (el.shadowRoot && !observedHosts.has(el)) {
-        observedHosts.add(el);
-        observeRoot(el.shadowRoot);
-      }
-      cur = walker.nextNode();
-    }
+    // 直下だけ監視＝省電力
+    itemsObserver.observe(items, { childList: true, subtree: false });
   }
 
   /**********************
@@ -208,13 +194,12 @@
   function promptColor(label, key, fallback) {
     const current = GM_getValue(key, fallback);
     const next = prompt(
-      `${label} を入力してください（例: rgba(255,255,255,0.08)）\n現在: ${current}`,
+      `${label} を入力してください（例: rgba(255,255,255,0.06)）\n現在: ${current}`,
       current
     );
     if (next == null) return;
-
     GM_setValue(key, next.trim());
-    refreshStripedColorsEverywhere();
+    updateCssVars();
   }
 
   function registerMenu() {
@@ -225,45 +210,49 @@
       promptColor("ダーク用ストライプ色", KEY_DARK, DEFAULTS.darkStripe)
     );
 
-    GM_registerMenuCommand("Clear YTCS styles (page)…", () => {
-      // 今ページに付いた痕跡だけ消す（必要なら）
+    GM_registerMenuCommand("Toggle rounded corners", () => {
+      const cur = GM_getValue(KEY_ENABLE_ROUNDED, DEFAULT_ENABLE_ROUNDED);
+      GM_setValue(KEY_ENABLE_ROUNDED, !cur);
+      updateCssVars();
+    });
+
+    GM_registerMenuCommand("Reset colors to defaults", () => {
+      GM_setValue(KEY_LIGHT, DEFAULTS.lightStripe);
+      GM_setValue(KEY_DARK,  DEFAULTS.darkStripe);
+      updateCssVars();
+    });
+
+    GM_registerMenuCommand("Clear YTCS marks (page)…", () => {
       document.querySelectorAll?.(`${ROW_SELECTOR}[data-ytcs-done="1"]`)?.forEach(el => {
         delete el.dataset.ytcsDone;
         delete el.dataset.ytcsStriped;
-        clearStripeStyle(el);
       });
       nextStriped = false;
     });
-    GM_registerMenuCommand("Toggle rounded corners", () => {
-      const current = GM_getValue(KEY_ENABLE_ROUNDED, DEFAULT_ENABLE_ROUNDED);
-      GM_setValue(KEY_ENABLE_ROUNDED, !current);
-      location.reload();
-    });
-};
+  }
 
   /**********************
    * Init
    **********************/
   function init() {
-    updateStripeColorCache();
+    updateCssVars();
     registerMenu();
 
-    // document を監視
-    observeRoot(document);
+    const tryAttach = () => {
+      const items = findItemsContainer();
+      if (items) attachItemsObserver(items);
+    };
 
-    // 初回だけ全体を一度スキャン（定期スキャンはしない）
-    discoverShadowRootsInSubtree(document);
+    tryAttach();
+    // VODで #items が差し替わるケース用（document全体監視より省電力）
+    setInterval(tryAttach, 1200);
 
-    // テーマ切り替えで色だけ更新
-    window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", () => {
-      refreshStripedColorsEverywhere();
-    });
+    // OSテーマ変更（低頻度）→ CSS変数だけ更新
+    window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", updateCssVars);
 
-    // YouTube側の属性切り替えにも対応
-    const themeWatcher = new MutationObserver(() => refreshStripedColorsEverywhere());
+    // YouTube側の属性変化にも対応（低頻度）
+    const themeWatcher = new MutationObserver(updateCssVars);
     themeWatcher.observe(document.documentElement, { attributes: true, attributeFilter: ["dark", "class"] });
-
-    log("loaded:", location.href, "dark?", isDark());
   }
 
   init();

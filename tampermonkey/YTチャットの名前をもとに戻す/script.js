@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         YTチャットの名前をもとに戻す
 // @namespace    https://example.com/
-// @version      1.6.0
-// @description  Replace @handle-like author names in YouTube live chat with channel display names. Batched DOM updates + handle fan-out + LRU + negative TTL + lightweight items reattach.
+// @version      2.0.0
+// @description  Reference-like strategy tuned for minimum visible latency. Replace @handle with display name only.
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
-// @grant        GM_xmlhttpRequest
-// @connect      www.youtube.com
+// @grant        none
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットの名前をもとに戻す/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットの名前をもとに戻す/script.js
@@ -16,78 +15,31 @@
 (() => {
   "use strict";
 
-  // =========================
-  // Settings
-  // =========================
-  const DEBUG = false;
-
+  // ===== Tunables =====
+  const MAX_CONCURRENT_REQUESTS = 6;
+  const REQUEST_DELAY_MS = 80;
+  const NEGATIVE_TTL_MS = 10 * 60 * 1000;
   const CACHE_LIMIT = 20000;
-  const NEGATIVE_TTL_MS = 10 * 60 * 1000; // 10 min
-  const MAX_CONCURRENCY = 4;
 
-  // Top/Live切替などで #items が差し替わるのを軽く検知する用（常時監視より軽い）
-  const ITEMS_POLL_INTERVAL_MS = 800;
-
-  const log = (...a) => DEBUG && console.log("[YTChatNameFix]", ...a);
-
-  // =========================
-  // Cache / inFlight / Queue
-  // =========================
-  const cache = new Map();     // handle -> { name: string|null, ts: number }
-  const inFlight = new Map();  // handle -> Promise<string|null>
-
+  const CACHE = new Map();    // handle(without @) -> {name, ts}
+  const PENDING = new Map();  // handle(without @) -> callbacks[]
+  const QUEUE = [];
   let active = 0;
-  const queue = [];
 
-  function enqueue(task) {
-    queue.push(task);
-    pump();
+  function cacheGet(k) {
+    const v = CACHE.get(k);
+    if (!v) return null;
+    CACHE.delete(k);
+    CACHE.set(k, v);
+    return v;
   }
-
-  function pump() {
-    while (active < MAX_CONCURRENCY && queue.length) {
-      const task = queue.shift();
-      active++;
-      task()
-        .catch(() => {})
-        .finally(() => {
-          active--;
-          pump();
-        });
+  function cacheSet(k, v) {
+    if (CACHE.has(k)) CACHE.delete(k);
+    CACHE.set(k, v);
+    if (CACHE.size > CACHE_LIMIT) {
+      const oldest = CACHE.keys().next().value;
+      CACHE.delete(oldest);
     }
-  }
-
-  // =========================
-  // LRU helpers
-  // =========================
-  function cacheGet(key) {
-    if (!cache.has(key)) return null;
-    const val = cache.get(key);
-    cache.delete(key);
-    cache.set(key, val);
-    return val;
-  }
-
-  function cacheSet(key, val) {
-    if (cache.has(key)) cache.delete(key);
-    cache.set(key, val);
-
-    if (cache.size > CACHE_LIMIT) {
-      const oldestKey = cache.keys().next().value;
-      cache.delete(oldestKey);
-    }
-  }
-
-  // =========================
-  // Fetch / Parse
-  // =========================
-  function isHandleLikeName(name) {
-    return typeof name === "string" && name.trim().startsWith("@");
-  }
-
-  function toHandleUrl(handle) {
-    const h = handle.trim();
-    return `https://www.youtube.com/${encodeURI(h)}`;
   }
 
   function parseOgTitle(html) {
@@ -96,201 +48,156 @@
     return m[1].trim().replace(/\s*-\s*YouTube\s*$/i, "").trim() || null;
   }
 
-  function gmGet(url) {
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: "GET",
-        url,
-        headers: { Accept: "text/html" },
-        timeout: 15000,
-        onload: (res) => {
-          if (res.status >= 200 && res.status < 300) resolve(res.responseText);
-          else reject(new Error(`HTTP ${res.status}`));
-        },
-        onerror: () => reject(new Error("Network error")),
-        ontimeout: () => reject(new Error("Timeout")),
-      });
-    });
-  }
+  async function processQueue() {
+    if (active >= MAX_CONCURRENT_REQUESTS) return;
+    if (QUEUE.length === 0) return;
 
-  async function fetchChannelDisplayNameByHandle(handle) {
-    if (!handle) return null;
-    const key = handle.trim();
+    const handleAt = QUEUE.shift(); // "@foo"
+    const clean = handleAt.slice(1); // "foo"
+    active++;
 
-    // cache
-    const cached = cacheGet(key);
-    if (cached) {
-      if (cached.name) return cached.name;
-      if (Date.now() - cached.ts < NEGATIVE_TTL_MS) return null;
-    }
-
-    // in-flight dedupe
-    if (inFlight.has(key)) return inFlight.get(key);
-
-    const p = (async () => {
-      try {
-        const html = await gmGet(toHandleUrl(key));
-        const name = parseOgTitle(html);
-        cacheSet(key, { name: name || null, ts: Date.now() });
-        return name || null;
-      } catch (e) {
-        cacheSet(key, { name: null, ts: Date.now() });
-        log("fetch failed:", key, e);
-        return null;
-      } finally {
-        inFlight.delete(key);
-      }
-    })();
-
-    inFlight.set(key, p);
-    return p;
-  }
-
-  // =========================
-  // Fan-out updates (handle -> elements)
-  // =========================
-  const waitingEls = new Map(); // handle -> Set<#author-name>
-  const seen = new WeakSet();   // element processed?
-
-  function registerAuthorNameEl(nameEl) {
-    if (!nameEl || seen.has(nameEl)) return;
-    seen.add(nameEl);
-
-    const text = (nameEl.textContent || "").trim();
-    if (!isHandleLikeName(text)) return;
-
-    let set = waitingEls.get(text);
-    if (!set) {
-      set = new Set();
-      waitingEls.set(text, set);
-
-      // only one resolver per handle
-      enqueue(async () => {
-        const displayName = await fetchChannelDisplayNameByHandle(text);
-        if (!displayName) {
-          waitingEls.delete(text);
+    try {
+      const cached = cacheGet(clean);
+      if (cached) {
+        if (cached.name) {
+          const cbs = PENDING.get(clean) || [];
+          PENDING.delete(clean);
+          cbs.forEach(cb => cb(cached.name));
           return;
         }
-
-        const els = waitingEls.get(text);
-        waitingEls.delete(text);
-        if (!els) return;
-
-        for (const el of els) {
-          if (el && el.isConnected) el.textContent = displayName;
+        if (Date.now() - cached.ts < NEGATIVE_TTL_MS) {
+          const cbs = PENDING.get(clean) || [];
+          PENDING.delete(clean);
+          cbs.forEach(cb => cb(null));
+          return;
         }
+      }
 
-        log(`Replaced ${text} -> ${displayName} (${els.size} nodes)`);
-      });
+      const url = `https://www.youtube.com/@${encodeURIComponent(clean)}/about`;
+      const res = await fetch(url, { credentials: "include" });
+      const html = await res.text();
+      const name = parseOgTitle(html) || null;
+
+      cacheSet(clean, { name, ts: Date.now() });
+
+      const cbs = PENDING.get(clean) || [];
+      PENDING.delete(clean);
+      cbs.forEach(cb => cb(name));
+    } catch {
+      cacheSet(clean, { name: null, ts: Date.now() });
+      const cbs = PENDING.get(clean) || [];
+      PENDING.delete(clean);
+      cbs.forEach(cb => cb(null));
+    } finally {
+      active--;
+      if (QUEUE.length) setTimeout(processQueue, REQUEST_DELAY_MS);
+    }
+  }
+
+  function enqueueRequest(handleAt, cb) {
+    const clean = handleAt.slice(1);
+    const cached = cacheGet(clean);
+    if (cached) {
+      if (cached.name) return cb(cached.name);
+      if (Date.now() - cached.ts < NEGATIVE_TTL_MS) return cb(null);
     }
 
-    set.add(nameEl);
+    if (PENDING.has(clean)) {
+      PENDING.get(clean).push(cb);
+      return;
+    }
+    PENDING.set(clean, [cb]);
+    QUEUE.push(handleAt);
+    processQueue();
   }
 
-  // =========================
-  // Batched mutation handling
-  // =========================
-  let pendingNodes = [];
-  const pendingDedup = new WeakSet(); // ★同じノードが何度も入るのを防ぐ
-  let scheduled = false;
+  // ===== DOM processor (chip-focused) =====
+  const chipProcessed = new WeakSet();
 
-  function pushPending(node) {
-    if (!(node instanceof HTMLElement)) return;
-    if (pendingDedup.has(node)) return;
-    pendingDedup.add(node);
-    pendingNodes.push(node);
+  function getAuthorNameEl(chip) {
+    return chip.querySelector("#author-name") || chip.querySelector("span");
   }
 
-  function scheduleFlush() {
-    if (scheduled) return;
-    scheduled = true;
+  function getHandleTextFromChip(chip) {
+    const el = getAuthorNameEl(chip);
+    const t = el?.textContent?.trim();
+    if (t && t.startsWith("@") && t.length > 1) return t;
 
-    requestAnimationFrame(() => {
-      scheduled = false;
-      const nodes = pendingNodes;
-      pendingNodes = [];
-      // ★dedupもリセット（次フレームでまた使える）
-      // WeakSetはクリアできないので作り直す…は重いので、ここは妥協して
-      // “同一ノードが次フレームでも来る”ケースは少ない前提でOKにする。
-      // もし気になるなら pendingDedup を Set にしてクリア可能にする手もある。
-      flush(nodes);
+    const raw = (chip.textContent || "").trim();
+    if (raw.startsWith("@") && raw.length > 1) return raw;
+
+    return null;
+  }
+
+  function processChip(chip) {
+    if (!chip || chipProcessed.has(chip)) return;
+    chipProcessed.add(chip);
+
+    const handleAt = getHandleTextFromChip(chip);
+    if (!handleAt) return;
+
+    const authorNameEl = getAuthorNameEl(chip);
+    if (!authorNameEl) return;
+
+    enqueueRequest(handleAt, (realName) => {
+      if (!realName) return;
+      if (!chip.isConnected || !authorNameEl.isConnected) return;
+
+      // すでに置換済みなら何もしない
+      const current = (authorNameEl.textContent || "").trim();
+      if (current === realName) return;
+
+      // ★ここが要望：表示名だけ表示する（@handleは消す）
+      authorNameEl.textContent = realName;
     });
   }
 
-  function flush(nodes) {
-    for (const node of nodes) {
-      if (!(node instanceof HTMLElement)) continue;
+  function processAddedNode(node) {
+    if (!(node instanceof HTMLElement)) return;
 
-      // ★軽量化1：チャットDOMと無関係っぽいノードを早期スキップ
-      // (yt-live-chat-app の外から飛んでくるDOM更新に反応しない)
-      // node自身が yt-live-chat-app ならOK、それ以外は祖先にあるかだけ確認
-      if (node.tagName !== "YT-LIVE-CHAT-APP" && !node.closest?.("yt-live-chat-app")) {
-        continue;
-      }
-
-      // Fast path
-      if (node.id === "author-name") {
-        registerAuthorNameEl(node);
-        continue;
-      }
-
-      // ★軽量化2：いきなり querySelectorAll せず “1個でもあるか” を先に軽くチェック
-      // 無ければスキップ（これで無駄な深掘りを減らす）
-      const first = node.querySelector?.("#author-name");
-      if (!first) continue;
-
-      // 1個はあるのでまとめて拾う
-      const authorNames = node.querySelectorAll?.("#author-name");
-      if (!authorNames || authorNames.length === 0) continue;
-
-      for (const el of authorNames) registerAuthorNameEl(el);
+    if (node.tagName === "YT-LIVE-CHAT-AUTHOR-CHIP") {
+      processChip(node);
+      return;
     }
+
+    const chips = node.getElementsByTagName?.("yt-live-chat-author-chip");
+    if (!chips || chips.length === 0) return;
+    for (let i = 0; i < chips.length; i++) processChip(chips[i]);
   }
 
-  // =========================
-  // Items observer (main)
-  // =========================
+  // ===== Observer: #items direct children only =====
   let itemsObserver = null;
   let observedItems = null;
 
-  function attachItemsObserver(itemsEl) {
-    if (!itemsEl || itemsEl === observedItems) return;
-
-    if (itemsObserver) itemsObserver.disconnect();
-    observedItems = itemsEl;
-
-    itemsObserver = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        for (const n of m.addedNodes) pushPending(n);
-      }
-      scheduleFlush();
-    });
-
-    itemsObserver.observe(itemsEl, { childList: true, subtree: true });
-    log("items observer attached:", itemsEl);
-
-    // rescan existing (only inside items)
-    itemsEl.querySelectorAll?.("#author-name").forEach(registerAuthorNameEl);
-  }
-
-  function findItemsContainer() {
+  function findItems() {
     return document.querySelector("yt-live-chat-item-list-renderer #items");
   }
 
-  // =========================
-  // Lightweight reattach: polling (instead of wide root observer)
-  // =========================
-  function watchItemsByPolling() {
-    setInterval(() => {
-      const items = findItemsContainer();
-      if (items) attachItemsObserver(items);
-    }, ITEMS_POLL_INTERVAL_MS);
+  function attach(items) {
+    if (!items || items === observedItems) return;
+
+    if (itemsObserver) itemsObserver.disconnect();
+    observedItems = items;
+
+    itemsObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const n of m.addedNodes) processAddedNode(n);
+      }
+    });
+
+    itemsObserver.observe(items, { childList: true, subtree: false });
+
+    // 初期分
+    const chips = items.getElementsByTagName("yt-live-chat-author-chip");
+    for (let i = 0; i < chips.length; i++) processChip(chips[i]);
   }
 
-  // =========================
-  // Start
-  // =========================
-  const initialItems = findItemsContainer();
-  if (initialItems) attachItemsObserver(initialItems);
-  watchItemsByPolling();
+  // VODで #items が差し替わるのを拾う
+  setInterval(() => {
+    const items = findItems();
+    if (items) attach(items);
+  }, 800);
+
+  const first = findItems();
+  if (first) attach(first);
 })();
