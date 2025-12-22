@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         マウスドラッグで検索（URLは直接開く）
-// @version      1.1.0
+// @name         マウスドラッグで検索
+// @version      1.2.0
 // @description  選択した文字列をドラッグで検索
 // @match        *://*/*
 // @grant        GM_openInTab
@@ -45,30 +45,33 @@
   GM_registerMenuCommand("Search engine: Custom…", setSearchUrlPrompt);
 
   /**********************
-   * Helpers
+   * Behavior
    **********************/
+  const THRESHOLD = 50;
+  const QUIET_MS = 150; // selection が落ち着くまでの猶予（誤爆防止）
+
+  let armed = false, fired = false;
+  let sx = 0, sy = 0;
+
+  let isPointerDown = false;
+  let selectionChangedDuringDrag = false;
+
+  // 「このドラッグで動かしていい選択文字列」（pointerdown時点の固定スナップショット）
+  let snapshotText = "";
+
+  // 直近の selectionchange 時刻
+  let lastSelChange = 0;
+
   const selText = () => (window.getSelection?.().toString().trim() || "");
 
-  // 「押下開始地点が選択範囲の中か」を見る（既存選択の上からドラッグした時だけ動作）
-  const inSelection = (targetNode) => {
-    const s = window.getSelection?.();
-    if (!s || s.rangeCount === 0 || !(targetNode instanceof Node)) return false;
-    try {
-      return s.getRangeAt(0).intersectsNode(targetNode);
-    } catch {
-      return false;
-    }
-  };
-
-  // URLっぽい文字列なら検索せず直接開く
   const normalizeUrl = (raw) => {
     if (!raw) return null;
     let t = raw.trim();
 
-    // 改行/空白が混ざるものはURL扱いしない（誤爆防止）
+    // 改行/空白が混ざるならURL扱いしない（誤爆防止）
     if (/\s/.test(t)) return null;
 
-    // 先頭/末尾につきがちな括弧や引用符、末尾の句読点を落とす
+    // 前後に付きがちな記号、末尾の句読点を落とす
     t = t
       .replace(/^[<\(\[\{「『"'`]+/, "")
       .replace(/[>\)\]\}」』"'`]+$/, "")
@@ -76,91 +79,82 @@
 
     if (!t) return null;
 
-    if (/^(https?:\/\/)/i.test(t)) return t;          // http(s)://
-    if (/^\/\//.test(t)) return "https:" + t;         // //example.com
-    if (/^www\./i.test(t)) return "https://" + t;     // www.example.com
+    if (/^(https?:\/\/)/i.test(t)) return t;
+    if (/^\/\//.test(t)) return "https:" + t;
+    if (/^www\./i.test(t)) return "https://" + t;
 
-    // example.com / example.co.jp / example.com/path / example.com:8080/path
     if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?$/i.test(t)) {
       return "https://" + t;
     }
     return null;
   };
 
-  /**********************
-   * Main
-   * - 速いドラッグで「選択中に検索が走る」誤爆を防ぐため、実行は pointerup で行う
-   **********************/
-  const THRESHOLD = 50;
+  const inSelection = (t) => {
+    const s = window.getSelection?.();
+    if (!s || s.rangeCount === 0 || !(t instanceof Node)) return false;
+    try { return s.getRangeAt(0).intersectsNode(t); } catch { return false; }
+  };
 
-  let armed = false;       // ドラッグ判定中
-  let moved = false;       // 閾値を超えたか
-  let sx = 0, sy = 0;      // 開始座標
-  let initialText = "";    // 開始時点の選択テキスト（＝既存選択）
+  // 選択が変化したらタイムスタンプ更新＆「選択作業中」フラグ
+  document.addEventListener("selectionchange", () => {
+    lastSelChange = Date.now();
+    if (isPointerDown) selectionChangedDuringDrag = true;
+  }, true);
 
-  addEventListener(
-    "pointerdown",
-    (e) => {
-      if (e.button !== 0) return; // 左ボタンのみ
+  addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return; // 左ボタンのみ
 
-      const text = selText();
-      if (!text || !inSelection(e.target)) return; // 既存選択の上から開始した時だけ
+    isPointerDown = true;
+    selectionChangedDuringDrag = false;
+    armed = false;
+    fired = false;
 
-      armed = true;
-      moved = false;
-      initialText = text;
-      sx = e.clientX;
-      sy = e.clientY;
-    },
-    true
-  );
+    // pointerdown時点で「すでに」選択があることが条件（＝初回の選択ドラッグは絶対に武装しない）
+    snapshotText = selText();
+    if (!snapshotText) return;
 
-  addEventListener(
-    "pointermove",
-    (e) => {
-      if (!armed || moved) return;
+    // 選択範囲の上から開始した時だけ武装（＝選択済み文字列を“つかんで”ドラッグ）
+    if (!inSelection(e.target)) return;
 
-      const dx = e.clientX - sx;
-      const dy = e.clientY - sy;
-      if (Math.hypot(dx, dy) < THRESHOLD) return;
+    armed = true;
+    sx = e.clientX;
+    sy = e.clientY;
+  }, true);
 
-      // ここでは「ドラッグした」事実だけ記録。実行は pointerup へ。
-      moved = true;
-    },
-    true
-  );
+  addEventListener("pointermove", (e) => {
+    if (!armed || fired) return;
 
-  addEventListener(
-    "pointerup",
-    () => {
-      if (!armed) {
-        moved = false;
-        return;
-      }
+    // selectionが落ち着いてない間は絶対発火しない
+    if (Date.now() - lastSelChange < QUIET_MS) return;
 
-      if (moved) {
-        const text = selText();
+    // ドラッグ中に選択が変化していたら、そのドラッグは「選択作業」なので発火しない
+    if (selectionChangedDuringDrag) return;
 
-        // 選択中に範囲が変わっていたら（= 新規選択してた）何もしない
-        if (text && text === initialText) {
-          const url = normalizeUrl(text);
-          if (url) {
-            GM_openInTab(url, { active: true, insert: true, setParent: true });
-          } else {
-            const base = getSearchUrl();
-            GM_openInTab(base + encodeURIComponent(text), {
-              active: true,
-              insert: true,
-              setParent: true,
-            });
-          }
-        }
-      }
+    // 「pointerdown時点の選択」と同じ文字列が保たれている時だけ発火
+    // （選択範囲を伸ばしてる途中＝文字列が変わるケースを確実に潰す）
+    const nowText = selText();
+    if (!nowText || nowText !== snapshotText) return;
 
-      armed = false;
-      moved = false;
-      initialText = "";
-    },
-    true
-  );
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.hypot(dx, dy) < THRESHOLD) return;
+
+    fired = true;
+
+    const url = normalizeUrl(nowText);
+    if (url) {
+      GM_openInTab(url, { active: true, insert: true, setParent: true });
+      return;
+    }
+
+    const base = getSearchUrl();
+    GM_openInTab(base + encodeURIComponent(nowText), { active: true, insert: true, setParent: true });
+  }, true);
+
+  addEventListener("pointerup", () => {
+    isPointerDown = false;
+    selectionChangedDuringDrag = false;
+    armed = false;
+    fired = false;
+    snapshotText = "";
+  }, true);
 })();
