@@ -1,6 +1,7 @@
 // ==UserScript==
-// @name         マウスドラッグで検索
-// @version      1.0.0
+// @name         マウスドラッグで検索（URLは直接開く）
+// @version      1.1.0
+// @description  選択した文字列をドラッグで検索
 // @match        *://*/*
 // @grant        GM_openInTab
 // @grant        GM_getValue
@@ -19,7 +20,7 @@
    * Local settings (per-browser)
    **********************/
   const KEY_SEARCH_URL = "searchUrl";
-  const DEFAULT_SEARCH_URL = "https://duckduckgo.com/?q="; // ← GitHub側デフォルト
+  const DEFAULT_SEARCH_URL = "https://duckduckgo.com/?q=";
 
   const getSearchUrl = () => GM_getValue(KEY_SEARCH_URL, DEFAULT_SEARCH_URL);
 
@@ -33,7 +34,6 @@
     GM_setValue(KEY_SEARCH_URL, next.trim());
   };
 
-  // よく使う候補をワンクリで
   const setSearchUrl = (url) => GM_setValue(KEY_SEARCH_URL, url);
 
   GM_registerMenuCommand("Search engine: Google", () =>
@@ -45,21 +45,27 @@
   GM_registerMenuCommand("Search engine: Custom…", setSearchUrlPrompt);
 
   /**********************
-   * Behavior
+   * Helpers
    **********************/
-  const THRESHOLD = 50;
-
-  let armed = false, fired = false;
-  let sx = 0, sy = 0;
-
   const selText = () => (window.getSelection?.().toString().trim() || "");
 
-  // URLっぽい文字列なら「検索」ではなく、そのURLへ直接飛ぶ
+  // 「押下開始地点が選択範囲の中か」を見る（既存選択の上からドラッグした時だけ動作）
+  const inSelection = (targetNode) => {
+    const s = window.getSelection?.();
+    if (!s || s.rangeCount === 0 || !(targetNode instanceof Node)) return false;
+    try {
+      return s.getRangeAt(0).intersectsNode(targetNode);
+    } catch {
+      return false;
+    }
+  };
+
+  // URLっぽい文字列なら検索せず直接開く
   const normalizeUrl = (raw) => {
     if (!raw) return null;
     let t = raw.trim();
 
-    // 選択範囲に改行や空白が混ざっている場合はURL扱いしない（誤爆防止）
+    // 改行/空白が混ざるものはURL扱いしない（誤爆防止）
     if (/\s/.test(t)) return null;
 
     // 先頭/末尾につきがちな括弧や引用符、末尾の句読点を落とす
@@ -70,57 +76,91 @@
 
     if (!t) return null;
 
-    // 既にスキームがある
-    if (/^(https?:\/\/)/i.test(t)) return t;
+    if (/^(https?:\/\/)/i.test(t)) return t;          // http(s)://
+    if (/^\/\//.test(t)) return "https:" + t;         // //example.com
+    if (/^www\./i.test(t)) return "https://" + t;     // www.example.com
 
-    // //example.com のようなスキーム省略
-    if (/^\/\//.test(t)) return "https:" + t;
-
-    // www. から始まる
-    if (/^www\./i.test(t)) return "https://" + t;
-
-    // ドメインっぽい（example.com / example.co.jp / example.com/path など）
+    // example.com / example.co.jp / example.com/path / example.com:8080/path
     if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?$/i.test(t)) {
       return "https://" + t;
     }
-
     return null;
   };
 
-  const inSelection = (t) => {
-    const s = window.getSelection?.();
-    if (!s || s.rangeCount === 0 || !(t instanceof Node)) return false;
-    try { return s.getRangeAt(0).intersectsNode(t); } catch { return false; }
-  };
+  /**********************
+   * Main
+   * - 速いドラッグで「選択中に検索が走る」誤爆を防ぐため、実行は pointerup で行う
+   **********************/
+  const THRESHOLD = 50;
 
-  addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;                  // 左ボタンのみ
-    const text = selText();
-    if (!text || !inSelection(e.target)) return; // 選択済み & 選択上から開始だけ
-    armed = true; fired = false;
-    sx = e.clientX; sy = e.clientY;
-  }, true);
+  let armed = false;       // ドラッグ判定中
+  let moved = false;       // 閾値を超えたか
+  let sx = 0, sy = 0;      // 開始座標
+  let initialText = "";    // 開始時点の選択テキスト（＝既存選択）
 
-  addEventListener("pointermove", (e) => {
-    if (!armed || fired) return;
-    const dx = e.clientX - sx, dy = e.clientY - sy;
-    if (Math.hypot(dx, dy) < THRESHOLD) return;
+  addEventListener(
+    "pointerdown",
+    (e) => {
+      if (e.button !== 0) return; // 左ボタンのみ
 
-    const text = selText();
-    if (!text) return;
+      const text = selText();
+      if (!text || !inSelection(e.target)) return; // 既存選択の上から開始した時だけ
 
-    fired = true;
+      armed = true;
+      moved = false;
+      initialText = text;
+      sx = e.clientX;
+      sy = e.clientY;
+    },
+    true
+  );
 
-    // ★ 追加：URLなら検索ではなくそのまま開く
-    const url = normalizeUrl(text);
-    if (url) {
-      GM_openInTab(url, { active: true, insert: true, setParent: true });
-      return;
-    }
+  addEventListener(
+    "pointermove",
+    (e) => {
+      if (!armed || moved) return;
 
-    const base = getSearchUrl(); // ← ここがブラウザごとのローカル設定
-    GM_openInTab(base + encodeURIComponent(text), { active: true, insert: true, setParent: true });
-  }, true);
+      const dx = e.clientX - sx;
+      const dy = e.clientY - sy;
+      if (Math.hypot(dx, dy) < THRESHOLD) return;
 
-  addEventListener("pointerup", () => { armed = false; fired = false; }, true);
+      // ここでは「ドラッグした」事実だけ記録。実行は pointerup へ。
+      moved = true;
+    },
+    true
+  );
+
+  addEventListener(
+    "pointerup",
+    () => {
+      if (!armed) {
+        moved = false;
+        return;
+      }
+
+      if (moved) {
+        const text = selText();
+
+        // 選択中に範囲が変わっていたら（= 新規選択してた）何もしない
+        if (text && text === initialText) {
+          const url = normalizeUrl(text);
+          if (url) {
+            GM_openInTab(url, { active: true, insert: true, setParent: true });
+          } else {
+            const base = getSearchUrl();
+            GM_openInTab(base + encodeURIComponent(text), {
+              active: true,
+              insert: true,
+              setParent: true,
+            });
+          }
+        }
+      }
+
+      armed = false;
+      moved = false;
+      initialText = "";
+    },
+    true
+  );
 })();
