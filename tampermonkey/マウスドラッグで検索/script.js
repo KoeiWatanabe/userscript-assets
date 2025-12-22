@@ -1,5 +1,6 @@
 // ==UserScript==
 // @name         マウスドラッグで検索
+// @version      1.0.0
 // @match        *://*/*
 // @grant        GM_openInTab
 // @grant        GM_getValue
@@ -52,6 +53,40 @@
   let sx = 0, sy = 0;
 
   const selText = () => (window.getSelection?.().toString().trim() || "");
+
+  // URLっぽい文字列なら「検索」ではなく、そのURLへ直接飛ぶ
+  const normalizeUrl = (raw) => {
+    if (!raw) return null;
+    let t = raw.trim();
+
+    // 選択範囲に改行や空白が混ざっている場合はURL扱いしない（誤爆防止）
+    if (/\s/.test(t)) return null;
+
+    // 先頭/末尾につきがちな括弧や引用符、末尾の句読点を落とす
+    t = t
+      .replace(/^[<\(\[\{「『"'`]+/, "")
+      .replace(/[>\)\]\}」』"'`]+$/, "")
+      .replace(/[.,;:!?]+$/, "");
+
+    if (!t) return null;
+
+    // 既にスキームがある
+    if (/^(https?:\/\/)/i.test(t)) return t;
+
+    // //example.com のようなスキーム省略
+    if (/^\/\//.test(t)) return "https:" + t;
+
+    // www. から始まる
+    if (/^www\./i.test(t)) return "https://" + t;
+
+    // ドメインっぽい（example.com / example.co.jp / example.com/path など）
+    if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?$/i.test(t)) {
+      return "https://" + t;
+    }
+
+    return null;
+  };
+
   const inSelection = (t) => {
     const s = window.getSelection?.();
     if (!s || s.rangeCount === 0 || !(t instanceof Node)) return false;
@@ -75,6 +110,14 @@
     if (!text) return;
 
     fired = true;
+
+    // ★ 追加：URLなら検索ではなくそのまま開く
+    const url = normalizeUrl(text);
+    if (url) {
+      GM_openInTab(url, { active: true, insert: true, setParent: true });
+      return;
+    }
+
     const base = getSearchUrl(); // ← ここがブラウザごとのローカル設定
     GM_openInTab(base + encodeURIComponent(text), { active: true, insert: true, setParent: true });
   }, true);
