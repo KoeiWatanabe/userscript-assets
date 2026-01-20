@@ -1,0 +1,160 @@
+// ==UserScript==
+// @name         Pocket Casts Layout Fix (Target Pages Only - Episodes Only)
+// @namespace    http://tampermonkey.net/
+// @version      2.2
+// @description  Pocket Casts: starred/history/new-releases/in-progress/search の「エピソード行」だけ整列（検索上部の番組一覧は除外）
+// @author       You
+// @match        https://pocketcasts.com/*
+// @match        https://play.pocketcasts.com/*
+// @grant        GM_addStyle
+// @icon         https://pocketcasts.com/favicons/favicon.ico
+// ==/UserScript==
+
+(function() {
+  'use strict';
+
+  /* ★設定エリア★ */
+  const THUMB_WIDTH    = "40px";  // エピソード行のサムネイル幅
+  const BUTTON_WIDTH   = "210px"; // ボタン類
+  const DATE_WIDTH     = "100px"; // 日付
+  const DURATION_WIDTH = "80px";  // 長さ
+
+  const TARGET_BODY_CLASS = 'tm-layout-unified';
+
+  // 対象ページ（検索はクエリ変動OK。/search だけ見ればよい）
+  const TARGET_PATHS = new Set([
+    "/starred",
+    "/history",
+    "/new-releases",
+    "/in-progress",
+    "/search",
+  ]);
+
+  function isTargetPage() {
+    return TARGET_PATHS.has(location.pathname);
+  }
+
+  function updateBodyClass() {
+    const body = document.body;
+    if (!body) return;
+
+    if (isTargetPage()) {
+      if (!body.classList.contains(TARGET_BODY_CLASS)) {
+        body.classList.add(TARGET_BODY_CLASS);
+      }
+    } else {
+      if (body.classList.contains(TARGET_BODY_CLASS)) {
+        body.classList.remove(TARGET_BODY_CLASS);
+      }
+    }
+  }
+
+  // 初回 + SPA対策（今は元コードと同じく定期監視）
+  updateBodyClass();
+  setInterval(updateBodyClass, 500);
+
+  GM_addStyle(`
+    /* ======================================================================
+       重要：エピソード行に限定する（検索上部の番組一覧カードを巻き込まない）
+       エピソード行には Play/Pause ボタンがいる想定
+       ====================================================================== */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) {
+        display: grid !important;
+        /* 6列: 再生 | 画像 | タイトル | ボタン | 日付 | 長さ */
+        grid-template-columns: min-content ${THUMB_WIDTH} 1fr ${BUTTON_WIDTH} ${DATE_WIDTH} ${DURATION_WIDTH} !important;
+        align-items: center !important;
+        grid-gap: 16px !important;
+        width: 100% !important;
+        padding: 4px 0 !important;
+    }
+
+    /* 再生ボタン: 常に先頭（エピソード行だけ） */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > button[aria-label="Play"],
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > button[aria-label="Pause"] {
+        order: 1 !important;
+        margin: 0 !important;
+    }
+
+    /* タイトル: はみ出し防止（エピソード行だけ） */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(1),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(2),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(1),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(2) {
+        min-width: 0 !important;
+        max-width: none !important;
+        width: 100% !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        display: block !important;
+    }
+
+    /* [2] 画像 (Child 1) — エピソード行だけ 40px 固定 */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(1),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(1) {
+        order: 2 !important;
+        width: ${THUMB_WIDTH} !important;
+        height: ${THUMB_WIDTH} !important;
+        min-width: ${THUMB_WIDTH} !important;
+        max-width: ${THUMB_WIDTH} !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(1) img,
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(1) img {
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+        border-radius: 4px !important;
+        display: block !important;
+    }
+
+    /* [3] タイトル (Child 2) */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(2),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(2) {
+        order: 3 !important;
+    }
+
+    /* [4] ボタン類 (Child 5) */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(5),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(5) {
+        order: 4 !important;
+        width: ${BUTTON_WIDTH} !important;
+        justify-self: end !important;
+        display: flex !important;
+        justify-content: flex-end !important;
+    }
+
+    /* [5] 日付 (Child 3) */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(3),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(3) {
+        order: 5 !important;
+        width: ${DATE_WIDTH} !important;
+        justify-self: end !important;
+        text-align: right !important;
+        display: flex !important;
+        justify-content: flex-end !important;
+        white-space: nowrap !important;
+    }
+
+    /* [6] 長さ (Child 4) */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(4),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(4) {
+        order: 6 !important;
+        width: ${DURATION_WIDTH} !important;
+        justify-self: end !important;
+        text-align: right !important;
+        margin-right: 12px !important;
+        white-space: nowrap !important;
+    }
+
+    /* メニュー (Child 6) は隠す（エピソード行だけ） */
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Play"]) > :nth-child(6),
+    body.${TARGET_BODY_CLASS} div[role="link"]:has(> button[aria-label="Pause"]) > :nth-child(6) {
+        display: none !important;
+    }
+  `);
+})();

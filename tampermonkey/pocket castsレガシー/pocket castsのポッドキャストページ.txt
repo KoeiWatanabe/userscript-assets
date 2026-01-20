@@ -1,0 +1,151 @@
+// ==UserScript==
+// @name         Pocket Castsのレイアウト調整
+// @namespace    http://tampermonkey.net/
+// @version      1.9
+// @description  Pocket Casts: /podcast 配下でのみ 레이アウトCSSを有効化し、SPA遷移で自動的に無効化する
+// @author       You
+// @match        https://pocketcasts.com/*
+// @match        https://play.pocketcasts.com/*
+// @grant        none
+// @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Pocket Castsのレイアウト調整/script.js
+// @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Pocket Castsのレイアウト調整/script.js
+// @icon         https://pocketcasts.com/favicons/favicon.ico
+// ==/UserScript==
+
+(function () {
+  "use strict";
+
+  /* ★設定エリア★ */
+  const THUMB_WIDTH    = "40px";  // サムネイルの幅 (検索ページ用) ※現状CSSでは未使用
+  const BUTTON_WIDTH   = "210px"; // ボタン類
+  const DATE_WIDTH     = "100px"; // 日付
+  const DURATION_WIDTH = "80px";  // 長さ
+
+  const STYLE_ID = "tm-pocketcasts-layout-style";
+
+  // /podcast 配下かどうか（ここが“最終判定”）
+  function isTargetPage() {
+    return location.pathname.startsWith("/podcast/");
+  }
+
+  function buildCss() {
+    return `
+      /* 1. グリッド定義 */
+      div:has(> button[aria-label="Play"]):not(:has(button[aria-label*="Skip"])),
+      div:has(> button[aria-label="Pause"]):not(:has(button[aria-label*="Skip"])) {
+          display: grid !important;
+          grid-template-columns: min-content 1fr ${BUTTON_WIDTH} ${DATE_WIDTH} ${DURATION_WIDTH} !important;
+          align-items: center !important;
+          grid-gap: 16px !important;
+          width: 100% !important;
+      }
+
+      /* 2. 要素ごとの設定 */
+
+      /* [1] 再生ボタン (左詰め) */
+      div:not(:has(button[aria-label*="Skip"])) > button[aria-label="Play"],
+      div:not(:has(button[aria-label*="Skip"])) > button[aria-label="Pause"] {
+          order: 1 !important;
+          margin: 0 !important;
+      }
+
+      /* [2] タイトル (左詰め・可変幅) */
+      div:has(> button[aria-label="Play"]):not(:has(button[aria-label*="Skip"])) > :nth-child(1) {
+          order: 2 !important;
+          min-width: 0 !important;
+          max-width: none !important;
+          width: 100% !important;
+          white-space: nowrap !important;
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+          display: block !important;
+      }
+
+      /* [3] ボタン類 (右詰め・固定幅) */
+      div:has(> button[aria-label="Play"]):not(:has(button[aria-label*="Skip"])) > :nth-child(5) {
+          order: 3 !important;
+          width: ${BUTTON_WIDTH} !important;
+          min-width: ${BUTTON_WIDTH} !important;
+          max-width: ${BUTTON_WIDTH} !important;
+
+          justify-self: end !important;
+          display: flex !important;
+          justify-content: flex-end !important;
+          overflow: visible !important;
+      }
+
+      /* [4] 日付 (右詰め・固定幅) */
+      div:has(> button[aria-label="Play"]):not(:has(button[aria-label*="Skip"])) > :nth-child(3) {
+          order: 4 !important;
+          width: ${DATE_WIDTH} !important;
+          min-width: ${DATE_WIDTH} !important;
+          max-width: ${DATE_WIDTH} !important;
+
+          justify-self: end !important;
+          display: flex !important;
+          justify-content: flex-end !important;
+          text-align: right !important;
+          white-space: nowrap !important;
+      }
+
+      /* [5] 長さ (右詰め・固定幅・右余白あり) */
+      div:has(> button[aria-label="Play"]):not(:has(button[aria-label*="Skip"])) > :nth-child(4) {
+          order: 5 !important;
+          width: ${DURATION_WIDTH} !important;
+          min-width: ${DURATION_WIDTH} !important;
+          max-width: ${DURATION_WIDTH} !important;
+
+          text-align: right !important;
+          justify-self: end !important;
+
+          /* 右側に少しスペース */
+          margin-right: 12px !important;
+      }
+    `;
+  }
+
+  function enable() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = buildCss();
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function disable() {
+    const style = document.getElementById(STYLE_ID);
+    if (style) style.remove();
+  }
+
+  // 現在地に応じて有効/無効を切り替え
+  function reconcile() {
+    if (isTargetPage()) enable();
+    else disable();
+  }
+
+  // SPA遷移検知：pushState/replaceState/popstate で reconcile を呼ぶ
+  function hookSpaNavigation() {
+    const { pushState, replaceState } = history;
+
+    function wrap(fn) {
+      return function (...args) {
+        const ret = fn.apply(this, args);
+        // 画面差し替えが非同期なことがあるので、同期＋次tickで2回見る
+        reconcile();
+        queueMicrotask(reconcile);
+        return ret;
+      };
+    }
+
+    history.pushState = wrap(pushState);
+    history.replaceState = wrap(replaceState);
+    window.addEventListener("popstate", () => {
+      reconcile();
+      queueMicrotask(reconcile);
+    });
+  }
+
+  // 起動
+  hookSpaNavigation();
+  reconcile();
+})();

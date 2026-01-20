@@ -1,0 +1,127 @@
+// ==UserScript==
+// @name         Pocket Casts Layout Fix (Unified & Exclude)
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  Pocket Casts: [再生] [画像] [タイトル] (余白) [ボタン] [日付] [長さ] の順に配置（特定ページ除外対応版）
+// @author       You
+// @match        https://pocketcasts.com/*
+// @match        https://play.pocketcasts.com/*
+// @grant        GM_addStyle
+// @icon         https://pocketcasts.com/favicons/favicon.ico
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    /* ★設定エリア★ */
+    const THUMB_WIDTH    = "40px";  // サムネイルの幅
+    const BUTTON_WIDTH   = "210px"; // ボタン類
+    const DATE_WIDTH     = "100px"; // 日付
+    const DURATION_WIDTH = "80px";  // 長さ
+
+    /* ==========================================================================
+       1. URL監視とクラス付与ロジック (SPA対応)
+       ========================================================================== */
+    function updateBodyClass() {
+        const currentUrl = window.location.href;
+        const body = document.body;
+
+        // クラス名は「tm-layout-unified」に統一
+        const targetClass = 'tm-layout-unified';
+
+        // 1. 除外判定: URLに '/podcast/' が含まれる場合はクラスを外して終了
+        if (currentUrl.includes('/podcast/')) {
+            if (body.classList.contains(targetClass)) {
+                body.classList.remove(targetClass);
+            }
+            return;
+        }
+
+        // 2. 適用判定: 上記以外ならクラスを付与 (検索ページも個別ページも同じレイアウト)
+        if (!body.classList.contains(targetClass)) {
+            body.classList.add(targetClass);
+        }
+    }
+
+    // 画面遷移（URL変化）を検知するための監視設定
+    updateBodyClass();
+    setInterval(updateBodyClass, 500);
+
+    /* ==========================================================================
+       2. CSS定義 (パターンBのみ採用)
+       ========================================================================== */
+    GM_addStyle(`
+        /* --- 共通設定 --- */
+        /* 再生ボタン: 常に先頭 */
+        div[role="link"] > button[aria-label="Play"],
+        div[role="link"] > button[aria-label="Pause"] {
+            order: 1 !important; margin: 0 !important;
+        }
+
+        /* タイトル: はみ出し防止 */
+        div[role="link"] > :nth-child(1),
+        div[role="link"] > :nth-child(2) {
+             min-width: 0 !important; max-width: none !important; width: 100% !important;
+             white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; display: block !important;
+        }
+
+        /* ==========================================================================
+           レイアウト定義 (旧パターンB: 画像あり6列)
+           ターゲット: body.tm-layout-unified 配下の行
+           ========================================================================== */
+
+        body.tm-layout-unified div[role="link"] {
+            display: grid !important;
+            /* 6列: 再生 | 画像 | タイトル | ボタン | 日付 | 長さ */
+            grid-template-columns: min-content ${THUMB_WIDTH} 1fr ${BUTTON_WIDTH} ${DATE_WIDTH} ${DURATION_WIDTH} !important;
+            align-items: center !important; grid-gap: 16px !important; width: 100% !important;
+            padding: 4px 0 !important;
+        }
+
+        /* --- 並び順 (6列) --- */
+
+        /* [2] 画像 (Child 1) */
+        body.tm-layout-unified div[role="link"] > :nth-child(1) {
+            order: 2 !important;
+            width: ${THUMB_WIDTH} !important; height: ${THUMB_WIDTH} !important;
+            min-width: ${THUMB_WIDTH} !important; max-width: ${THUMB_WIDTH} !important;
+            display: flex !important; align-items: center !important;
+            justify-content: center !important;
+        }
+        /* 画像スタイルの補正 */
+        body.tm-layout-unified div[role="link"] > :nth-child(1) img {
+            width: 100% !important;
+            height: 100% !important; object-fit: cover !important; border-radius: 4px !important;
+            /* 元コードでパターンAの際に隠していた設定を上書きして表示させる */
+            display: block !important;
+        }
+
+        /* [3] タイトル (Child 2) */
+        body.tm-layout-unified div[role="link"] > :nth-child(2) {
+            order: 3 !important;
+        }
+
+        /* [4] ボタン類 (Child 5) */
+        body.tm-layout-unified div[role="link"] > :nth-child(5) {
+            order: 4 !important;
+            width: ${BUTTON_WIDTH} !important; justify-self: end !important; display: flex !important; justify-content: flex-end !important;
+        }
+
+        /* [5] 日付 (Child 3) */
+        body.tm-layout-unified div[role="link"] > :nth-child(3) {
+            order: 5 !important;
+            width: ${DATE_WIDTH} !important; justify-self: end !important; text-align: right !important; display: flex !important; justify-content: flex-end !important;
+        }
+
+        /* [6] 長さ (Child 4) */
+        body.tm-layout-unified div[role="link"] > :nth-child(4) {
+            order: 6 !important;
+            width: ${DURATION_WIDTH} !important; justify-self: end !important; text-align: right !important; margin-right: 12px !important;
+        }
+
+        /* メニュー (Child 6) は隠す (必要であれば display: block に戻してください) */
+        body.tm-layout-unified div[role="link"] > :nth-child(6) {
+             display: none !important;
+        }
+    `);
+})();

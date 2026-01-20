@@ -1,0 +1,166 @@
+// ==UserScript==
+// @name         Pocket Castsのレイアウト調整
+// @namespace    http://tampermonkey.net/
+// @version      1.8
+// @description  Pocket Casts: [再生] [タイトル] (余白) [ボタン] [日付] [長さ] の順に配置
+// @author       You
+// @match        https://pocketcasts.com/*
+// @match        https://play.pocketcasts.com/*
+// @grant        GM_addStyle
+// @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Pocket Castsのレイアウト調整/script.js
+// @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Pocket Castsのレイアウト調整/script.js
+// @icon         https://pocketcasts.com/favicons/favicon.ico
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    /* ★設定エリア★ */
+    const THUMB_WIDTH    = "40px";  // サムネイルの幅 (検索ページ用)
+    const BUTTON_WIDTH   = "210px"; // ボタン類
+    const DATE_WIDTH     = "100px"; // 日付
+    const DURATION_WIDTH = "80px";  // 長さ
+
+    /* ==========================================================================
+       1. URL監視とクラス付与ロジック (SPA対応)
+       ========================================================================== */
+    function updateBodyClass() {
+        const path = window.location.pathname;
+        const body = document.body;
+
+        // 一旦クラスをリセット
+        body.classList.remove('tm-is-podcast-page', 'tm-is-search-page');
+
+        // URLで判定
+        if (path.includes('/discover')) {
+            // 検索・Discoverページ
+            body.classList.add('tm-is-search-page');
+        } else {
+            // それ以外（ポッドキャスト個別ページ、フィルター、新着など）はすべて「通常」扱い
+            // ※ /podcasts/ も /filters/ もここに含まれます
+            body.classList.add('tm-is-podcast-page');
+        }
+    }
+
+    // 画面遷移（URL変化）を検知するための監視設定
+    // 1. 初回実行
+    updateBodyClass();
+    // 2. URLが変わったタイミングで実行 (History APIフックよりもsetIntervalの方が確実で軽量です)
+    setInterval(updateBodyClass, 500);
+
+
+    /* ==========================================================================
+       2. CSS定義
+       ========================================================================== */
+    GM_addStyle(`
+        /* --- 共通設定 --- */
+        /* 再生ボタン: 常に先頭 */
+        div[role="link"] > button[aria-label="Play"],
+        div[role="link"] > button[aria-label="Pause"] { 
+            order: 1 !important; margin: 0 !important; 
+        }
+        /* タイトル: はみ出し防止 */
+        div[role="link"] > :nth-child(1),
+        div[role="link"] > :nth-child(2) {
+             min-width: 0 !important; max-width: none !important; width: 100% !important;
+             white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; display: block !important;
+        }
+
+
+        /* ==========================================================================
+           【パターンA】 ポッドキャスト個別ページ・その他 (tm-is-podcast-page)
+           ★強制的に5列レイアウト (画像があっても隠す)
+           ========================================================================== */
+        
+        /* ターゲット: 通常ページの行 */
+        body.tm-is-podcast-page div[role="link"] {
+            display: grid !important;
+            /* 5列: 再生 | タイトル | ボタン | 日付 | 長さ */
+            grid-template-columns: min-content 1fr ${BUTTON_WIDTH} ${DATE_WIDTH} ${DURATION_WIDTH} !important;
+            align-items: center !important; grid-gap: 16px !important; width: 100% !important;
+        }
+
+        /* 画像 (img) がもし存在していても、通常ページでは「非表示」にしてレイアウト崩れを防ぐ */
+        body.tm-is-podcast-page div[role="link"] > :has(img) {
+            display: none !important;
+        }
+
+        /* --- 並び順 (5列) --- */
+        
+        /* タイトル (通常はChild 1) */
+        body.tm-is-podcast-page div[role="link"] > :nth-child(1) { order: 2 !important; }
+
+        /* ボタン類 (通常はChild 5) */
+        body.tm-is-podcast-page div[role="link"] > :nth-child(5) { 
+            order: 3 !important; 
+            width: ${BUTTON_WIDTH} !important; justify-self: end !important; display: flex !important; justify-content: flex-end !important;
+        }
+
+        /* 日付 (通常はChild 3) */
+        body.tm-is-podcast-page div[role="link"] > :nth-child(3) { 
+            order: 4 !important; 
+            width: ${DATE_WIDTH} !important; justify-self: end !important; text-align: right !important; display: flex !important; justify-content: flex-end !important;
+        }
+
+        /* 長さ (通常はChild 4) */
+        body.tm-is-podcast-page div[role="link"] > :nth-child(4) { 
+            order: 5 !important; 
+            width: ${DURATION_WIDTH} !important; justify-self: end !important; text-align: right !important; margin-right: 12px !important;
+        }
+
+
+        /* ==========================================================================
+           【パターンB】 検索・Discoverページ (tm-is-search-page)
+           ★6列レイアウト (画像を表示)
+           ========================================================================== */
+        
+        /* ターゲット: 検索ページの行 */
+        body.tm-is-search-page div[role="link"] {
+            display: grid !important;
+            /* 6列: 再生 | 画像 | タイトル | ボタン | 日付 | 長さ */
+            grid-template-columns: min-content ${THUMB_WIDTH} 1fr ${BUTTON_WIDTH} ${DATE_WIDTH} ${DURATION_WIDTH} !important;
+            align-items: center !important; grid-gap: 16px !important; width: 100% !important;
+            padding: 4px 0 !important;
+        }
+
+        /* --- 並び順 (6列) --- */
+
+        /* [2] 画像 (Child 1) */
+        body.tm-is-search-page div[role="link"] > :nth-child(1) {
+            order: 2 !important;
+            width: ${THUMB_WIDTH} !important; height: ${THUMB_WIDTH} !important;
+            min-width: ${THUMB_WIDTH} !important; max-width: ${THUMB_WIDTH} !important;
+            display: flex !important; align-items: center !important; justify-content: center !important;
+        }
+        /* 画像スタイルの補正 */
+        body.tm-is-search-page div[role="link"] > :nth-child(1) img {
+            width: 100% !important; height: 100% !important; object-fit: cover !important; border-radius: 4px !important;
+        }
+
+        /* [3] タイトル (Child 2) */
+        body.tm-is-search-page div[role="link"] > :nth-child(2) { order: 3 !important; }
+
+        /* [4] ボタン類 (Child 5) */
+        body.tm-is-search-page div[role="link"] > :nth-child(5) { 
+            order: 4 !important; 
+            width: ${BUTTON_WIDTH} !important; justify-self: end !important; display: flex !important; justify-content: flex-end !important;
+        }
+        
+        /* [5] 日付 (Child 3) */
+        body.tm-is-search-page div[role="link"] > :nth-child(3) { 
+            order: 5 !important;
+            width: ${DATE_WIDTH} !important; justify-self: end !important; text-align: right !important; display: flex !important; justify-content: flex-end !important;
+        }
+
+        /* [6] 長さ (Child 4) */
+        body.tm-is-search-page div[role="link"] > :nth-child(4) { 
+            order: 6 !important;
+            width: ${DURATION_WIDTH} !important; justify-self: end !important; text-align: right !important; margin-right: 12px !important;
+        }
+        
+        /* メニュー (Child 6) は隠す */
+        body.tm-is-search-page div[role="link"] > :nth-child(6) {
+             display: none !important;
+        }
+    `);
+})();
