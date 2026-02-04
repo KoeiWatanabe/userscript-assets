@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YT高評価数を非表示に
 // @namespace    https://example.com/
-// @version      2.2.1
+// @version      3.0.0
 // @description  YouTubeの高評価数だけ非表示（アイコンは残す・監視を#actionsに限定して軽量化）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -11,113 +11,47 @@
 // @icon         https://lh3.googleusercontent.com/Rzh9eUOk4CP3W-GO1IIFlH8btzW6YuubQQbNDZYRVgYGRsz1Dr-TdZI75kBkt2mVaOtAsHvMG4Et_ErwxMwLaiMs72E=s120
 // ==/UserScript==
 
-(() => {
-  'use strict';
+(function() {
+    'use strict';
 
-  const NUM_RE = /^\s*[\d,.]+(?:\s*[KMkm])?\s*(?:万|億)?\s*$/;
-  const LIKE_HINT_RE = /(高評価|いいね|like)/i;
+    console.log("Like Count Hover Script V2: Loaded"); // 動作確認用ログ
 
-  let actionsObserver = null;
+    // 複数のレイアウトパターンに対応するセレクタを定義
+    // 1. ytd-segmented-... : 従来の一般的なレイアウト
+    // 2. like-button-view-model : 最近増えている新しいレイアウト
+    // 3. .yt-spec-button-shape-next--icon-leading-trailing : 一部の環境での特定のボタン形状
 
-  // idle優先（なければRAF）
-  function defer(fn) {
-    if ('requestIdleCallback' in window) {
-      requestIdleCallback(fn, { timeout: 500 });
-    } else {
-      requestAnimationFrame(fn);
-    }
-  }
-
-  function findActionsRoot() {
-    return document.querySelector('#actions') || null;
-  }
-
-  function findLikeButtonWithin(actionsRoot) {
-    // まずは「それっぽい場所」から直取り（総当たりを避ける）
-    const candidates = [
-      '#segmented-like-button button',
-      'ytd-like-button-renderer button',
-      'ytd-segmented-like-dislike-button-renderer button',
-      '#top-level-buttons-computed ytd-toggle-button-renderer button'
+    const targetSelectors = [
+        'ytd-segmented-like-dislike-button-renderer .yt-spec-button-shape-next__button-text-content',
+        'like-button-view-model .yt-spec-button-shape-next__button-text-content',
+        'like-button-view-model .yt-core-attributed-string'
     ];
 
-    for (const sel of candidates) {
-      const btn = (actionsRoot || document).querySelector(sel);
-      if (!btn) continue;
+    // CSSを作成
+    // ※ !important をつけて、YouTubeの標準スタイルを強制的に上書きします
+    const css = `
+        /* --- 通常時：数字を隠す --- */
+        ${targetSelectors.join(', ')} {
+            max-width: 0px !important;
+            opacity: 0 !important;
+            overflow: hidden !important;
+            margin-left: 0px !important;
+            padding-left: 0px !important; /* パディングが残る場合があるので消す */
+            transition: all 0.3s ease !important;
+            display: inline-block !important; /* アニメーションのためにblock要素化 */
+            vertical-align: middle !important;
+        }
 
-      const hay = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`;
-      // aria-labelが取れない/別言語などもあるので、ヒントに引っかからなくても一旦次候補へ
-      if (LIKE_HINT_RE.test(hay)) return btn;
-    }
+        /* --- ホバー時：数字を表示 --- */
+        /* 親要素(ボタン全体)にマウスが乗ったときの挙動 */
+        ytd-segmented-like-dislike-button-renderer:hover .yt-spec-button-shape-next__button-text-content,
+        like-button-view-model:hover .yt-spec-button-shape-next__button-text-content,
+        like-button-view-model:hover .yt-core-attributed-string {
+            max-width: 100px !important; /* 十分な幅を確保 */
+            opacity: 1 !important;
+            margin-left: 6px !important;
+        }
+    `;
 
-    // どれもダメなら最後の保険：actions内のbuttonを走査（ただし範囲は#actions内に限定）
-    if (!actionsRoot) return null;
-    const btns = actionsRoot.querySelectorAll('button');
-    for (const b of btns) {
-      const hay = `${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''}`;
-      if (LIKE_HINT_RE.test(hay)) return b;
-    }
-    return null;
-  }
-
-  function hideNumericTextInsideButton(btn) {
-    if (!btn) return;
-
-    // アニメ数字は直で消す
-    btn.querySelectorAll('yt-animated-rolling-number').forEach(el => {
-      el.style.display = 'none';
-    });
-
-    // 数字っぽい短いテキストだけを消す（svgアイコンには触れない）
-    const els = btn.querySelectorAll('span, yt-formatted-string, div');
-    for (const el of els) {
-      const t = (el.textContent || '').trim();
-      if (!t || t.length > 12) continue;
-      if (NUM_RE.test(t)) el.style.display = 'none';
-    }
-  }
-
-  let scheduled = false;
-  function scheduleRun() {
-    if (scheduled) return;
-    scheduled = true;
-    defer(() => {
-      scheduled = false;
-      const actions = findActionsRoot();
-      const likeBtn = findLikeButtonWithin(actions);
-      hideNumericTextInsideButton(likeBtn);
-      ensureActionsObserver(actions);
-    });
-  }
-
-  function ensureActionsObserver(actionsRoot) {
-    // #actionsが見つかるまで無理にObserver張らない
-    if (!actionsRoot) return;
-
-    // 既に同じrootを監視してるなら何もしない
-    if (actionsObserver && actionsObserver.__root === actionsRoot) return;
-
-    // 以前の監視があれば破棄
-    if (actionsObserver) actionsObserver.disconnect();
-
-    actionsObserver = new MutationObserver(() => {
-      // #actionsの中身が差し替わった時だけ再適用
-      scheduleRun();
-    });
-    actionsObserver.__root = actionsRoot;
-
-    actionsObserver.observe(actionsRoot, { childList: true, subtree: true });
-  }
-
-  // 初回
-  scheduleRun();
-
-  // SPA遷移（動画切り替え・ライブ/アーカイブ含む）で再適用
-  window.addEventListener('yt-navigate-finish', scheduleRun);
-
-  // ページ離脱時に監視解除（念のため）
-  window.addEventListener('pagehide', () => {
-    if (actionsObserver) actionsObserver.disconnect();
-    actionsObserver = null;
-  });
+    GM_addStyle(css);
 })();
