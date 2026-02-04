@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         YT高評価数を非表示に
 // @namespace    https://example.com/
-// @version      3.0.0
+// @version      3.0.1
 // @description  YouTubeの高評価数だけ非表示（アイコンは残す・監視を#actionsに限定して軽量化）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
-// @grant        none
+// @grant        GM_addStyle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YT高評価数を非表示に/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YT高評価数を非表示に/script.js
 // @icon         https://lh3.googleusercontent.com/Rzh9eUOk4CP3W-GO1IIFlH8btzW6YuubQQbNDZYRVgYGRsz1Dr-TdZI75kBkt2mVaOtAsHvMG4Et_ErwxMwLaiMs72E=s120
