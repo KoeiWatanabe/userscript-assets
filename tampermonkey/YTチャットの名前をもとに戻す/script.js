@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YTチャットの名前をもとに戻す
 // @namespace    https://example.com/
-// @version      2.5.0
+// @version      2.8.0
 // @description  Reference-like strategy tuned for minimum visible latency. Replace @handle with display name only.
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -47,11 +47,114 @@
 
   function now() { return Date.now(); }
 
+  // decode cache: avoids repeated parsing work
+  const _decodeCache = new Map();
+  const _DECODE_CACHE_MAX = 2000;
+
   function decodeHtmlEntities(str) {
-    // Light-weight & reliable in browser context
-    const ta = document.createElement('textarea');
-    ta.innerHTML = str;
-    return ta.value;
+    // Fast path: nothing to decode
+    if (str == null) return '';
+    const s0 = String(str);
+    if (s0.indexOf('&') === -1) return s0;
+
+    // Cache
+    const cached = _decodeCache.get(s0);
+    if (cached !== undefined) return cached;
+
+    // Common entities: keep it fast for the usual suspects
+    const named = {
+      amp: '&',
+      lt: '<',
+      gt: '>',
+      quot: '"',
+      apos: "'",
+      nbsp: '\u00A0',
+
+      // punctuation / typography
+      hellip: '…',
+      ndash: '–',
+      mdash: '—',
+      lsquo: '‘',
+      rsquo: '’',
+      ldquo: '“',
+      rdquo: '”',
+      laquo: '«',
+      raquo: '»',
+      middot: '·',
+      bull: '•',
+
+      // symbols
+      copy: '©',
+      reg: '®',
+      trade: '™',
+      deg: '°',
+      plusmn: '±',
+      times: '×',
+      divide: '÷',
+      micro: 'µ',
+
+      // currency
+      yen: '¥',
+      euro: '€',
+      pound: '£',
+      cent: '¢',
+
+      // fractions / superscripts often seen in titles
+      frac14: '¼',
+      frac12: '½',
+      frac34: '¾',
+      sup1: '¹',
+      sup2: '²',
+      sup3: '³',
+    };
+
+    const replaced = s0.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]+);/g, (m, g1) => {
+      if (!g1) return m;
+
+      // numeric: &#123; / &#x1F600;
+      if (g1[0] === '#') {
+        const hex = (g1[1] || '').toLowerCase() === 'x';
+        const numStr = hex ? g1.slice(2) : g1.slice(1);
+        const cp = parseInt(numStr, hex ? 16 : 10);
+        if (!Number.isFinite(cp)) return m;
+        try {
+          return String.fromCodePoint(cp);
+        } catch (_) {
+          return m;
+        }
+      }
+
+      // named: &amp;
+      const key = g1.toLowerCase();
+      return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : m;
+    });
+
+    // If something like "&hellip;" remains (or any other named entity we didn't list),
+    // fall back to a DOMParser-based decode WITHOUT touching innerHTML.
+    // Using <textarea> ensures any '<' stays as text (not markup).
+    let out = replaced;
+    if (/[&][a-zA-Z][a-zA-Z0-9]+;/.test(out)) {
+      try {
+        const doc = new DOMParser().parseFromString(`<textarea>${out}</textarea>`, 'text/html');
+        const ta = doc && doc.querySelector('textarea');
+        if (ta && typeof ta.value === 'string') out = ta.value;
+      } catch (_) {
+        // ignore and keep best-effort result
+      }
+    }
+
+    // Cache write with simple LRU-ish eviction
+    _decodeCache.set(s0, out);
+    if (_decodeCache.size > _DECODE_CACHE_MAX) {
+      const firstKey = _decodeCache.keys().next().value;
+      if (firstKey !== undefined) _decodeCache.delete(firstKey);
+    }
+    return out;
+  }
+
+
+  function safeDecode(s) {
+    try { return decodeHtmlEntities(s); } catch (_) { return String(s ?? ''); }
   }
 
   function normalizeTitleToDisplayName(title) {
@@ -294,7 +397,7 @@
     const m = html.match(re);
     if (!m) return null;
 
-    const raw = decodeHtmlEntities(m[1] || '');
+    const raw = safeDecode(m[1] || '');
     const name = normalizeTitleToDisplayName(raw);
 
     // sanity
