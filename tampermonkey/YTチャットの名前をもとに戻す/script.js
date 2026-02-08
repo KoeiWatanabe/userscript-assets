@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YTチャットの名前をもとに戻す
 // @namespace    https://example.com/
-// @version      2.2.0
+// @version      2.5.0
 // @description  Reference-like strategy tuned for minimum visible latency. Replace @handle with display name only.
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -13,229 +13,468 @@
 // ==/UserScript==
 
 (() => {
-  "use strict";
+  'use strict';
 
-  // ===== 設定 =====
-  const MAX_CONCURRENT = 4;     // 同時リクエスト数（安定性のため少し下げ）
-  const REQUEST_DELAY = 100;    // リクエスト間隔
-  const NEGATIVE_TTL = 300000;  // 失敗時の再取得禁止時間(5分)
-  const STORAGE_KEY = "yt_realname_cache_v2";
-  const CACHE_LIMIT = 3000;
-  const SAVE_DEBOUNCE = 5000;
+  /**********************
+   * Config
+   **********************/
+  const CFG = {
+    // LRU sizes
+    memCacheMax: 20000,
+    lsCacheMax: 3000,
 
-  // ===== 1. キャッシュ管理 (LocalStorage) =====
-  let cache = new Map();
-  let isCacheDirty = false;
-  let saveTimer = null;
+    // Negative cache TTL (ms)
+    negativeTTL: 5 * 60 * 1000, // 5 min
 
-  try {
-    const json = localStorage.getItem(STORAGE_KEY);
-    if (json) {
-      const parsed = JSON.parse(json);
-      if (Array.isArray(parsed)) cache = new Map(parsed);
+    // Observe reattach check interval (ms)
+    reattachInterval: 800,
+
+    // Fetch timeout (ms)
+    fetchTimeout: 7000,
+
+    // Streaming safety limits
+    maxBytesToScan: 700 * 1024, // stop scanning after ~700KB
+    maxChunks: 80,              // stop after N chunks (safety)
+
+    // Persist debounce (ms)
+    persistDebounce: 5000,
+  };
+
+  /**********************
+   * Tiny utils
+   **********************/
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  function now() { return Date.now(); }
+
+  function decodeHtmlEntities(str) {
+    // Light-weight & reliable in browser context
+    const ta = document.createElement('textarea');
+    ta.innerHTML = str;
+    return ta.value;
+  }
+
+  function normalizeTitleToDisplayName(title) {
+    // Typical channel pages: "Display Name - YouTube"
+    // Keep it conservative: only strip the trailing " - YouTube"
+    const t = title.trim();
+    return t.replace(/\s+-\s+YouTube\s*$/i, '').trim();
+  }
+
+  function isHandleText(s) {
+    if (!s) return false;
+    const t = s.trim();
+    // YouTube handles are typically ASCII, but keep permissive.
+    // Require leading '@' + at least 2 chars
+    return t.startsWith('@') && t.length >= 3;
+  }
+
+  function extractHandleFromText(text) {
+    const t = (text || '').trim();
+    if (!isHandleText(t)) return null;
+    // Remove trailing whitespace etc.
+    // Keep whole handle (including dots/underscores) as-is.
+    // Some UI may include invisible chars; strip common whitespace.
+    return t.replace(/\s+/g, '');
+  }
+
+  function extractHandleFromHref(href) {
+    if (!href) return null;
+    // examples: /@handle, https://www.youtube.com/@handle, /@handle/about
+    const m = href.match(/\/@([A-Za-z0-9._-]{2,})/);
+    return m ? '@' + m[1] : null;
+  }
+
+  /**********************
+   * LRU Cache (Map-based)
+   **********************/
+  class LRU {
+    constructor(max) {
+      this.max = max;
+      this.map = new Map();
     }
-  } catch (e) {}
+    get(key) {
+      const v = this.map.get(key);
+      if (v === undefined) return undefined;
+      // refresh order
+      this.map.delete(key);
+      this.map.set(key, v);
+      return v;
+    }
+    set(key, val) {
+      if (this.map.has(key)) this.map.delete(key);
+      this.map.set(key, val);
+      if (this.map.size > this.max) {
+        // delete oldest
+        const oldest = this.map.keys().next().value;
+        this.map.delete(oldest);
+      }
+    }
+    has(key) {
+      return this.map.has(key);
+    }
+    delete(key) {
+      this.map.delete(key);
+    }
+    size() {
+      return this.map.size;
+    }
+    entriesArray() {
+      return Array.from(this.map.entries());
+    }
+    loadFromEntries(entries) {
+      this.map.clear();
+      for (const [k, v] of entries) {
+        this.map.set(k, v);
+      }
+      // Trim if too large
+      while (this.map.size > this.max) {
+        const oldest = this.map.keys().next().value;
+        this.map.delete(oldest);
+      }
+    }
+  }
 
-  function scheduleSave() {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      if (!isCacheDirty) return;
+  /**********************
+   * Caches
+   **********************/
+  const memCache = new LRU(CFG.memCacheMax); // handle -> {name, ts}
+  const negCache = new LRU(20000);           // handle -> {ts}
+
+  // localStorage persistent cache
+  const LS_KEY = 'yt_livechat_handle_name_cache_v1';
+  const lsCache = new LRU(CFG.lsCacheMax);
+  let persistTimer = null;
+
+  function loadPersistentCache() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== 1 || !Array.isArray(parsed.entries)) return;
+      // entries: [[handle, {name, ts}], ...] in LRU order (oldest -> newest)
+      lsCache.loadFromEntries(parsed.entries);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  function schedulePersist() {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
       try {
-        if (cache.size > CACHE_LIMIT) {
-          const deleteCount = cache.size - CACHE_LIMIT;
-          const iter = cache.keys();
-          for (let i = 0; i < deleteCount; i++) cache.delete(iter.next().value);
-        }
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(cache.entries())));
-        isCacheDirty = false;
-      } catch (e) {}
-    }, SAVE_DEBOUNCE);
+        const payload = {
+          v: 1,
+          entries: lsCache.entriesArray(), // oldest->newest
+        };
+        localStorage.setItem(LS_KEY, JSON.stringify(payload));
+      } catch (_) {
+        // ignore (quota etc.)
+      }
+    }, CFG.persistDebounce);
   }
 
-  function getCache(key) {
-    const val = cache.get(key);
-    if (!val) return null;
-    // LRU: 使ったものを後ろへ
-    cache.delete(key);
-    cache.set(key, val);
-    return val;
-  }
+  loadPersistentCache();
 
-  function setCache(key, val) {
-    cache.delete(key);
-    cache.set(key, val);
-    isCacheDirty = true;
-    scheduleSave();
-  }
+  /**********************
+   * Networking (streaming og:title sniff)
+   **********************/
+  const inFlight = new Map(); // handle -> Promise<string|null>
 
-  // ===== 2. DOM更新 (requestAnimationFrame) =====
-  // 描画の衝突を避けるため、DOM操作はフレームの切れ目に行う
-  const domUpdates = new Map();
-  let updateScheduled = false;
+  async function fetchDisplayNameByHandle(handle) {
+    // 1) memory cache
+    const mc = memCache.get(handle);
+    if (mc && mc.name) return mc.name;
 
-  function scheduleDomUpdate(el, text) {
-    // 既に変わっていれば何もしない
-    if (el.textContent === text) return;
+    // 2) persistent cache
+    const lc = lsCache.get(handle);
+    if (lc && lc.name) {
+      memCache.set(handle, lc);
+      return lc.name;
+    }
 
-    domUpdates.set(el, text);
-    if (!updateScheduled) {
-      updateScheduled = true;
-      requestAnimationFrame(() => {
-        updateScheduled = false;
-        domUpdates.forEach((txt, element) => {
-          if (element.isConnected) element.textContent = txt;
+    // 3) negative cache
+    const nc = negCache.get(handle);
+    if (nc && (now() - nc.ts) < CFG.negativeTTL) return null;
+
+    // 4) inFlight dedupe
+    if (inFlight.has(handle)) return inFlight.get(handle);
+
+    const p = (async () => {
+      const url = `https://www.youtube.com/${handle}`; // handle includes '@'
+      const controller = new AbortController();
+
+      const timeoutId = setTimeout(() => {
+        try { controller.abort(); } catch (_) {}
+      }, CFG.fetchTimeout);
+
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          credentials: 'include',
+          signal: controller.signal,
         });
-        domUpdates.clear();
-      });
-    }
-  }
 
-  // ===== 3. データ取得 (Streaming Fetch) =====
-  async function fetchNameStream(handle) {
-    // メン限等のため credentials は include に戻す
-    const url = `https://www.youtube.com/@${encodeURIComponent(handle)}/about`;
-    const controller = new AbortController();
-
-    try {
-      const res = await fetch(url, { signal: controller.signal, credentials: "include" });
-      if (!res.body) return null;
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let foundName = null;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        // og:title を探す
-        const match = buffer.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i);
-        if (match) {
-          foundName = match[1].trim().replace(/\s*-\s*YouTube\s*$/i, "").trim();
-          controller.abort(); // ★見つかったら即切断
-          break;
+        // If body stream not available, fallback to full text
+        const body = res.body;
+        if (!body || !body.getReader) {
+          const text = await res.text();
+          const name = extractOgTitleFromHtml(text);
+          return name;
         }
 
-        // 50KB読んでもなければ諦める
-        if (buffer.length > 50000) {
-          controller.abort();
-          break;
+        const reader = body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let scannedBytes = 0;
+        let scannedChunks = 0;
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          scannedChunks++;
+          scannedBytes += value.byteLength;
+          buffer += decoder.decode(value, { stream: true });
+
+          // Try to find og:title in the growing buffer
+          const name = extractOgTitleFromHtml(buffer);
+          if (name) {
+            // Stop ASAP
+            try { controller.abort(); } catch (_) {}
+            return name;
+          }
+
+          if (scannedBytes > CFG.maxBytesToScan || scannedChunks > CFG.maxChunks) {
+            break;
+          }
+
+          // Keep buffer from growing forever
+          if (buffer.length > 250000) {
+            buffer = buffer.slice(-120000);
+          }
         }
+
+        // Final attempt
+        return extractOgTitleFromHtml(buffer);
+      } catch (_) {
+        return null;
+      } finally {
+        clearTimeout(timeoutId);
       }
-      return foundName;
-    } catch (e) {
-      return null;
-    }
-  }
+    })();
 
-  // ===== 4. キュー制御 =====
-  const pendingCallbacks = new Map();
-  const queue = [];
-  let activeRequests = 0;
-
-  async function processQueue() {
-    if (activeRequests >= MAX_CONCURRENT || queue.length === 0) return;
-
-    const handle = queue.shift();
-    activeRequests++;
+    inFlight.set(handle, p);
 
     try {
-      let name = await fetchNameStream(handle);
+      const name = await p;
 
-      const now = Date.now();
-      setCache(handle, { name, ts: now });
-
-      const callbacks = pendingCallbacks.get(handle) || [];
-      pendingCallbacks.delete(handle);
-      callbacks.forEach(cb => cb(name));
-    } catch(e) {
-      // エラー時もキャッシュして連打防止
-      setCache(handle, { name: null, ts: Date.now() });
+      if (name) {
+        const record = { name, ts: now() };
+        memCache.set(handle, record);
+        lsCache.set(handle, record);
+        schedulePersist();
+        return name;
+      } else {
+        negCache.set(handle, { ts: now() });
+        return null;
+      }
     } finally {
-      activeRequests--;
-      if (queue.length > 0) setTimeout(processQueue, REQUEST_DELAY);
+      inFlight.delete(handle);
     }
   }
 
-  function requestName(rawHandle, cb) {
-    const handle = rawHandle.slice(1); // remove @
+  function extractOgTitleFromHtml(html) {
+    if (!html) return null;
 
-    const cached = getCache(handle);
-    if (cached) {
-      if (cached.name) return cb(cached.name);
-      if (Date.now() - cached.ts < NEGATIVE_TTL) return cb(null);
-    }
+    // Look for: <meta property="og:title" content="...">
+    // be flexible about attribute order & quotes
+    const re = /<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i;
+    const m = html.match(re);
+    if (!m) return null;
 
-    if (pendingCallbacks.has(handle)) {
-      pendingCallbacks.get(handle).push(cb);
-      return;
-    }
+    const raw = decodeHtmlEntities(m[1] || '');
+    const name = normalizeTitleToDisplayName(raw);
 
-    pendingCallbacks.set(handle, [cb]);
-    queue.push(handle);
-    processQueue();
+    // sanity
+    if (!name || name.length < 1) return null;
+    // Sometimes title could be just "YouTube" or weird; keep conservative
+    if (/^YouTube$/i.test(name)) return null;
+
+    return name;
   }
 
-  // ===== 5. DOM監視 (Stability重視) =====
+  /**********************
+   * DOM processing
+   **********************/
+  let itemsEl = null;
+  let observer = null;
 
-  function processNode(node) {
-    // ノード内の author-chip を探す
-    const chips = node.tagName === "YT-LIVE-CHAT-AUTHOR-CHIP"
-      ? [node]
-      : node.getElementsByTagName?.("yt-live-chat-author-chip");
+  // batch queue for nodes to scan
+  const nodeQueue = new Set();
+  let rafScheduled = false;
 
-    if (!chips || chips.length === 0) return;
+  function enqueueNode(node) {
+    if (!node) return;
+    nodeQueue.add(node);
+    if (!rafScheduled) {
+      rafScheduled = true;
+      requestAnimationFrame(flushQueue);
+    }
+  }
 
-    for (const chip of chips) {
-      const nameEl = chip.querySelector("#author-name") || chip.querySelector("span");
-      if (!nameEl) continue;
+  function flushQueue() {
+    rafScheduled = false;
+    if (nodeQueue.size === 0) return;
 
-      // 現在のテキストを取得
-      const currentText = nameEl.textContent.trim();
+    const nodes = Array.from(nodeQueue);
+    nodeQueue.clear();
 
-      // 「@」で始まっていなければ、すでに置換済みか、単なる名前と判断して無視
-      // ★ここが重要：WeakSetを使わず「今の見た目」で判断することで、再利用されたノードにも対応
-      if (!currentText.startsWith("@") || currentText.length < 2) continue;
+    // Scan for author elements in each added node
+    for (const n of nodes) {
+      scanAndProcessAuthorElements(n);
+    }
+  }
 
-      // チップ自体のテキストも確認（構造崩れ対策）
-      // 一部のチャット形式では #author-name が空で chip 直下にテキストがある場合があるため
-      if (currentText === "") {
-         const raw = chip.textContent.trim();
-         if (!raw.startsWith("@")) continue;
+  function scanAndProcessAuthorElements(root) {
+    if (!root || root.nodeType !== 1) return;
+
+    // Common patterns in live chat:
+    // - <yt-live-chat-author-chip> contains <span id="author-name"> or <a id="author-name">
+    // We'll target author-chip + author-name id to reduce false positives.
+    const authorEls = [];
+
+    if (root.matches && root.matches('yt-live-chat-author-chip #author-name, #author-name')) {
+      // If root itself is author-name (rare), include it
+      authorEls.push(root);
+    }
+
+    // Prefer scoped selector
+    const found = root.querySelectorAll
+      ? root.querySelectorAll('yt-live-chat-author-chip #author-name, a#author-name, span#author-name')
+      : [];
+    for (const el of found) authorEls.push(el);
+
+    if (authorEls.length === 0) return;
+
+    for (const el of authorEls) {
+      processAuthorElement(el);
+    }
+  }
+
+  async function processAuthorElement(authorEl) {
+    if (!authorEl || authorEl.nodeType !== 1) return;
+
+    // Identify current handle:
+    // - First by visible text if it's "@..."
+    // - Else by href "/@handle"
+    const text = (authorEl.textContent || '').trim();
+
+    let handle = extractHandleFromText(text);
+
+    // Sometimes authorEl is span and the anchor is parent
+    if (!handle) {
+      const anchor = authorEl.closest ? authorEl.closest('a') : null;
+      const href = (anchor && anchor.getAttribute) ? anchor.getAttribute('href') : authorEl.getAttribute?.('href');
+      handle = extractHandleFromHref(href);
+    }
+
+    if (!handle) return;
+
+    // Important: "node reuse safe" logic
+    // Only act if it's CURRENTLY showing the handle (starts with '@').
+    // If it's already a display name, we skip.
+    if (!isHandleText(text)) return;
+
+    // Avoid spamming same element repeatedly:
+    // If we've already resolved this handle and set it recently, it won't match @ anyway.
+    // But just in case, mark a lightweight attribute.
+    if (authorEl.dataset && authorEl.dataset.ytNameRestored === '1') return;
+
+    const name = await fetchDisplayNameByHandle(handle);
+    if (!name) return;
+
+    // Double-check it still shows the same handle (DOM could have changed meanwhile)
+    const latestText = (authorEl.textContent || '').trim();
+    if (extractHandleFromText(latestText) !== handle) return;
+
+    // Apply
+    authorEl.textContent = name;
+    if (authorEl.dataset) {
+      authorEl.dataset.ytNameRestored = '1';
+      authorEl.dataset.originalHandle = handle;
+    }
+    // Keep handle discoverable on hover
+    try {
+      authorEl.setAttribute('title', handle);
+    } catch (_) {}
+  }
+
+  /**********************
+   * Observer attach / reattach
+   **********************/
+  function findItemsElement() {
+    // Live chat is inside an iframe on watch pages.
+    // But this userscript runs on all youtube.com; we attempt to find #items wherever it exists.
+    return document.querySelector('#items');
+  }
+
+  function attachObserverIfNeeded() {
+    const found = findItemsElement();
+    if (!found) return;
+
+    if (itemsEl === found && observer) return;
+
+    // Replace observer
+    if (observer) {
+      try { observer.disconnect(); } catch (_) {}
+      observer = null;
+    }
+
+    itemsEl = found;
+
+    observer = new MutationObserver((mutList) => {
+      for (const mut of mutList) {
+        for (const node of mut.addedNodes) {
+          // We observe only childList (no subtree), so node should be a chat line renderer
+          enqueueNode(node);
+        }
       }
+    });
 
-      requestName(currentText, (realName) => {
-        if (realName) scheduleDomUpdate(nameEl, realName);
-      });
-    }
+    observer.observe(itemsEl, {
+      childList: true,
+      subtree: false, // lightweight
+    });
+
+    // Initial scan of current visible items
+    enqueueNode(itemsEl);
   }
 
-  // MutationObserver
-  // ★重要: subtree: false に戻し、トップレベルの行追加のみを監視する
-  const observer = new MutationObserver((mutations) => {
-    for (const m of mutations) {
-      for (const node of m.addedNodes) {
-        if (node.nodeType === 1) processNode(node);
+  function startReattachLoop() {
+    setInterval(() => {
+      attachObserverIfNeeded();
+    }, CFG.reattachInterval);
+  }
+
+  /**********************
+   * Bootstrap
+   **********************/
+  function bootstrap() {
+    // Wait for DOM to exist
+    const start = async () => {
+      // document-start can be too early; loop until we can query
+      while (document.readyState === 'loading' && !document.documentElement) {
+        await sleep(50);
       }
-    }
-  });
-
-  function startObserver() {
-    const items = document.querySelector("yt-live-chat-item-list-renderer #items");
-    if (items) {
-      // 既存分を処理
-      const existing = items.querySelectorAll("yt-live-chat-author-chip");
-      existing.forEach(chip => processNode(chip)); // chip自体を渡すよう調整
-
-      // 監視開始
-      observer.observe(items, { childList: true, subtree: false });
-    } else {
-      setTimeout(startObserver, 1000);
-    }
+      // Start reattach loop (this is the "won't die" core)
+      startReattachLoop();
+      // Try attach soon
+      attachObserverIfNeeded();
+    };
+    start().catch(() => {});
   }
 
-  startObserver();
+  bootstrap();
 })();
