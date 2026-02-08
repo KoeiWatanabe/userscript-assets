@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         YTチャットをストライプにする
 // @namespace    ytcs
-// @version      6.3.0
-// @description  YouTubeライブチャットを“到着順しましま”で読みやすく（ギフト通知ytdタグ対応版）
+// @version      6.3.1
+// @description  YouTubeライブチャットを“到着順しましま”で読みやすく
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
 // @run-at       document-idle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_addStyle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットをストライプにする/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットをストライプにする/script.js
 // @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットをストライプにする/icon_128.png
@@ -31,9 +32,7 @@
   const DEFAULT_ENABLE_ROUNDED = false;
   const RADIUS_PX = "6px";
 
-  // 監視対象タグリスト（大文字指定）
   const TARGET_TAGS = new Set([
-    // 標準的なチャット要素
     "YT-LIVE-CHAT-TEXT-MESSAGE-RENDERER",
     "YT-LIVE-CHAT-PAID-MESSAGE-RENDERER",
     "YT-LIVE-CHAT-PAID-STICKER-RENDERER",
@@ -42,14 +41,10 @@
     "YT-LIVE-CHAT-VIEWER-ENGAGEMENT-MESSAGE-RENDERER",
     "YT-LIVE-CHAT-BANNER-RENDERER",
     "YT-LIVE-CHAT-SPONSORSHIPS-HEADER-RENDERER",
-
-    // 従来のギフト通知（念のため残存）
     "YT-LIVE-CHAT-SPONSORSHIPS-GIFT-PURCHASE-ANNOUNCEMENT-RENDERER",
     "YT-LIVE-CHAT-SPONSORSHIPS-GIFT-REDEMPTION-ANNOUNCEMENT-RENDERER",
-
-    // ★今回追加した新しいギフト通知形式 (ytd- start)
-    "YTD-SPONSORSHIPS-LIVE-CHAT-GIFT-REDEMPTION-ANNOUNCEMENT-RENDERER", // 受け取り
-    "YTD-SPONSORSHIPS-LIVE-CHAT-GIFT-PURCHASE-ANNOUNCEMENT-RENDERER"    // 購入（恐らく対になるタグ）
+    "YTD-SPONSORSHIPS-LIVE-CHAT-GIFT-REDEMPTION-ANNOUNCEMENT-RENDERER",
+    "YTD-SPONSORSHIPS-LIVE-CHAT-GIFT-PURCHASE-ANNOUNCEMENT-RENDERER"
   ]);
 
   /**********************
@@ -74,10 +69,9 @@
   }
 
   /**********************
-   * CSS Management
+   * CSS Management (GM_addStyle版)
    **********************/
-  let styleEl = null;
-
+  // スタイル要素を自作せず、変数CSSの定義だけを行う
   function updateCss() {
     const light = GM_getValue(KEY_LIGHT, DEFAULTS.lightStripe);
     const dark  = GM_getValue(KEY_DARK,  DEFAULTS.darkStripe);
@@ -95,40 +89,34 @@
     } else {
       root.removeAttribute("data-ytcs-darkreader");
     }
-
-    if (!styleEl || !styleEl.isConnected) {
-      styleEl = document.createElement("style");
-      styleEl.textContent = `
-        :root:not([data-ytcs-darkreader]) [data-ytcs-s="1"] {
-          background-color: var(--ytcs-stripe-color) !important;
-          border-radius: var(--ytcs-radius) !important;
-        }
-        :root[data-ytcs-darkreader] [data-ytcs-s="1"] {
-          background-color: transparent !important;
-          box-shadow: inset 0 0 0 9999px rgba(127,127,127,0.08) !important;
-          border-radius: var(--ytcs-radius) !important;
-        }
-      `;
-      document.head.appendChild(styleEl);
-    }
   }
+
+  // 初回に一度だけスタイルを登録（GM_addStyleは強力なので消えにくい）
+  GM_addStyle(`
+    :root:not([data-ytcs-darkreader]) [data-ytcs-s="1"] {
+      background-color: var(--ytcs-stripe-color) !important;
+      border-radius: var(--ytcs-radius) !important;
+    }
+    :root[data-ytcs-darkreader] [data-ytcs-s="1"] {
+      background-color: transparent !important;
+      box-shadow: inset 0 0 0 9999px rgba(127,127,127,0.08) !important;
+      border-radius: var(--ytcs-radius) !important;
+    }
+  `);
 
   /**********************
    * Optimized Marking Logic
    **********************/
   let isStripeTurn = false;
+  let currentObservedItem = null; // ★現在監視している要素を記憶する変数
 
   const observerCallback = (mutations) => {
     for (const mutation of mutations) {
       if (mutation.addedNodes.length === 0) continue;
-
       for (const node of mutation.addedNodes) {
-        // nodeType === 1 (Element) かつ 対象タグリストに含まれるか
         if (node.nodeType === 1 && TARGET_TAGS.has(node.tagName)) {
           if (node.hasAttribute("data-ytcs-done")) continue;
-
           node.setAttribute("data-ytcs-done", "1");
-
           if (isStripeTurn) {
             node.setAttribute("data-ytcs-s", "1");
           }
@@ -140,12 +128,23 @@
 
   const observer = new MutationObserver(observerCallback);
 
+  // ★監視を開始・再開する関数（ロジックを修正）
   function startObserving() {
-    let items = document.querySelector("#items.yt-live-chat-item-list-renderer");
+    const newItems = document.querySelector("#items.yt-live-chat-item-list-renderer");
 
-    if (items) {
-      // 既存ログの一括処理
-      for (const child of items.children) {
+    // 要素が存在し、かつ「前回監視していたものと違う」場合に付け替える
+    if (newItems && newItems !== currentObservedItem) {
+      console.log("[YTCS] Chat container detected/changed. Attaching observer...");
+
+      // 古い監視を解除
+      observer.disconnect();
+
+      // 新しい要素を記憶
+      currentObservedItem = newItems;
+
+      // 既存ログの一括処理（チャット欄切り替え直後にあるログを処理）
+      isStripeTurn = false; // ★切り替え時に縞々順序をリセット（お好みで削除可）
+      for (const child of newItems.children) {
         if (child.nodeType === 1 && TARGET_TAGS.has(child.tagName)) {
              if (!child.hasAttribute("data-ytcs-done")) {
                  child.setAttribute("data-ytcs-done", "1");
@@ -154,11 +153,9 @@
              }
         }
       }
-      observer.disconnect();
-      // 直下のみ監視（軽量化）
-      observer.observe(items, { childList: true, subtree: false });
-    } else {
-      setTimeout(startObserving, 1000);
+
+      // 新しい要素を監視開始
+      observer.observe(newItems, { childList: true, subtree: false });
     }
   }
 
@@ -189,15 +186,18 @@
   function init() {
     updateCss();
     registerMenu();
+
+    // 初回実行
     startObserving();
 
     const themeObs = new MutationObserver(updateCss);
     themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ["dark", "data-theme", "class"] });
     window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener("change", updateCss);
 
-    // 監視要素がすり替わった時用
+    // ★監視要素がすり替わった時用（ここが重要）
     setInterval(() => {
-        const currentItems = document.querySelector("#items.yt-live-chat-item-list-renderer");
+        // 定期的に関数を呼び出し、要素が変わっているかチェックさせる
+        startObserving();
     }, 2000);
   }
 
