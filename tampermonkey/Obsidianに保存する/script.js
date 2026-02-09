@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Obsidianに保存する
 // @namespace    local.obsidian.capture
-// @version      0.4
+// @version      1.0
 // @description  選択があれば選択範囲、なければ直近で触った返答をObsidianのDaily Noteに追記（ダークモード対応）
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @match        https://gemini.google.com/*
 // @match        https://t3.chat/*
+// @match        https://claude.ai/*
 // @grant        GM_setClipboard
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Obsidianに保存する/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Obsidianに保存する/script.js
@@ -67,6 +68,9 @@
       if (host.includes("t3.chat")) {
         return closestBySelectors(el, ['[data-message-role="assistant"]', 'article', 'div[role="article"]']);
       }
+      if (host.includes("claude.ai")) {
+        return closestBySelectors(el, ['.standard-markdown', '[class*="standard-markdown"]']);
+      }
       return null;
     })();
     if (fromPointer && isVisible(fromPointer) && textFromEl(fromPointer)) return fromPointer;
@@ -88,6 +92,14 @@
         if (t && t.length > 80) return nodes[i];
       }
       return null;
+    }
+    if (host.includes("claude.ai")) {
+      // Claude.aiのメッセージ要素を探す（standard-markdownクラス）
+      const messages = Array.from(document.querySelectorAll('.standard-markdown'))
+        .filter(el => isVisible(el) && textFromEl(el).length > 50);
+      
+      // 最後のメッセージを返す
+      return messages.length > 0 ? messages[messages.length - 1] : null;
     }
     return null;
   }
@@ -146,8 +158,7 @@
         box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
       }
       .obsidian-capture-btn:hover {
-        background-color: #f5f5f5 !important;
-        transform: translateY(-1px);
+        background-color: #e8e8e8 !important;
       }
       /* ダークモード検知 (OS設定、またはサイトのクラス) */
       @media (prefers-color-scheme: dark) {
@@ -161,13 +172,18 @@
           background-color: #3d3d3d !important;
         }
       }
-      /* ChatGPT/Geminiのダークモード用クラスがhtml/bodyにある場合 */
+      /* ChatGPT/Gemini/Claudeのダークモード用クラスがhtml/bodyにある場合 */
       html.dark .obsidian-capture-btn,
       body.dark .obsidian-capture-btn,
       [data-theme="dark"] .obsidian-capture-btn {
           background-color: #2d2d2d !important;
           color: #efefef !important;
           border: 1px solid rgba(255,255,255,0.2) !important;
+      }
+      html.dark .obsidian-capture-btn:hover,
+      body.dark .obsidian-capture-btn:hover,
+      [data-theme="dark"] .obsidian-capture-btn:hover {
+          background-color: #3d3d3d !important;
       }
     `;
     document.head.appendChild(style);
