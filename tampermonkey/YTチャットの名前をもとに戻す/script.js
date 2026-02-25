@@ -1,15 +1,16 @@
 // ==UserScript==
-// @name         YTチャットの名前をもとに戻す
+// @name         YouTubeコメント欄の名前をもとに戻す＋
 // @namespace    https://example.com/
-// @version      2.8.0
-// @description  Reference-like strategy tuned for minimum visible latency. Replace @handle with display name only.
+// @version      1.0.0
+// @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
+// @match        https://www.youtube.com/*
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
+// @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeコメント欄の名前をもとに戻す/script.js
+// @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeコメント欄の名前をもとに戻す/script.js
+// @icon         https://lh3.googleusercontent.com/sFcMOwMS6nr3GKmCvUNP_4E1kdginHy_n6uK4oz1sThlHveRKGd0K4SqJsLJL-DsFr5LRyJk0A4rgLdLl9RaE8Oz=s120
 // @grant        none
-// @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットの名前をもとに戻す/script.js
-// @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットの名前をもとに戻す/script.js
-// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットの名前をもとに戻す/icon_128.png
+// @run-at       document-start
 // ==/UserScript==
 
 (() => {
@@ -26,8 +27,8 @@
     // Negative cache TTL (ms)
     negativeTTL: 5 * 60 * 1000, // 5 min
 
-    // Observe reattach check interval (ms)
-    reattachInterval: 800,
+    // Reattach check interval (ms)
+    reattachInterval: 900,
 
     // Fetch timeout (ms)
     fetchTimeout: 7000,
@@ -38,112 +39,61 @@
 
     // Persist debounce (ms)
     persistDebounce: 5000,
+
+    // Scan throttling
+    scanDebounceMs: 120,
+    scanMaxPerPass: 1200,       // safety: per full scan
   };
 
   /**********************
    * Tiny utils
    **********************/
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-  function now() { return Date.now(); }
+  const now = () => Date.now();
 
   // decode cache: avoids repeated parsing work
   const _decodeCache = new Map();
   const _DECODE_CACHE_MAX = 2000;
 
   function decodeHtmlEntities(str) {
-    // Fast path: nothing to decode
     if (str == null) return '';
     const s0 = String(str);
     if (s0.indexOf('&') === -1) return s0;
 
-    // Cache
     const cached = _decodeCache.get(s0);
     if (cached !== undefined) return cached;
 
-    // Common entities: keep it fast for the usual suspects
     const named = {
-      amp: '&',
-      lt: '<',
-      gt: '>',
-      quot: '"',
-      apos: "'",
-      nbsp: '\u00A0',
-
-      // punctuation / typography
-      hellip: '…',
-      ndash: '–',
-      mdash: '—',
-      lsquo: '‘',
-      rsquo: '’',
-      ldquo: '“',
-      rdquo: '”',
-      laquo: '«',
-      raquo: '»',
-      middot: '·',
-      bull: '•',
-
-      // symbols
-      copy: '©',
-      reg: '®',
-      trade: '™',
-      deg: '°',
-      plusmn: '±',
-      times: '×',
-      divide: '÷',
-      micro: 'µ',
-
-      // currency
-      yen: '¥',
-      euro: '€',
-      pound: '£',
-      cent: '¢',
-
-      // fractions / superscripts often seen in titles
-      frac14: '¼',
-      frac12: '½',
-      frac34: '¾',
-      sup1: '¹',
-      sup2: '²',
-      sup3: '³',
+      amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00A0',
+      hellip: '…', ndash: '–', mdash: '—', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”',
+      laquo: '«', raquo: '»', middot: '·', bull: '•',
+      copy: '©', reg: '®', trade: '™', deg: '°', plusmn: '±', times: '×', divide: '÷', micro: 'µ',
+      yen: '¥', euro: '€', pound: '£', cent: '¢',
+      frac14: '¼', frac12: '½', frac34: '¾', sup1: '¹', sup2: '²', sup3: '³',
     };
 
     const replaced = s0.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]+);/g, (m, g1) => {
       if (!g1) return m;
-
-      // numeric: &#123; / &#x1F600;
       if (g1[0] === '#') {
         const hex = (g1[1] || '').toLowerCase() === 'x';
         const numStr = hex ? g1.slice(2) : g1.slice(1);
         const cp = parseInt(numStr, hex ? 16 : 10);
         if (!Number.isFinite(cp)) return m;
-        try {
-          return String.fromCodePoint(cp);
-        } catch (_) {
-          return m;
-        }
+        try { return String.fromCodePoint(cp); } catch (_) { return m; }
       }
-
-      // named: &amp;
       const key = g1.toLowerCase();
       return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : m;
     });
 
-    // If something like "&hellip;" remains (or any other named entity we didn't list),
-    // fall back to a DOMParser-based decode WITHOUT touching innerHTML.
-    // Using <textarea> ensures any '<' stays as text (not markup).
     let out = replaced;
     if (/[&][a-zA-Z][a-zA-Z0-9]+;/.test(out)) {
       try {
         const doc = new DOMParser().parseFromString(`<textarea>${out}</textarea>`, 'text/html');
         const ta = doc && doc.querySelector('textarea');
         if (ta && typeof ta.value === 'string') out = ta.value;
-      } catch (_) {
-        // ignore and keep best-effort result
-      }
+      } catch (_) { }
     }
 
-    // Cache write with simple LRU-ish eviction
     _decodeCache.set(s0, out);
     if (_decodeCache.size > _DECODE_CACHE_MAX) {
       const firstKey = _decodeCache.keys().next().value;
@@ -152,14 +102,11 @@
     return out;
   }
 
-
   function safeDecode(s) {
     try { return decodeHtmlEntities(s); } catch (_) { return String(s ?? ''); }
   }
 
   function normalizeTitleToDisplayName(title) {
-    // Typical channel pages: "Display Name - YouTube"
-    // Keep it conservative: only strip the trailing " - YouTube"
     const t = title.trim();
     return t.replace(/\s+-\s+YouTube\s*$/i, '').trim();
   }
@@ -167,25 +114,23 @@
   function isHandleText(s) {
     if (!s) return false;
     const t = s.trim();
-    // YouTube handles are typically ASCII, but keep permissive.
-    // Require leading '@' + at least 2 chars
     return t.startsWith('@') && t.length >= 3;
   }
 
   function extractHandleFromText(text) {
     const t = (text || '').trim();
     if (!isHandleText(t)) return null;
-    // Remove trailing whitespace etc.
-    // Keep whole handle (including dots/underscores) as-is.
-    // Some UI may include invisible chars; strip common whitespace.
     return t.replace(/\s+/g, '');
   }
 
   function extractHandleFromHref(href) {
     if (!href) return null;
-    // examples: /@handle, https://www.youtube.com/@handle, /@handle/about
     const m = href.match(/\/@([A-Za-z0-9._-]{2,})/);
     return m ? '@' + m[1] : null;
+  }
+
+  function isElement(node) {
+    return node && node.nodeType === 1;
   }
 
   /**********************
@@ -199,7 +144,6 @@
     get(key) {
       const v = this.map.get(key);
       if (v === undefined) return undefined;
-      // refresh order
       this.map.delete(key);
       this.map.set(key, v);
       return v;
@@ -208,29 +152,15 @@
       if (this.map.has(key)) this.map.delete(key);
       this.map.set(key, val);
       if (this.map.size > this.max) {
-        // delete oldest
         const oldest = this.map.keys().next().value;
         this.map.delete(oldest);
       }
     }
-    has(key) {
-      return this.map.has(key);
-    }
-    delete(key) {
-      this.map.delete(key);
-    }
-    size() {
-      return this.map.size;
-    }
-    entriesArray() {
-      return Array.from(this.map.entries());
-    }
+    delete(key) { this.map.delete(key); }
+    entriesArray() { return Array.from(this.map.entries()); }
     loadFromEntries(entries) {
       this.map.clear();
-      for (const [k, v] of entries) {
-        this.map.set(k, v);
-      }
-      // Trim if too large
+      for (const [k, v] of entries) this.map.set(k, v);
       while (this.map.size > this.max) {
         const oldest = this.map.keys().next().value;
         this.map.delete(oldest);
@@ -245,7 +175,7 @@
   const negCache = new LRU(20000);           // handle -> {ts}
 
   // localStorage persistent cache
-  const LS_KEY = 'yt_livechat_handle_name_cache_v1';
+  const LS_KEY = 'yt_handle_to_display_name_cache_v1';
   const lsCache = new LRU(CFG.lsCacheMax);
   let persistTimer = null;
 
@@ -255,11 +185,8 @@
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (!parsed || parsed.v !== 1 || !Array.isArray(parsed.entries)) return;
-      // entries: [[handle, {name, ts}], ...] in LRU order (oldest -> newest)
       lsCache.loadFromEntries(parsed.entries);
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) { }
   }
 
   function schedulePersist() {
@@ -267,21 +194,16 @@
     persistTimer = setTimeout(() => {
       persistTimer = null;
       try {
-        const payload = {
-          v: 1,
-          entries: lsCache.entriesArray(), // oldest->newest
-        };
+        const payload = { v: 1, entries: lsCache.entriesArray() };
         localStorage.setItem(LS_KEY, JSON.stringify(payload));
-      } catch (_) {
-        // ignore (quota etc.)
-      }
+      } catch (_) { }
     }, CFG.persistDebounce);
   }
 
   loadPersistentCache();
 
   /**********************
-   * Networking (streaming og:title sniff)
+   * Networking (streaming og:title sniff) - from your live chat script
    **********************/
   const inFlight = new Map(); // handle -> Promise<string|null>
 
@@ -309,7 +231,7 @@
       const controller = new AbortController();
 
       const timeoutId = setTimeout(() => {
-        try { controller.abort(); } catch (_) {}
+        try { controller.abort(); } catch (_) { }
       }, CFG.fetchTimeout);
 
       try {
@@ -319,12 +241,10 @@
           signal: controller.signal,
         });
 
-        // If body stream not available, fallback to full text
         const body = res.body;
         if (!body || !body.getReader) {
           const text = await res.text();
-          const name = extractOgTitleFromHtml(text);
-          return name;
+          return extractOgTitleFromHtml(text);
         }
 
         const reader = body.getReader();
@@ -341,25 +261,16 @@
           scannedBytes += value.byteLength;
           buffer += decoder.decode(value, { stream: true });
 
-          // Try to find og:title in the growing buffer
           const name = extractOgTitleFromHtml(buffer);
           if (name) {
-            // Stop ASAP
-            try { controller.abort(); } catch (_) {}
+            try { controller.abort(); } catch (_) { }
             return name;
           }
 
-          if (scannedBytes > CFG.maxBytesToScan || scannedChunks > CFG.maxChunks) {
-            break;
-          }
-
-          // Keep buffer from growing forever
-          if (buffer.length > 250000) {
-            buffer = buffer.slice(-120000);
-          }
+          if (scannedBytes > CFG.maxBytesToScan || scannedChunks > CFG.maxChunks) break;
+          if (buffer.length > 250000) buffer = buffer.slice(-120000);
         }
 
-        // Final attempt
         return extractOgTitleFromHtml(buffer);
       } catch (_) {
         return null;
@@ -372,7 +283,6 @@
 
     try {
       const name = await p;
-
       if (name) {
         const record = { name, ts: now() };
         memCache.set(handle, record);
@@ -390,194 +300,343 @@
 
   function extractOgTitleFromHtml(html) {
     if (!html) return null;
-
-    // Look for: <meta property="og:title" content="...">
-    // be flexible about attribute order & quotes
     const re = /<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i;
     const m = html.match(re);
     if (!m) return null;
 
     const raw = safeDecode(m[1] || '');
     const name = normalizeTitleToDisplayName(raw);
-
-    // sanity
-    if (!name || name.length < 1) return null;
-    // Sometimes title could be just "YouTube" or weird; keep conservative
-    if (/^YouTube$/i.test(name)) return null;
-
+    if (!name || /^YouTube$/i.test(name)) return null;
     return name;
   }
 
   /**********************
-   * DOM processing
+   * Generic “author element” processor
    **********************/
-  let itemsEl = null;
-  let observer = null;
-
-  // batch queue for nodes to scan
-  const nodeQueue = new Set();
-  let rafScheduled = false;
-
-  function enqueueNode(node) {
-    if (!node) return;
-    nodeQueue.add(node);
-    if (!rafScheduled) {
-      rafScheduled = true;
-      requestAnimationFrame(flushQueue);
-    }
-  }
-
-  function flushQueue() {
-    rafScheduled = false;
-    if (nodeQueue.size === 0) return;
-
-    const nodes = Array.from(nodeQueue);
-    nodeQueue.clear();
-
-    // Scan for author elements in each added node
-    for (const n of nodes) {
-      scanAndProcessAuthorElements(n);
-    }
-  }
-
-  function scanAndProcessAuthorElements(root) {
-    if (!root || root.nodeType !== 1) return;
-
-    // Common patterns in live chat:
-    // - <yt-live-chat-author-chip> contains <span id="author-name"> or <a id="author-name">
-    // We'll target author-chip + author-name id to reduce false positives.
-    const authorEls = [];
-
-    if (root.matches && root.matches('yt-live-chat-author-chip #author-name, #author-name')) {
-      // If root itself is author-name (rare), include it
-      authorEls.push(root);
-    }
-
-    // Prefer scoped selector
-    const found = root.querySelectorAll
-      ? root.querySelectorAll('yt-live-chat-author-chip #author-name, a#author-name, span#author-name')
-      : [];
-    for (const el of found) authorEls.push(el);
-
-    if (authorEls.length === 0) return;
-
-    for (const el of authorEls) {
-      processAuthorElement(el);
-    }
-  }
-
   async function processAuthorElement(authorEl) {
-    if (!authorEl || authorEl.nodeType !== 1) return;
+    if (!isElement(authorEl)) return;
 
-    // Identify current handle:
-    // - First by visible text if it's "@..."
-    // - Else by href "/@handle"
     const text = (authorEl.textContent || '').trim();
 
     let handle = extractHandleFromText(text);
 
-    // Sometimes authorEl is span and the anchor is parent
     if (!handle) {
       const anchor = authorEl.closest ? authorEl.closest('a') : null;
       const href = (anchor && anchor.getAttribute) ? anchor.getAttribute('href') : authorEl.getAttribute?.('href');
       handle = extractHandleFromHref(href);
     }
-
     if (!handle) return;
 
-    // Important: "node reuse safe" logic
-    // Only act if it's CURRENTLY showing the handle (starts with '@').
-    // If it's already a display name, we skip.
+    // Only act if currently showing handle (avoid re-writing already-names)
     if (!isHandleText(text)) return;
 
-    // Avoid spamming same element repeatedly:
-    // If we've already resolved this handle and set it recently, it won't match @ anyway.
-    // But just in case, mark a lightweight attribute.
     if (authorEl.dataset && authorEl.dataset.ytNameRestored === '1') return;
 
     const name = await fetchDisplayNameByHandle(handle);
     if (!name) return;
 
-    // Double-check it still shows the same handle (DOM could have changed meanwhile)
+    // Re-check the element still shows the same handle
     const latestText = (authorEl.textContent || '').trim();
     if (extractHandleFromText(latestText) !== handle) return;
 
-    // Apply
     authorEl.textContent = name;
     if (authorEl.dataset) {
       authorEl.dataset.ytNameRestored = '1';
       authorEl.dataset.originalHandle = handle;
     }
-    // Keep handle discoverable on hover
-    try {
-      authorEl.setAttribute('title', handle);
-    } catch (_) {}
+    try { authorEl.setAttribute('title', handle); } catch (_) { }
   }
 
   /**********************
-   * Observer attach / reattach
+   * Live Chat Module
    **********************/
-  function findItemsElement() {
-    // Live chat is inside an iframe on watch pages.
-    // But this userscript runs on all youtube.com; we attempt to find #items wherever it exists.
-    return document.querySelector('#items');
-  }
+  const LiveChat = (() => {
+    let itemsEl = null;
+    let observer = null;
 
-  function attachObserverIfNeeded() {
-    const found = findItemsElement();
-    if (!found) return;
+    const nodeQueue = new Set();
+    let rafScheduled = false;
 
-    if (itemsEl === found && observer) return;
-
-    // Replace observer
-    if (observer) {
-      try { observer.disconnect(); } catch (_) {}
-      observer = null;
+    function enqueueNode(node) {
+      if (!node) return;
+      nodeQueue.add(node);
+      if (!rafScheduled) {
+        rafScheduled = true;
+        requestAnimationFrame(flushQueue);
+      }
     }
 
-    itemsEl = found;
+    function flushQueue() {
+      rafScheduled = false;
+      if (nodeQueue.size === 0) return;
 
-    observer = new MutationObserver((mutList) => {
-      for (const mut of mutList) {
-        for (const node of mut.addedNodes) {
-          // We observe only childList (no subtree), so node should be a chat line renderer
-          enqueueNode(node);
+      const nodes = Array.from(nodeQueue);
+      nodeQueue.clear();
+
+      for (const n of nodes) scanAndProcessAuthorElements(n);
+    }
+
+    function scanAndProcessAuthorElements(root) {
+      if (!isElement(root)) return;
+
+      const authorEls = [];
+
+      if (root.matches && root.matches('yt-live-chat-author-chip #author-name, #author-name')) {
+        authorEls.push(root);
+      }
+
+      const found = root.querySelectorAll
+        ? root.querySelectorAll('yt-live-chat-author-chip #author-name, a#author-name, span#author-name')
+        : [];
+      for (const el of found) authorEls.push(el);
+
+      if (authorEls.length === 0) return;
+
+      for (const el of authorEls) processAuthorElement(el);
+    }
+
+    function findItemsElement() {
+      return document.querySelector('#items');
+    }
+
+    function attachObserverIfNeeded() {
+      const found = findItemsElement();
+      if (!found) return;
+
+      if (itemsEl === found && observer) return;
+
+      if (observer) {
+        try { observer.disconnect(); } catch (_) { }
+        observer = null;
+      }
+
+      itemsEl = found;
+
+      observer = new MutationObserver((mutList) => {
+        for (const mut of mutList) {
+          for (const node of mut.addedNodes) enqueueNode(node);
         }
+      });
+
+      observer.observe(itemsEl, { childList: true, subtree: false });
+      enqueueNode(itemsEl);
+    }
+
+    function reset() {
+      if (observer) {
+        try { observer.disconnect(); } catch (_) { }
+        observer = null;
+      }
+      itemsEl = null;
+    }
+
+    return { attachObserverIfNeeded, reset };
+  })();
+
+  /**********************
+   * Comments Module
+   **********************/
+  const Comments = (() => {
+    // We try to observe a reasonably scoped container when possible.
+    // If we can’t find a stable root, yt-action + periodic scan acts as fallback.
+    const observers = new Map(); // Element -> MutationObserver
+
+    let scanTimer = null;
+    let lastScanAt = 0;
+
+    function scheduleScan(delay = 0) {
+      const t = now();
+      const dueIn = Math.max(delay, CFG.scanDebounceMs - (t - lastScanAt));
+      if (scanTimer) return;
+      scanTimer = setTimeout(() => {
+        scanTimer = null;
+        lastScanAt = now();
+        scanAllCommentAuthors();
+      }, dueIn);
+    }
+
+    function findLikelyCommentContainers() {
+      const targets = new Set();
+
+      // Common watch page comments root
+      const commentsRoot = document.querySelector('#comments');
+      if (commentsRoot) targets.add(commentsRoot);
+
+      // Sometimes ytd-comments exists
+      const ytdComments = document.querySelector('ytd-comments');
+      if (ytdComments) targets.add(ytdComments);
+
+      // Shorts / engagement panels often contain comment threads
+      const firstThread = document.querySelector('ytd-comment-thread-renderer');
+      if (firstThread) {
+        const panel = firstThread.closest('ytd-engagement-panel-section-list-renderer');
+        if (panel) targets.add(panel);
+        const itemSection = firstThread.closest('ytd-item-section-renderer');
+        if (itemSection) targets.add(itemSection);
+      }
+
+      return Array.from(targets).filter(Boolean);
+    }
+
+    function attachObserversIfNeeded() {
+      const containers = findLikelyCommentContainers();
+      for (const c of containers) {
+        if (!isElement(c)) continue;
+        if (observers.has(c)) continue;
+
+        const mo = new MutationObserver((mutList) => {
+          for (const mut of mutList) {
+            for (const node of mut.addedNodes) {
+              // Only scan the new subtree
+              scanCommentAuthorsUnder(node);
+            }
+          }
+        });
+
+        // Comments DOM can update deep; subtree true is needed, but we keep it scoped to container
+        mo.observe(c, { childList: true, subtree: true });
+        observers.set(c, mo);
+
+        // Initial scan of this container
+        scanCommentAuthorsUnder(c);
+      }
+
+      // Clean up removed containers
+      for (const [el, mo] of observers.entries()) {
+        if (!document.contains(el)) {
+          try { mo.disconnect(); } catch (_) { }
+          observers.delete(el);
+        }
+      }
+    }
+
+    function reset() {
+      for (const [, mo] of observers.entries()) {
+        try { mo.disconnect(); } catch (_) { }
+      }
+      observers.clear();
+    }
+
+    function scanAllCommentAuthors() {
+      // Safety: keep scanning scoped to known comment components
+      const threads = document.querySelectorAll('ytd-comment-thread-renderer');
+      let count = 0;
+      for (const t of threads) {
+        scanCommentAuthorsUnder(t, () => {
+          count++;
+          return count < CFG.scanMaxPerPass;
+        });
+        if (count >= CFG.scanMaxPerPass) break;
+      }
+    }
+
+    function scanCommentAuthorsUnder(root, allowContinueFn) {
+      if (!isElement(root) && root !== document) return;
+
+      // Strategy:
+      // Prefer anchors pointing to "/@handle" (author links & sometimes mentions).
+      // Then choose the innermost text element (span / yt-formatted-string).
+      const anchors = root.querySelectorAll
+        ? root.querySelectorAll('a[href^="/@"]')
+        : [];
+
+      for (const a of anchors) {
+        if (allowContinueFn && !allowContinueFn()) return;
+
+        // Prefer typical author name nodes inside the anchor
+        const inner =
+          a.querySelector('span') ||
+          a.querySelector('yt-formatted-string');
+
+        // If inner exists, process it, else process anchor itself
+        if (inner) {
+          processAuthorElement(inner);
+        } else {
+          processAuthorElement(a);
+        }
+      }
+    }
+
+    return { attachObserversIfNeeded, reset, scheduleScan };
+  })();
+
+  /**********************
+   * Return-script-like robustness: yt-action / yt-navigate-finish hooks
+   **********************/
+  function hookYouTubeEvents() {
+    // “yt-action” gives us reliable moments to rescan when new comments load / replies expand
+    document.addEventListener('yt-action', (e) => {
+      const d = e && e.detail;
+      const actionName = d && d.actionName;
+      if (!actionName) return;
+
+      switch (actionName) {
+        // These are the same family that Return YouTube Comment Username listens for
+        case 'yt-append-continuation-items-action':
+          Comments.scheduleScan(350);
+          break;
+        case 'yt-reload-continuation-items-command':
+          Comments.scheduleScan(120);
+          break;
+        case 'yt-history-load':
+          Comments.scheduleScan(120);
+          break;
+        case 'yt-get-multi-page-menu-action':
+          Comments.scheduleScan(120);
+          break;
+        case 'yt-create-comment-action':
+          Comments.scheduleScan(120);
+          break;
+        case 'yt-create-comment-reply-action':
+          Comments.scheduleScan(120);
+          break;
+        default:
+          // ignore other actions
+          break;
       }
     });
 
-    observer.observe(itemsEl, {
-      childList: true,
-      subtree: false, // lightweight
+    // SPA navigation: re-init observation + scan
+    document.addEventListener('yt-navigate-finish', () => {
+      // Reset state that depends on page DOM
+      LiveChat.reset();
+      Comments.reset();
+
+      // Reattach + rescan after a tiny delay (DOM often changes just after navigate-finish)
+      setTimeout(() => {
+        LiveChat.attachObserverIfNeeded();
+        Comments.attachObserversIfNeeded();
+        Comments.scheduleScan(80);
+      }, 80);
     });
-
-    // Initial scan of current visible items
-    enqueueNode(itemsEl);
-  }
-
-  function startReattachLoop() {
-    setInterval(() => {
-      attachObserverIfNeeded();
-    }, CFG.reattachInterval);
   }
 
   /**********************
-   * Bootstrap
+   * Bootstrap / reattach loop
    **********************/
-  function bootstrap() {
-    // Wait for DOM to exist
-    const start = async () => {
-      // document-start can be too early; loop until we can query
-      while (document.readyState === 'loading' && !document.documentElement) {
-        await sleep(50);
-      }
-      // Start reattach loop (this is the "won't die" core)
-      startReattachLoop();
-      // Try attach soon
-      attachObserverIfNeeded();
-    };
-    start().catch(() => {});
+  async function bootstrap() {
+    hookYouTubeEvents();
+
+    // Wait until documentElement exists (document-start safe)
+    while (!document.documentElement) await sleep(20);
+
+    // Reattach loop: “won’t die” core
+    setInterval(() => {
+      LiveChat.attachObserverIfNeeded();
+      Comments.attachObserversIfNeeded();
+    }, CFG.reattachInterval);
+
+    // Initial attach attempt
+    LiveChat.attachObserverIfNeeded();
+    Comments.attachObserversIfNeeded();
+    Comments.scheduleScan(200);
+
+    // Also scan once after DOMContentLoaded to catch late layouts
+    document.addEventListener('DOMContentLoaded', () => {
+      Comments.attachObserversIfNeeded();
+      Comments.scheduleScan(120);
+    }, { once: true });
   }
 
-  bootstrap();
+  bootstrap().catch(() => { });
 })();

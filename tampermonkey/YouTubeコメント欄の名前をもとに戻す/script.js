@@ -1,1033 +1,642 @@
 // ==UserScript==
-// @match https://www.youtube.com/*
-// @version 0.6.2
-// @run-at document-start
-// @name Return YouTube Comment Username
-// @name:ja YouTubeコメント欄の名前を元に戻す
-// @description This script replaces the "handle" in the YouTube comments section to user name
-// @description:ja YouTubeのコメント欄の名前をハンドル(@...)からユーザー名に書き換えます。
-// @name:zh-CN 恢復 YouTube 评论用户名
-// @name:zh-TW 恢復 YouTube 評論名稱
-// @description:zh-TW 此腳本將 YouTube 評論部分中的“handle”替換為用戶名
-// @description:zh-CN 此脚本将 YouTube 评论部分中的“handle”替换为用户名
-// @author yakisova41
-// @namespace https://yt-returnname-api.pages.dev/extension/
-// @grant unsafeWindow
-// @license MIT
-// @icon data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAAWJAAAFiQFtaJ36AAAAGXRFWHRTb2Z0d2FyZQB3d3cuaW5rc2NhcGUub3Jnm+48GgAABI5JREFUaIHVml1ok1cYx39v4pT6Ebdo0baoWCd+VsEPNqfthigOi0IZnRc1XgxFELwQBGE474eIV1UoOqsw9MILSzsv1G4wRQe1zG9RWdGWVBgSMGldrab/XTy2Sc2bj2aZSf5wyMk5zzn5P5/nzUkcSYzAcT4GAsDXwGpgHIWBIaAT+AU4idQ/MiPJGnwpeC5Qgbeg4LNh3vHkXxUAuUzbP4L1knAEfuARMD0/0ZE1eoElHmA3xUceoBz4zgN8k28m/wGbHUEfMCnfTLLE344gCnjyzSRLyEOhkV+2DM6dg5s34exZqKpKLV8AJTHWNm2SBgY0CgMD0saNydYMOQIl1a6iAmpqYOZMCIehsxNu3cqxyd9h3Djo6oJZsxLnnj2DefMgGn1/Ru4eqKyULlyQhoaUgBs3pMWLc2/95csTPyseVVWuHkhUYMUK6cULW9TWJgUCUk2NtGWLdOqUFI1KoZC0cGFuFVi6NLUC7kZ7TwGfT+ruNpINDZLjSAsWSFOmxGR27LANr13LjNj69bZPOjmPR3ryxJ38o0c2n1aBgwdtwZEj0rRpRlIyj1y/bv1AQLp6NZVbR7eWFqm11YyTTnbdOikSGU0+HJbWrk2axKMVuH/f4r6iQjp50jZ48EA6fTq2YXW1dPiw9XftSk+qtdVk79yR5s5NL19ZKR07Jl2+LDU2plszFHveHz8eFi2C7m4IBqG+3sa3b4fbt6GhAbxeePoUXr60uUnvDvCSEvD73atLSYm9VlVBRwds2wbt7cmrUTgM589DeTn09kIkkrp6jWjj95ul7t6VJk6MWdznk5Yssf7goOT1Ss3N9r6uztYGAqkTMB5v3kgHDiRas7zc9nU7B5qbpbIyVw/EzgHHgYEB6OuD0lLTfsYMOHMGVq0y70SjsHcvHD1qsnPmmMWmTnWv3wCzZ8PkySYfDMbG792D16+tv3o1tLRAWVlyS/f2wtatdhbF23+URu3tpvWGDVZtBgft/aVL0r59MauEQlJtbW7KZ2mpFAxm5r2eHmn69BRJXFdngl1dVj79fmn+/Nj8ypVSfb1VqFyQB6mpKfPwk6Tjx5OE0DAaG2HPHnN5W5u5GixcNm+GpiY4dCh1YmUKn89CY9IYnuYjEUvwvj6XEBpuO3dKDx8mav/4sbR7d+6sX109NusPY80alzIajxMnrFVUWHL291sChkI5MfwIvF64cmXs6yZMGO6leRotfLwqrC8zY0ePB7v1KlbcdQRvAW++mWSJWkcwCHyUbyZZ4A/gCw/FmcR/Ad8iqRgVuAh8jtQDdn2eiQIXgf60UrnHZOziLQTcA35Duh8vkMn9/+9Itf8DuZwgXRkVsP8DcckK6XLgZ6SOD0UmGziCCBZr8RBWXhcgPfvwtDJHMg84wJFCJw/mgZeAL25MwAvgU6RwfmhlDrckdoAfioE8mAdCwCdxYw+BZUhv88RpTHDzwP5iIQ+JP278inQxL0yyRHwVGqLADy03xIfQT0h/5pNMNnAEz4EpwHyk5/kmNFYM58CPxUgezAMdwFfE/wOkiOABvi9W8gD/AtVVmDkJXLSNAAAAAElFTkSuQmCC
+// @name         YouTubeコメント欄の名前をもとに戻す＋
+// @namespace    https://example.com/
+// @version      1.0.0
+// @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
+// @match        https://www.youtube.com/*
+// @match        https://www.youtube.com/live_chat*
+// @match        https://www.youtube.com/live_chat_replay*
+// @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeコメント欄の名前をもとに戻す/script.js
+// @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeコメント欄の名前をもとに戻す/script.js
+// @icon         https://lh3.googleusercontent.com/sFcMOwMS6nr3GKmCvUNP_4E1kdginHy_n6uK4oz1sThlHveRKGd0K4SqJsLJL-DsFr5LRyJk0A4rgLdLl9RaE8Oz=s120
+// @grant        none
+// @run-at       document-start
 // ==/UserScript==
 
-// src/index.ts
-function c3JjL2luZGV4LnRz() {
-  "use strict";
-  (() => {
-    // node_modules/crx-monkey/dist/client/main.js
-    function getRunningRuntime() {
-      if (typeof window.__CRX_CONTENT_BUILD_ID === "undefined") {
-        return "Userscript";
-      } else {
-        return "Extension";
-      }
-    }
-    async function bypassSendMessage(message, options, callback) {
-      const actionId = crypto.randomUUID();
-      window.postMessage(
-        {
-          type: "send-message",
-          crxContentBuildId: window.__CRX_CONTENT_BUILD_ID,
-          detail: { message, options },
-          actionId,
-        },
-        "*",
-      );
-      const data = await waitResultOnce("send-message", actionId);
-      if (callback !== void 0) {
-        callback(data.response);
-      }
-    }
-    async function waitResultOnce(type, actionId) {
-      return new Promise((resolve) => {
-        const onResult = (e) => {
-          if (e.detail.type === type && e.detail.actionId === actionId) {
-            window.removeEventListener(
-              "crx-isolate-connector-result",
-              onResult,
-            );
-            resolve(e.detail.data);
-          }
-        };
-        window.addEventListener("crx-isolate-connector-result", onResult);
-      });
-    }
+(() => {
+  'use strict';
 
-    // src/utils/isCommentRenderer.ts
-    function isCommentRenderer(continuationItems) {
-      if (continuationItems.length > 0) {
-        if ("commentThreadRenderer" in continuationItems[0]) {
-          return false;
-        }
-        if ("commentRenderer" in continuationItems[0]) {
-          return true;
-        }
-      }
-      return false;
-    }
-    function isCommentRendererV2(continuationItems) {
-      if (continuationItems.length > 0) {
-        if ("commentThreadRenderer" in continuationItems[0]) {
-          return false;
-        }
-        if ("commentViewModel" in continuationItems[0]) {
-          return true;
-        }
-      }
-      return false;
-    }
+  /**********************
+   * Config
+   **********************/
+  const CFG = {
+    // LRU sizes
+    memCacheMax: 20000,
+    lsCacheMax: 3000,
 
-    // package.json
-    var package_default = {
-      name: "return-youtube-comment-username",
-      version: "0.6.2",
-      devDependencies: {
-        "@types/chrome": "^0.0.263",
-        "@types/encoding-japanese": "^2.0.5",
-        "@types/markdown-it": "^13.0.8",
-        eslint: "^8.57.0",
-        prettier: "^3.3.1",
-        "ts-extension-builder": "^0.2.8",
-      },
-      license: "MIT",
-      scripts: {
-        "esbuild-register": "node --require esbuild-register",
-        build: "npx crx-monkey build",
-        dev: "npx crx-monkey dev",
-        lint: "npx eslint --fix src/**/*.ts",
-      },
-      type: "module",
-      dependencies: {
-        "@mdit-vue/plugin-title": "^2.1.3",
-        "@typescript-eslint/eslint-plugin": "^6.21.0",
-        "@typescript-eslint/parser": "^6.21.0",
-        "crx-monkey": "0.11.2",
-        "encoding-japanese": "^2.2.0",
-        "eslint-config-prettier": "^9.1.0",
-        "markdown-it": "^14.1.0",
-        typescript: "^5.4.5",
-      },
+    // Negative cache TTL (ms)
+    negativeTTL: 5 * 60 * 1000, // 5 min
+
+    // Reattach check interval (ms)
+    reattachInterval: 900,
+
+    // Fetch timeout (ms)
+    fetchTimeout: 7000,
+
+    // Streaming safety limits
+    maxBytesToScan: 700 * 1024, // stop scanning after ~700KB
+    maxChunks: 80,              // stop after N chunks (safety)
+
+    // Persist debounce (ms)
+    persistDebounce: 5000,
+
+    // Scan throttling
+    scanDebounceMs: 120,
+    scanMaxPerPass: 1200,       // safety: per full scan
+  };
+
+  /**********************
+   * Tiny utils
+   **********************/
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const now = () => Date.now();
+
+  // decode cache: avoids repeated parsing work
+  const _decodeCache = new Map();
+  const _DECODE_CACHE_MAX = 2000;
+
+  function decodeHtmlEntities(str) {
+    if (str == null) return '';
+    const s0 = String(str);
+    if (s0.indexOf('&') === -1) return s0;
+
+    const cached = _decodeCache.get(s0);
+    if (cached !== undefined) return cached;
+
+    const named = {
+      amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00A0',
+      hellip: '…', ndash: '–', mdash: '—', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”',
+      laquo: '«', raquo: '»', middot: '·', bull: '•',
+      copy: '©', reg: '®', trade: '™', deg: '°', plusmn: '±', times: '×', divide: '÷', micro: 'µ',
+      yen: '¥', euro: '€', pound: '£', cent: '¢',
+      frac14: '¼', frac12: '½', frac34: '¾', sup1: '¹', sup2: '²', sup3: '³',
     };
 
-    // src/utils/debugLog.ts
-    function debugLog(message, value = "") {
-      if (getRunningRuntime() === "Extension") {
-        bypassSendMessage({
-          type: "log",
-          value: [`[rycu] ${message} %c${value}`, "color:cyan;"],
+    const replaced = s0.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]+);/g, (m, g1) => {
+      if (!g1) return m;
+      if (g1[0] === '#') {
+        const hex = (g1[1] || '').toLowerCase() === 'x';
+        const numStr = hex ? g1.slice(2) : g1.slice(1);
+        const cp = parseInt(numStr, hex ? 16 : 10);
+        if (!Number.isFinite(cp)) return m;
+        try { return String.fromCodePoint(cp); } catch (_) { return m; }
+      }
+      const key = g1.toLowerCase();
+      return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : m;
+    });
+
+    let out = replaced;
+    if (/[&][a-zA-Z][a-zA-Z0-9]+;/.test(out)) {
+      try {
+        const doc = new DOMParser().parseFromString(`<textarea>${out}</textarea>`, 'text/html');
+        const ta = doc && doc.querySelector('textarea');
+        if (ta && typeof ta.value === 'string') out = ta.value;
+      } catch (_) { }
+    }
+
+    _decodeCache.set(s0, out);
+    if (_decodeCache.size > _DECODE_CACHE_MAX) {
+      const firstKey = _decodeCache.keys().next().value;
+      if (firstKey !== undefined) _decodeCache.delete(firstKey);
+    }
+    return out;
+  }
+
+  function safeDecode(s) {
+    try { return decodeHtmlEntities(s); } catch (_) { return String(s ?? ''); }
+  }
+
+  function normalizeTitleToDisplayName(title) {
+    const t = title.trim();
+    return t.replace(/\s+-\s+YouTube\s*$/i, '').trim();
+  }
+
+  function isHandleText(s) {
+    if (!s) return false;
+    const t = s.trim();
+    return t.startsWith('@') && t.length >= 3;
+  }
+
+  function extractHandleFromText(text) {
+    const t = (text || '').trim();
+    if (!isHandleText(t)) return null;
+    return t.replace(/\s+/g, '');
+  }
+
+  function extractHandleFromHref(href) {
+    if (!href) return null;
+    const m = href.match(/\/@([A-Za-z0-9._-]{2,})/);
+    return m ? '@' + m[1] : null;
+  }
+
+  function isElement(node) {
+    return node && node.nodeType === 1;
+  }
+
+  /**********************
+   * LRU Cache (Map-based)
+   **********************/
+  class LRU {
+    constructor(max) {
+      this.max = max;
+      this.map = new Map();
+    }
+    get(key) {
+      const v = this.map.get(key);
+      if (v === undefined) return undefined;
+      this.map.delete(key);
+      this.map.set(key, v);
+      return v;
+    }
+    set(key, val) {
+      if (this.map.has(key)) this.map.delete(key);
+      this.map.set(key, val);
+      if (this.map.size > this.max) {
+        const oldest = this.map.keys().next().value;
+        this.map.delete(oldest);
+      }
+    }
+    delete(key) { this.map.delete(key); }
+    entriesArray() { return Array.from(this.map.entries()); }
+    loadFromEntries(entries) {
+      this.map.clear();
+      for (const [k, v] of entries) this.map.set(k, v);
+      while (this.map.size > this.max) {
+        const oldest = this.map.keys().next().value;
+        this.map.delete(oldest);
+      }
+    }
+  }
+
+  /**********************
+   * Caches
+   **********************/
+  const memCache = new LRU(CFG.memCacheMax); // handle -> {name, ts}
+  const negCache = new LRU(20000);           // handle -> {ts}
+
+  // localStorage persistent cache
+  const LS_KEY = 'yt_handle_to_display_name_cache_v1';
+  const lsCache = new LRU(CFG.lsCacheMax);
+  let persistTimer = null;
+
+  function loadPersistentCache() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== 1 || !Array.isArray(parsed.entries)) return;
+      lsCache.loadFromEntries(parsed.entries);
+    } catch (_) { }
+  }
+
+  function schedulePersist() {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      try {
+        const payload = { v: 1, entries: lsCache.entriesArray() };
+        localStorage.setItem(LS_KEY, JSON.stringify(payload));
+      } catch (_) { }
+    }, CFG.persistDebounce);
+  }
+
+  loadPersistentCache();
+
+  /**********************
+   * Networking (streaming og:title sniff) - from your live chat script
+   **********************/
+  const inFlight = new Map(); // handle -> Promise<string|null>
+
+  async function fetchDisplayNameByHandle(handle) {
+    // 1) memory cache
+    const mc = memCache.get(handle);
+    if (mc && mc.name) return mc.name;
+
+    // 2) persistent cache
+    const lc = lsCache.get(handle);
+    if (lc && lc.name) {
+      memCache.set(handle, lc);
+      return lc.name;
+    }
+
+    // 3) negative cache
+    const nc = negCache.get(handle);
+    if (nc && (now() - nc.ts) < CFG.negativeTTL) return null;
+
+    // 4) inFlight dedupe
+    if (inFlight.has(handle)) return inFlight.get(handle);
+
+    const p = (async () => {
+      const url = `https://www.youtube.com/${handle}`; // handle includes '@'
+      const controller = new AbortController();
+
+      const timeoutId = setTimeout(() => {
+        try { controller.abort(); } catch (_) { }
+      }, CFG.fetchTimeout);
+
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          credentials: 'include',
+          signal: controller.signal,
         });
+
+        const body = res.body;
+        if (!body || !body.getReader) {
+          const text = await res.text();
+          return extractOgTitleFromHtml(text);
+        }
+
+        const reader = body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let scannedBytes = 0;
+        let scannedChunks = 0;
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          scannedChunks++;
+          scannedBytes += value.byteLength;
+          buffer += decoder.decode(value, { stream: true });
+
+          const name = extractOgTitleFromHtml(buffer);
+          if (name) {
+            try { controller.abort(); } catch (_) { }
+            return name;
+          }
+
+          if (scannedBytes > CFG.maxBytesToScan || scannedChunks > CFG.maxChunks) break;
+          if (buffer.length > 250000) buffer = buffer.slice(-120000);
+        }
+
+        return extractOgTitleFromHtml(buffer);
+      } catch (_) {
+        return null;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    })();
+
+    inFlight.set(handle, p);
+
+    try {
+      const name = await p;
+      if (name) {
+        const record = { name, ts: now() };
+        memCache.set(handle, record);
+        lsCache.set(handle, record);
+        schedulePersist();
+        return name;
       } else {
-        console.log(`[rycu] ${message} %c${value}`, "color:cyan;");
+        negCache.set(handle, { ts: now() });
+        return null;
       }
+    } finally {
+      inFlight.delete(handle);
     }
-    function debugErr(message) {
-      console.error(`[rycu] ${message}`);
-      if (getRunningRuntime() === "Extension") {
-        bypassSendMessage({
-          type: "err",
-          value: [`[rycu] ${message}`],
-        });
-      }
+  }
+
+  function extractOgTitleFromHtml(html) {
+    if (!html) return null;
+    const re = /<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i;
+    const m = html.match(re);
+    if (!m) return null;
+
+    const raw = safeDecode(m[1] || '');
+    const name = normalizeTitleToDisplayName(raw);
+    if (!name || /^YouTube$/i.test(name)) return null;
+    return name;
+  }
+
+  /**********************
+   * Generic “author element” processor
+   **********************/
+  async function processAuthorElement(authorEl) {
+    if (!isElement(authorEl)) return;
+
+    const text = (authorEl.textContent || '').trim();
+
+    let handle = extractHandleFromText(text);
+
+    if (!handle) {
+      const anchor = authorEl.closest ? authorEl.closest('a') : null;
+      const href = (anchor && anchor.getAttribute) ? anchor.getAttribute('href') : authorEl.getAttribute?.('href');
+      handle = extractHandleFromHref(href);
     }
-    function outputDebugInfo() {
-      const logs = [""];
-      const ytConf = window.yt.config_;
-      if (ytConf !== void 0) {
-        logs.push(
-          "PAGE_BUILD_LABEL: " +
-            (ytConf.PAGE_BUILD_LABEL !== void 0
-              ? ytConf.PAGE_BUILD_LABEL
-              : " undefined"),
-        );
-        logs.push(
-          "INNERTUBE_CLIENT_VERSION: " +
-            (ytConf.INNERTUBE_CLIENT_VERSION !== void 0
-              ? ytConf.INNERTUBE_CLIENT_VERSION
-              : " undefined"),
-        );
-        logs.push(
-          "INNERTUBE_CONTEXT_CLIENT_VERSION: " +
-            (ytConf.INNERTUBE_CONTEXT_CLIENT_VERSION !== void 0
-              ? ytConf.INNERTUBE_CONTEXT_CLIENT_VERSION
-              : " undefined"),
-        );
-        logs.push(
-          "INNERTUBE_CONTEXT_GL: " +
-            (ytConf.INNERTUBE_CONTEXT_GL !== void 0
-              ? ytConf.INNERTUBE_CONTEXT_GL
-              : " undefined"),
-        );
-        logs.push(
-          "Browser: " +
-            (ytConf.INNERTUBE_CONTEXT.client.browserName !== void 0
-              ? ytConf.INNERTUBE_CONTEXT.client.browserName
-              : " undefined"),
-        );
-        logs.push(
-          "Is login: " +
-            (ytConf.LOGGED_IN !== void 0
-              ? `${ytConf.LOGGED_IN}`
-              : " undefined"),
-        );
+    if (!handle) return;
+
+    // Only act if currently showing handle (avoid re-writing already-names)
+    if (!isHandleText(text)) return;
+
+    if (authorEl.dataset && authorEl.dataset.ytNameRestored === '1') return;
+
+    const name = await fetchDisplayNameByHandle(handle);
+    if (!name) return;
+
+    // Re-check the element still shows the same handle
+    const latestText = (authorEl.textContent || '').trim();
+    if (extractHandleFromText(latestText) !== handle) return;
+
+    authorEl.textContent = name;
+    if (authorEl.dataset) {
+      authorEl.dataset.ytNameRestored = '1';
+      authorEl.dataset.originalHandle = handle;
+    }
+    try { authorEl.setAttribute('title', handle); } catch (_) { }
+  }
+
+  /**********************
+   * Live Chat Module
+   **********************/
+  const LiveChat = (() => {
+    let itemsEl = null;
+    let observer = null;
+
+    const nodeQueue = new Set();
+    let rafScheduled = false;
+
+    function enqueueNode(node) {
+      if (!node) return;
+      nodeQueue.add(node);
+      if (!rafScheduled) {
+        rafScheduled = true;
+        requestAnimationFrame(flushQueue);
       }
-      logs.push(`Href: ${location.href}`);
-      debugLog(
-        `Return Youtube comment Username v${package_default.version}`,
-        logs.join("\n"),
-      );
     }
 
-    // src/utils/findElementByTrackingParams.ts
-    function findElementByTrackingParams(trackingParams, elementSelector) {
-      let returnElement = null;
-      let errorAlerted = false;
-      const elems = document.querySelectorAll(elementSelector);
-      for (let i = 0; i < elems.length; i++) {
-        if (
-          elems[i]?.trackedParams === void 0 &&
-          elems[i]?.polymerController?.trackedParams === void 0
-        ) {
-          debugErr(new Error("TrackedParams not found in element property."));
-        }
-        if (elems[i].trackedParams === trackingParams) {
-          returnElement = elems[i];
-          break;
-        } else if (
-          elems[i]?.polymerController?.trackedParams === trackingParams
-        ) {
-          returnElement = elems[i];
-          break;
-        } else {
-          if (!errorAlerted) {
-            void searchTrackedParamsByObject(trackingParams, elems[i]);
-            errorAlerted = true;
-          }
-        }
+    function flushQueue() {
+      rafScheduled = false;
+      if (nodeQueue.size === 0) return;
+
+      const nodes = Array.from(nodeQueue);
+      nodeQueue.clear();
+
+      for (const n of nodes) scanAndProcessAuthorElements(n);
+    }
+
+    function scanAndProcessAuthorElements(root) {
+      if (!isElement(root)) return;
+
+      const authorEls = [];
+
+      if (root.matches && root.matches('yt-live-chat-author-chip #author-name, #author-name')) {
+        authorEls.push(root);
       }
-      return returnElement;
+
+      const found = root.querySelectorAll
+        ? root.querySelectorAll('yt-live-chat-author-chip #author-name, a#author-name, span#author-name')
+        : [];
+      for (const el of found) authorEls.push(el);
+
+      if (authorEls.length === 0) return;
+
+      for (const el of authorEls) processAuthorElement(el);
     }
-    async function reSearchElement(trackingParams, selector) {
-      return await new Promise((resolve) => {
-        let isFinding = true;
-        const search = () => {
-          const el = findElementByTrackingParams(trackingParams, selector);
-          if (el !== null) {
-            resolve(el);
-            isFinding = false;
-          }
-          if (isFinding) {
-            setTimeout(() => {
-              search();
-            }, 100);
-          }
-        };
-        search();
-      });
+
+    function findItemsElement() {
+      return document.querySelector('#items');
     }
-    function findElementAllByCommentId(commnetId, elementSelector) {
-      const returnElements = [];
-      const elems = document.querySelectorAll(elementSelector);
-      for (let i = 0; i < elems.length; i++) {
-        if (elems[i] !== void 0) {
-          if (
-            elems[i]?.__data?.data?.commentId === void 0 &&
-            elems[i]?.polymerController?.__data?.data?.commentId === void 0
-          ) {
-            debugErr(new Error("Reply CommentId not found."));
-          } else if (
-            elems[i]?.__data?.data?.commentId !== void 0 &&
-            elems[i].__data.data.commentId === commnetId
-          ) {
-            returnElements.push(elems[i]);
-          } else if (
-            elems[i]?.polymerController?.__data?.data?.commentId !== void 0 &&
-            elems[i].polymerController.__data.data.commentId === commnetId
-          ) {
-            returnElements.push(elems[i]);
-          }
-        }
+
+    function attachObserverIfNeeded() {
+      const found = findItemsElement();
+      if (!found) return;
+
+      if (itemsEl === found && observer) return;
+
+      if (observer) {
+        try { observer.disconnect(); } catch (_) { }
+        observer = null;
       }
-      return returnElements;
-    }
-    async function reSearchElementAllByCommentId(commnetId, selector) {
-      return await new Promise((resolve) => {
-        let isFinding = true;
-        const search = () => {
-          const el = findElementAllByCommentId(commnetId, selector);
-          if (el !== null) {
-            resolve(el);
-            isFinding = false;
-          }
-          if (isFinding) {
-            setTimeout(() => {
-              search();
-            }, 100);
-          }
-        };
-        search();
-      });
-    }
-    async function searchTrackedParamsByObject(param, elem) {
-      const elemObj = Object(elem);
-      const search = (obj, history) => {
-        Object.keys(obj).forEach((k) => {
-          if (typeof obj[k] === "object") {
-            search(obj[k], [...history, k]);
-          } else if (obj[k] === param) {
-            history.push(k);
-            throw debugErr(
-              new Error(`Unknown Object format!
-"${history.join(" > ")}"`),
-            );
-          }
-        });
-      };
-      search(elemObj, []);
-    }
 
-    // src/types/AppendContinuationItemsAction.ts
-    function isReplyContinuationItemsV1(obj) {
-      return Object.hasOwn(obj[0], "commentRenderer");
-    }
-    function isReplyContinuationItemsV2(obj) {
-      return Object.hasOwn(obj[0], "commentViewModel");
-    }
-    function isConfinuationItemV2(obj) {
-      return Object.hasOwn(obj, "commentViewModel");
-    }
+      itemsEl = found;
 
-    // src/utils/escapeString.ts
-    function escapeString(text) {
-      return text
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, `&quot;`)
-        .replace(/'/g, `&#39;`)
-        .replace(/&/g, `&amp;`);
-    }
-    function decodeString(text) {
-      return text
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, `"`)
-        .replace(/&#39;/g, `'`)
-        .replace(/&amp;/g, `&`);
-    }
-
-    // src/utils/getUserName.ts
-    var isUseFeed = true;
-    async function getUserName(id) {
-      return new Promise((resolve) => {
-        if (isUseFeed) {
-          fetchFeed(id)
-            .then((name) => {
-              resolve(name);
-            })
-            .catch(() => {
-              isUseFeed = false;
-              debugErr(
-                new Error("Catch Feed API Error, so change to Browse mode."),
-              );
-              fetchBrowse(id).then((name) => {
-                resolve(name);
-              });
-            });
-        } else {
-          fetchBrowse(id).then((name) => {
-            resolve(name);
-          });
+      observer = new MutationObserver((mutList) => {
+        for (const mut of mutList) {
+          for (const node of mut.addedNodes) enqueueNode(node);
         }
       });
-    }
-    async function fetchFeed(id) {
-      return await fetch(
-        `https://www.youtube.com/feeds/videos.xml?channel_id=${id}`,
-        {
-          method: "GET",
-          cache: "default",
-          keepalive: true,
-        },
-      )
-        .then(async (res) => {
-          if (res.status !== 200)
-            throw debugErr(
-              new Error(`Feed API Error
-status: ${res.status}`),
-            );
-          return await res.text();
-        })
-        .then((text) => {
-          const match = text.match("<title>([^<].*)</title>");
-          if (match !== null) {
-            return decodeString(match[1]);
-          } else {
-            debugErr("XML title not found");
-            return "";
-          }
-        });
-    }
-    async function fetchBrowse(id) {
-      return await fetch(
-        `https://www.youtube.com/youtubei/v1/browse?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false`,
-        {
-          method: "POST",
-          headers: {
-            cache: "default",
-            accept: "*/*",
-            "accept-encoding": "gzip, deflate, br",
-            "accept-language": "en",
-            "content-type": "application/json",
-            dnt: "1",
-            referer: `https://www.youtube.com/channel/${id}`,
-          },
-          body: JSON.stringify({
-            context: {
-              client: {
-                hl: window.yt.config_.HL,
-                gl: window.yt.config_.GL,
-                clientName: "WEB",
-                clientVersion: "2.20230628.01.00",
-                platform: "DESKTOP",
-                acceptHeader:
-                  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-              },
-              user: { lockedSafetyMode: false },
-              request: {
-                useSsl: true,
-              },
-            },
-            browseId: id,
-            params: "EgVhYm91dPIGBAoCEgA%3D",
-          }),
-        },
-      )
-        .then(async (res) => {
-          if (res.status !== 200)
-            throw debugErr(
-              new Error(`Browse API Error
-status: ${res.status}`),
-            );
-          return await res.json();
-        })
-        .then((text) => {
-          const name = text.header.c4TabbedHeaderRenderer.title;
-          return decodeString(name);
-        });
+
+      observer.observe(itemsEl, { childList: true, subtree: false });
+      enqueueNode(itemsEl);
     }
 
-    // src/rewrites/rewriteOfCommentRenderer/mentionRewriteOfCommentRenderer.ts
-    function mentionRewriteOfCommentRenderer(commentRenderer) {
-      const commentRendererBody =
-        commentRenderer.__shady_native_children.namedItem("body");
-      const main2 = commentRendererBody?.querySelector("#main");
-      if (main2 !== void 0 && main2 !== null) {
-        const aTags = main2.querySelectorAll(
-          "#comment-content > ytd-expander > #content > #content-text > a",
-        );
-        for (let i = 0; i < aTags.length; i++) {
-          if (aTags[i].getAttribute("href")?.match("/channel/.*") !== null) {
-            const href = aTags[i].getAttribute("href");
-            if (href !== null) {
-              void getUserName(href.split("/")[2])
-                .then((name) => {
-                  aTags[i].textContent = `@${name} `;
-                })
-                .catch((e) => {
-                  debugErr(e);
-                });
-            } else {
-              debugErr(new Error("Mention Atag has not Href attr."));
-            }
-          }
-        }
+    function reset() {
+      if (observer) {
+        try { observer.disconnect(); } catch (_) { }
+        observer = null;
       }
+      itemsEl = null;
     }
 
-    // src/rewrites/rewriteOfCommentRenderer/nameRewriteOfCommentRenderer.ts
-    function nameRewriteOfCommentRenderer(
-      commentRenderer,
-      isNameContainerRender,
-      userId,
-    ) {
-      const commentRendererBody =
-        commentRenderer.__shady_native_children.namedItem("body");
-      if (commentRendererBody === null) {
-        throw debugErr(new Error("Comment renderer body is null."));
-      }
-      let nameElem = commentRendererBody.querySelector(
-        "#main > #header > #header-author > h3 > a > yt-formatted-string",
-      );
-      if (isNameContainerRender) {
-        const containerMain =
-          commentRendererBody.__shady_native_children.namedItem("main");
-        if (containerMain !== null) {
-          nameElem = containerMain.querySelector(
-            "#header > #header-author > #author-comment-badge > ytd-author-comment-badge-renderer > a > #channel-name > #container > #text-container > yt-formatted-string",
-          );
-        }
-      }
-      void getUserName(userId)
-        .then((name) => {
-          if (nameElem !== null) {
-            if (nameElem.getAttribute("is-empty") !== null) {
-              nameElem.removeAttribute("is-empty");
-            }
-            if (isNameContainerRender) {
-              nameElem.textContent = escapeString(name);
-            } else {
-              nameElem.textContent = name;
-            }
-          } else {
-            debugErr(new Error("Name element is null"));
-          }
-        })
-        .catch((e) => {
-          debugErr(e);
-        });
-    }
-
-    // src/rewrites/rewriteOfCommentRenderer/nameRewriteOfCommentViewModel.ts
-    function isCommentViewModelElement(obj) {
-      if (obj === null || typeof obj !== "object") {
-        return false;
-      }
-      return (
-        typeof obj.authorChannelName === "string" &&
-        (obj.authorCommentBadge === null ||
-          typeof obj.authorCommentBadge === "object") &&
-        typeof obj.authorNameEndpoint === "object" &&
-        obj.authorNameEndpoint !== null &&
-        typeof obj.authorNameEndpoint.browseEndpoint === "object" &&
-        obj.authorNameEndpoint.browseEndpoint !== null &&
-        typeof obj.authorNameEndpoint.browseEndpoint.browseId === "string" &&
-        typeof obj.authorNameEndpoint.browseEndpoint.canonicalBaseUrl ===
-          "string"
-      );
-    }
-    function nameRewriteOfCommentViewModel(commentViewModel) {
-      const commentViewModelBody =
-        commentViewModel.__shady_native_children.namedItem("body");
-      if (commentViewModelBody === null) {
-        throw debugErr(new Error("Comment view model body is null."));
-      }
-      const isNameContainerRender =
-        commentViewModel.authorCommentBadge !== null;
-      let nameElem = commentViewModel.querySelector(
-        "#body > #main > #header > #header-author > h3 > a > span",
-      );
-      const userId =
-        commentViewModel.authorNameEndpoint.browseEndpoint.browseId;
-      const userHandle =
-        commentViewModel.authorNameEndpoint.browseEndpoint.canonicalBaseUrl.substring(
-          1,
-        );
-      if (isNameContainerRender) {
-        const containerMain =
-          commentViewModelBody.__shady_native_children.namedItem("main");
-        if (containerMain !== null) {
-          nameElem = containerMain.querySelector(
-            "#header > #header-author > #author-comment-badge > ytd-author-comment-badge-renderer > a > #channel-name > #container > #text-container > yt-formatted-string",
-          );
-        }
-      }
-      void getUserName(userId)
-        .then((name) => {
-          if (nameElem !== null) {
-            if (nameElem.getAttribute("is-empty") !== null) {
-              nameElem.removeAttribute("is-empty");
-            }
-            let innerText = name;
-            if (window.__rycu.settings.isShowNameToHandle) {
-              innerText = decodeURI(userHandle) + `  ( ${name} )`;
-            }
-            if (window.__rycu.settings.isShowHandleToName) {
-              innerText = name + `  ( ${decodeURI(userHandle)} )`;
-            }
-            if (isNameContainerRender) {
-              nameElem.textContent = escapeString(innerText);
-            } else {
-              nameElem.textContent = innerText;
-            }
-          } else {
-            debugErr(new Error("Name element is null"));
-          }
-        })
-        .catch((e) => {
-          debugErr(e);
-        });
-    }
-
-    // src/rewrites/rewriteOfCommentRenderer/mentionRewriteOfCommentRendererV2.ts
-    function mentionRewriteOfCommentRendererV2(commentRenderer) {
-      const commentRendererBody =
-        commentRenderer.__shady_native_children.namedItem("body");
-      const main2 = commentRendererBody?.querySelector("#main");
-      if (main2 !== void 0 && main2 !== null) {
-        const aTags = main2.querySelectorAll(
-          "#expander > #content > #content-text > span > span > a",
-        );
-        for (let i = 0; i < aTags.length; i++) {
-          if (aTags[i].getAttribute("href")?.match("/channel/.*") !== null) {
-            const href = aTags[i].getAttribute("href");
-            if (href !== null) {
-              void getUserName(href.split("/")[2])
-                .then((name) => {
-                  aTags[i].textContent = `@${name} `;
-                })
-                .catch((e) => {
-                  debugErr(e);
-                });
-            } else {
-              debugErr(new Error("Mention Atag has not Href attr."));
-            }
-          }
-        }
-      }
-    }
-
-    // src/rewrites/reply.ts
-    function rewriteReplytNameFromContinuationItems(continuationItems) {
-      debugLog("Rewrite Reply.");
-      if (isReplyContinuationItemsV1(continuationItems)) {
-        debugLog("Rewrite reply of continuationItems.");
-        for (let i = 0; i < continuationItems.length; i++) {
-          const { commentRenderer } = continuationItems[i];
-          if (commentRenderer !== void 0) {
-            void getReplyElem(commentRenderer.trackingParams, "V1").then(
-              (replyElem) => {
-                reWriteReplyElem(replyElem, commentRenderer);
-              },
-            );
-          }
-        }
-      }
-      if (isReplyContinuationItemsV2(continuationItems)) {
-        debugLog("Rewrite reply of comment view model.");
-        for (let i = 0; i < continuationItems.length; i++) {
-          const { commentViewModel } = continuationItems[i];
-          if (commentViewModel !== void 0) {
-            void getReplyElem(
-              commentViewModel.rendererContext.loggingContext.loggingDirectives
-                .trackingParams,
-              "V2",
-            ).then((replyElem) => {
-              reWriteReplyElemV2(replyElem);
-            });
-          }
-        }
-      }
-    }
-    function reWriteReplyElem(replyElem, rendererData) {
-      let isContainer = rendererData.authorIsChannelOwner;
-      if (rendererData.authorCommentBadge !== void 0) {
-        isContainer = true;
-      }
-      nameRewriteOfCommentRenderer(
-        replyElem,
-        isContainer,
-        rendererData.authorEndpoint.browseEndpoint.browseId,
-      );
-      mentionRewriteOfCommentRenderer(replyElem);
-      replyInputRewrite(replyElem);
-    }
-    function reWriteReplyElemV2(replyElem) {
-      nameRewriteOfCommentViewModel(replyElem);
-      mentionRewriteOfCommentRendererV2(replyElem);
-      replyInputRewrite(replyElem);
-    }
-    async function getReplyElem(trackedParams, version) {
-      return await new Promise((resolve) => {
-        const selector =
-          "#replies > ytd-comment-replies-renderer > #expander > #expander-contents > #contents > " +
-          (version === "V1"
-            ? "ytd-comment-renderer"
-            : "ytd-comment-view-model");
-        const commentRenderer = findElementByTrackingParams(
-          trackedParams,
-          selector,
-        );
-        if (commentRenderer !== null) {
-          resolve(commentRenderer);
-        } else {
-          void reSearchElement(trackedParams, selector).then(
-            (commentRenderer2) => {
-              resolve(commentRenderer2);
-            },
-          );
-        }
-      });
-    }
-    function rewriteTeaserReplytNameFromContinuationItems(continuationItems) {
-      debugLog("Rewrite teaser Reply.");
-      for (let i = 0; i < continuationItems.length; i++) {
-        if (isReplyContinuationItemsV1(continuationItems)) {
-          debugLog("Teaser reply of continuationItems.");
-          const { commentRenderer } = continuationItems[i];
-          if (commentRenderer !== void 0) {
-            void reSearchElementAllByCommentId(
-              commentRenderer.commentId,
-              "ytd-comment-replies-renderer > #teaser-replies > ytd-comment-renderer",
-            ).then((replyElems) => {
-              replyElems.forEach((replyElem) => {
-                reWriteReplyElem(replyElem, commentRenderer);
-              });
-            });
-            void reSearchElementAllByCommentId(
-              commentRenderer.commentId,
-              "ytd-comment-replies-renderer > #expander > #expander-contents > #contents > ytd-comment-renderer",
-            ).then((replyElems) => {
-              replyElems.forEach((replyElem) => {
-                reWriteReplyElem(replyElem, commentRenderer);
-              });
-            });
-          }
-        }
-        if (isReplyContinuationItemsV2(continuationItems)) {
-          debugLog("Teaser reply of comment view model.");
-          const { commentViewModel } = continuationItems[i];
-          if (commentViewModel !== void 0) {
-            const elem = findElementByTrackingParams(
-              commentViewModel.rendererContext.loggingContext.loggingDirectives
-                .trackingParams,
-              "#teaser-replies > ytd-comment-view-model",
-            );
-            if (elem === null) {
-              throw debugErr(
-                new Error("Can not found Teaser Reply in V2 Elem."),
-              );
-            }
-            reWriteReplyElemV2(elem);
-          }
-        }
-      }
-    }
-    function replyInputRewrite(replyElem) {
-      const replyToReplyBtn = replyElem.querySelector(
-        "#reply-button-end > ytd-button-renderer",
-      );
-      const replyToReplyHander = () => {
-        const replyLink = replyElem.querySelector("#contenteditable-root > a");
-        const href = replyLink?.getAttribute("href");
-        const channelId = href?.split("/")[2];
-        if (channelId !== void 0 && replyLink !== null) {
-          void getUserName(channelId).then((name) => {
-            replyLink.textContent = ` @${name}`;
-          });
-        }
-        replyToReplyBtn?.removeEventListener("click", replyToReplyHander);
-      };
-      replyToReplyBtn?.addEventListener("click", replyToReplyHander);
-      document.addEventListener("rycu-pagechange", () => {
-        replyToReplyBtn?.removeEventListener("click", replyToReplyHander);
-      });
-    }
-
-    // src/rewrites/comment.ts
-    function rewriteCommentNameFromContinuationItems(continuationItems) {
-      debugLog("Rewrite Comment.");
-      for (let i = 0; i < continuationItems.length; i++) {
-        if (continuationItems[i].commentThreadRenderer !== void 0) {
-          void getCommentElem(
-            continuationItems[i].commentThreadRenderer.trackingParams,
-          ).then((commentElem) => {
-            reWriteCommentElem(
-              commentElem,
-              continuationItems[i].commentThreadRenderer,
-            );
-          });
-          const teaserContents =
-            continuationItems[i].commentThreadRenderer.replies
-              ?.commentRepliesRenderer.teaserContents;
-          if (teaserContents !== void 0) {
-            rewriteTeaserReplytNameFromContinuationItems(teaserContents);
-          }
-        }
-      }
-    }
-    function reWriteCommentElem(commentElem, commentThreadRenderer) {
-      const commentContainer =
-        commentElem.__shady_native_children.namedItem("comment-container");
-      if (commentContainer === null) {
-        throw debugErr(
-          new Error("Failed to found a named item 'comment-container'"),
-        );
-      }
-      const commentRenderer =
-        commentContainer.__shady_native_children.namedItem("comment");
-      if (commentRenderer === null || commentRenderer === void 0) {
-        throw debugErr("Failed to found a named item 'comment'.");
-      }
-      if (isConfinuationItemV2(commentThreadRenderer)) {
-        debugLog("Rewriteing a comment by using comment view model.");
-        const commentViewModel = commentRenderer;
-        if (isCommentViewModelElement(commentViewModel)) {
-          nameRewriteOfCommentViewModel(commentViewModel);
-        } else {
-          debugErr("It type is not comment view model.");
-        }
-      } else {
-        debugErr("Unknown comment model type.");
-      }
-    }
-    async function getCommentElem(trackingParams) {
-      return await new Promise((resolve) => {
-        const commentElem = findElementByTrackingParams(
-          trackingParams,
-          "#comments > #sections > #contents > ytd-comment-thread-renderer",
-        );
-        if (commentElem !== null) {
-          resolve(commentElem);
-        } else {
-          void reSearchElement(trackingParams, "ytd-comment-thread-renderer")
-            .then((commentElem2) => {
-              resolve(commentElem2);
-            })
-            .catch((e) => {
-              debugErr(e);
-            });
-        }
-      });
-    }
-
-    // src/handlers/handleYtAppendContinuationItemsAction.ts
-    function handleYtAppendContinuationItemsAction(detail) {
-      const continuationItems =
-        detail.args[0].appendContinuationItemsAction.continuationItems;
-      if (
-        isCommentRenderer(continuationItems) ||
-        isCommentRendererV2(continuationItems)
-      ) {
-        const replyDetail = detail;
-        setTimeout(() => {
-          rewriteReplytNameFromContinuationItems(
-            replyDetail.args[0].appendContinuationItemsAction.continuationItems,
-          );
-        }, 100);
-      } else {
-        const commentDetail = detail;
-        setTimeout(() => {
-          rewriteCommentNameFromContinuationItems(
-            commentDetail.args[0].appendContinuationItemsAction
-              .continuationItems,
-          );
-        }, 400);
-      }
-    }
-
-    // src/handlers/handleYtCreateCommentAction.ts
-    function handleYtCreateCommentAction(detail) {
-      const createCommentDetail = detail;
-      const continuationItems = [
-        {
-          commentThreadRenderer:
-            createCommentDetail.args[0].createCommentAction.contents
-              .commentThreadRenderer,
-        },
-      ];
-      setTimeout(() => {
-        rewriteCommentNameFromContinuationItems(continuationItems);
-      }, 100);
-    }
-
-    // src/handlers/handleYtCreateCommentReplyAction.ts
-    function handleYtCreateCommentReplyAction(detail) {
-      const createReplyDetail = detail;
-      const continuationItems = [
-        {
-          commentRenderer:
-            createReplyDetail.args[0].createCommentReplyAction.contents
-              .commentRenderer,
-        },
-      ];
-      setTimeout(() => {
-        rewriteTeaserReplytNameFromContinuationItems(continuationItems);
-      }, 100);
-    }
-
-    // src/rewrites/highlightedReply.ts
-    function rewriteHighlightedReply(trackedParams) {
-      getReplyElem2(trackedParams, "V1").then((replyElem) => {
-        reWriteReplyElemV2(replyElem);
-      });
-    }
-    function rewriteHighlightedReplyV2(trackedParams) {
-      getReplyElem2(trackedParams, "V2").then((replyElem) => {
-        reWriteReplyElemV2(replyElem);
-      });
-    }
-    async function getReplyElem2(trackedParams, version) {
-      return await new Promise((resolve) => {
-        const selector =
-          "ytd-comment-replies-renderer > #teaser-replies > " +
-          (version === "V1"
-            ? "ytd-comment-renderer"
-            : "ytd-comment-view-model");
-        const commentRenderer = findElementByTrackingParams(
-          trackedParams,
-          selector,
-        );
-        if (commentRenderer !== null) {
-          resolve(commentRenderer);
-        } else {
-          void reSearchElement(trackedParams, selector).then(
-            (commentRenderer2) => {
-              resolve(commentRenderer2);
-            },
-          );
-        }
-      });
-    }
-
-    // src/handlers/handleYtGetMultiPageMenuAction.ts
-    function handleYtGetMultiPageMenuAction(detail) {
-      debugLog("handleYtGetMultiPageMenuAction");
-      const getMultiPageMenuDetail = detail;
-      const continuationItems =
-        getMultiPageMenuDetail.args[0].getMultiPageMenuAction.menu
-          .multiPageMenuRenderer.sections[1].itemSectionRenderer?.contents;
-      const highLightedTeaserContents =
-        getMultiPageMenuDetail.args[0]?.getMultiPageMenuAction?.menu
-          ?.multiPageMenuRenderer.sections[1].itemSectionRenderer?.contents[0]
-          ?.commentThreadRenderer.replies?.commentRepliesRenderer
-          ?.teaserContents;
-      if (continuationItems !== void 0) {
-        setTimeout(() => {
-          rewriteCommentNameFromContinuationItems(continuationItems);
-          if (highLightedTeaserContents !== void 0) {
-            debugLog("HighLighted Teaser Reply found.");
-            if (isReplyContinuationItemsV1(highLightedTeaserContents)) {
-              debugLog("highLighted Teaser Reply V1");
-              const highLightedReplyRenderer =
-                highLightedTeaserContents[0]?.commentRenderer;
-              rewriteHighlightedReply(highLightedReplyRenderer.trackingParams);
-            } else {
-              debugLog("highLighted Teaser Reply V2");
-              const commentViewModel =
-                highLightedTeaserContents[0]?.commentViewModel;
-              const trackingParams =
-                commentViewModel.rendererContext.loggingContext
-                  .loggingDirectives.trackingParams;
-              rewriteHighlightedReplyV2(trackingParams);
-            }
-          }
-        }, 100);
-      }
-    }
-
-    // src/handlers/handleYtHistory.ts
-    function handleYtHistory(detail) {
-      const historyDetail = detail;
-      const continuationItems =
-        historyDetail.args[1].historyEntry?.rootData.response.contents
-          .twoColumnWatchNextResults?.results?.results?.contents[3]
-          ?.itemSectionRenderer?.contents;
-      if (continuationItems !== void 0) {
-        setTimeout(() => {
-          rewriteCommentNameFromContinuationItems(continuationItems);
-        }, 100);
-      }
-    }
-
-    // src/handlers/handleYtReloadContinuationItemsCommand.ts
-    function handleYtReloadContinuationItemsCommand(detail) {
-      const reloadDetail = detail;
-      const { slot } = reloadDetail.args[0].reloadContinuationItemsCommand;
-      if (slot === "RELOAD_CONTINUATION_SLOT_BODY") {
-        const continuationItems =
-          reloadDetail.args[0].reloadContinuationItemsCommand.continuationItems;
-        if (continuationItems !== void 0) {
-          setTimeout(() => {
-            rewriteCommentNameFromContinuationItems(continuationItems);
-          }, 100);
-        }
-      }
-    }
-
-    // src/index.ts
-    function main() {
-      const settings = {
-        isShowHandleToName: false,
-        isShowNameToHandle: false,
-      };
-      window.__rycu = {
-        settings,
-      };
-      if (getRunningRuntime() === "Extension") {
-        bypassSendMessage(
-          {
-            type: "getShowHandleToName",
-            value: null,
-          },
-          {},
-          (isShowHandleToName) => {
-            window.__rycu.settings.isShowHandleToName = isShowHandleToName;
-          },
-        );
-        bypassSendMessage(
-          {
-            type: "getShowNameToHandle",
-            value: null,
-          },
-          {},
-          (isShowNameToHandle) => {
-            window.__rycu.settings.isShowNameToHandle = isShowNameToHandle;
-          },
-        );
-      }
-      const handleYtAction = (e) => {
-        switch (e.detail.actionName) {
-          case "yt-append-continuation-items-action":
-            handleYtAppendContinuationItemsAction(e.detail);
-            break;
-          case "yt-reload-continuation-items-command":
-            handleYtReloadContinuationItemsCommand(e.detail);
-            break;
-          case "yt-history-load":
-            handleYtHistory(e.detail);
-            break;
-          case "yt-get-multi-page-menu-action":
-            handleYtGetMultiPageMenuAction(e.detail);
-            break;
-          case "yt-create-comment-action":
-            handleYtCreateCommentAction(e.detail);
-            break;
-          case "yt-create-comment-reply-action":
-            handleYtCreateCommentReplyAction(e.detail);
-            break;
-        }
-      };
-      document.addEventListener("yt-action", handleYtAction);
-      document.addEventListener("yt-navigate-finish", () => {
-        document.dispatchEvent(new Event("rycu-pagechange"));
-        outputDebugInfo();
-      });
-    }
-    main();
+    return { attachObserverIfNeeded, reset };
   })();
-}
 
-if (location.href.match("https://www.youtube.com/*") !== null) {
-  document.addEventListener("DOMContentLoaded", () => {
-    const script = document.createElement("script");
-    if (unsafeWindow.trustedTypes !== undefined) {
-      const policy = unsafeWindow.trustedTypes.createPolicy(
-        "crx-monkey-trusted-inject-policy",
-        { createScript: (input) => input },
-      );
-      script.text = policy.createScript(
-        script.text + `(${c3JjL2luZGV4LnRz.toString()})();`,
-      );
-    } else {
-      script.innerHTML =
-        script.innerHTML + `(${c3JjL2luZGV4LnRz.toString()})();`;
+  /**********************
+   * Comments Module
+   **********************/
+  const Comments = (() => {
+    // We try to observe a reasonably scoped container when possible.
+    // If we can’t find a stable root, yt-action + periodic scan acts as fallback.
+    const observers = new Map(); // Element -> MutationObserver
+
+    let scanTimer = null;
+    let lastScanAt = 0;
+
+    function scheduleScan(delay = 0) {
+      const t = now();
+      const dueIn = Math.max(delay, CFG.scanDebounceMs - (t - lastScanAt));
+      if (scanTimer) return;
+      scanTimer = setTimeout(() => {
+        scanTimer = null;
+        lastScanAt = now();
+        scanAllCommentAuthors();
+      }, dueIn);
     }
-    unsafeWindow.document.body.appendChild(script);
-  });
-}
+
+    function findLikelyCommentContainers() {
+      const targets = new Set();
+
+      // Common watch page comments root
+      const commentsRoot = document.querySelector('#comments');
+      if (commentsRoot) targets.add(commentsRoot);
+
+      // Sometimes ytd-comments exists
+      const ytdComments = document.querySelector('ytd-comments');
+      if (ytdComments) targets.add(ytdComments);
+
+      // Shorts / engagement panels often contain comment threads
+      const firstThread = document.querySelector('ytd-comment-thread-renderer');
+      if (firstThread) {
+        const panel = firstThread.closest('ytd-engagement-panel-section-list-renderer');
+        if (panel) targets.add(panel);
+        const itemSection = firstThread.closest('ytd-item-section-renderer');
+        if (itemSection) targets.add(itemSection);
+      }
+
+      return Array.from(targets).filter(Boolean);
+    }
+
+    function attachObserversIfNeeded() {
+      const containers = findLikelyCommentContainers();
+      for (const c of containers) {
+        if (!isElement(c)) continue;
+        if (observers.has(c)) continue;
+
+        const mo = new MutationObserver((mutList) => {
+          for (const mut of mutList) {
+            for (const node of mut.addedNodes) {
+              // Only scan the new subtree
+              scanCommentAuthorsUnder(node);
+            }
+          }
+        });
+
+        // Comments DOM can update deep; subtree true is needed, but we keep it scoped to container
+        mo.observe(c, { childList: true, subtree: true });
+        observers.set(c, mo);
+
+        // Initial scan of this container
+        scanCommentAuthorsUnder(c);
+      }
+
+      // Clean up removed containers
+      for (const [el, mo] of observers.entries()) {
+        if (!document.contains(el)) {
+          try { mo.disconnect(); } catch (_) { }
+          observers.delete(el);
+        }
+      }
+    }
+
+    function reset() {
+      for (const [, mo] of observers.entries()) {
+        try { mo.disconnect(); } catch (_) { }
+      }
+      observers.clear();
+    }
+
+    function scanAllCommentAuthors() {
+      // Safety: keep scanning scoped to known comment components
+      const threads = document.querySelectorAll('ytd-comment-thread-renderer');
+      let count = 0;
+      for (const t of threads) {
+        scanCommentAuthorsUnder(t, () => {
+          count++;
+          return count < CFG.scanMaxPerPass;
+        });
+        if (count >= CFG.scanMaxPerPass) break;
+      }
+    }
+
+    function scanCommentAuthorsUnder(root, allowContinueFn) {
+      if (!isElement(root) && root !== document) return;
+
+      // Strategy:
+      // Prefer anchors pointing to "/@handle" (author links & sometimes mentions).
+      // Then choose the innermost text element (span / yt-formatted-string).
+      const anchors = root.querySelectorAll
+        ? root.querySelectorAll('a[href^="/@"]')
+        : [];
+
+      for (const a of anchors) {
+        if (allowContinueFn && !allowContinueFn()) return;
+
+        // Prefer typical author name nodes inside the anchor
+        const inner =
+          a.querySelector('span') ||
+          a.querySelector('yt-formatted-string');
+
+        // If inner exists, process it, else process anchor itself
+        if (inner) {
+          processAuthorElement(inner);
+        } else {
+          processAuthorElement(a);
+        }
+      }
+    }
+
+    return { attachObserversIfNeeded, reset, scheduleScan };
+  })();
+
+  /**********************
+   * Return-script-like robustness: yt-action / yt-navigate-finish hooks
+   **********************/
+  function hookYouTubeEvents() {
+    // “yt-action” gives us reliable moments to rescan when new comments load / replies expand
+    document.addEventListener('yt-action', (e) => {
+      const d = e && e.detail;
+      const actionName = d && d.actionName;
+      if (!actionName) return;
+
+      switch (actionName) {
+        // These are the same family that Return YouTube Comment Username listens for
+        case 'yt-append-continuation-items-action':
+          Comments.scheduleScan(350);
+          break;
+        case 'yt-reload-continuation-items-command':
+          Comments.scheduleScan(120);
+          break;
+        case 'yt-history-load':
+          Comments.scheduleScan(120);
+          break;
+        case 'yt-get-multi-page-menu-action':
+          Comments.scheduleScan(120);
+          break;
+        case 'yt-create-comment-action':
+          Comments.scheduleScan(120);
+          break;
+        case 'yt-create-comment-reply-action':
+          Comments.scheduleScan(120);
+          break;
+        default:
+          // ignore other actions
+          break;
+      }
+    });
+
+    // SPA navigation: re-init observation + scan
+    document.addEventListener('yt-navigate-finish', () => {
+      // Reset state that depends on page DOM
+      LiveChat.reset();
+      Comments.reset();
+
+      // Reattach + rescan after a tiny delay (DOM often changes just after navigate-finish)
+      setTimeout(() => {
+        LiveChat.attachObserverIfNeeded();
+        Comments.attachObserversIfNeeded();
+        Comments.scheduleScan(80);
+      }, 80);
+    });
+  }
+
+  /**********************
+   * Bootstrap / reattach loop
+   **********************/
+  async function bootstrap() {
+    hookYouTubeEvents();
+
+    // Wait until documentElement exists (document-start safe)
+    while (!document.documentElement) await sleep(20);
+
+    // Reattach loop: “won’t die” core
+    setInterval(() => {
+      LiveChat.attachObserverIfNeeded();
+      Comments.attachObserversIfNeeded();
+    }, CFG.reattachInterval);
+
+    // Initial attach attempt
+    LiveChat.attachObserverIfNeeded();
+    Comments.attachObserversIfNeeded();
+    Comments.scheduleScan(200);
+
+    // Also scan once after DOMContentLoaded to catch late layouts
+    document.addEventListener('DOMContentLoaded', () => {
+      Comments.attachObserversIfNeeded();
+      Comments.scheduleScan(120);
+    }, { once: true });
+  }
+
+  bootstrap().catch(() => { });
+})();

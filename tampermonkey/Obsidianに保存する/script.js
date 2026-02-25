@@ -1,14 +1,17 @@
 // ==UserScript==
 // @name         Obsidianに保存する
 // @namespace    local.obsidian.capture
-// @version      1.0
-// @description  選択があれば選択範囲、なければ直近で触った返答をObsidianのDaily Noteに追記（ダークモード対応）
+// @version      2.6
+// @description  選択があれば選択範囲、なければ直近で触った返答をマークダウン形式でObsidianの新規ノートに保存（アイコン化・SVGフォールバック・履歴サイト横断・表/チェックリスト強化）
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @match        https://gemini.google.com/*
 // @match        https://t3.chat/*
 // @match        https://claude.ai/*
 // @grant        GM_setClipboard
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @require      https://unpkg.com/turndown@7.1.2/dist/turndown.js
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Obsidianに保存する/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Obsidianに保存する/script.js
 // @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Obsidianに保存する/icon_128.png
@@ -18,14 +21,481 @@
   "use strict";
 
   const VAULT_NAME = "iCloud Vault";
-  const BUTTON_TEXT = "📌 Dailyへ追記";
   const PREFIX = "\n\n";
   const SUFFIX = "\n";
+  const INBOX_FOLDER = "00 Inbox";
 
-  function getSelectionText() {
+  // 共有ストレージ（GM_*）で使うキー
+  const LAST_NOTE_KEY = "obsidian_last_note_path";
+  const CREATED_NOTES_KEY = "obsidian_created_notes";
+
+  // Windowsでファイル名に使えない文字（Obsidian vaultがWindows上にある前提ならこれが一番安全）
+const WINDOWS_FORBIDDEN_CHARS_RE = /[\\\/:*?"<>|]/g;
+const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
+
+// Windowsの予約語（拡張子が付いていてもダメ）
+const WINDOWS_RESERVED_NAMES = new Set([
+  "CON","PRN","AUX","NUL",
+  "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+  "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9",
+]);
+
+function validateWindowsFileName(name) {
+  // 入力前提：拡張子はスクリプト側で付けるので、ここは「ベース名」だけでもOK
+  const raw = String(name ?? "");
+
+  if (!raw.trim()) {
+    return { ok: false, message: "ファイル名が空です。" };
+  }
+
+  // 前後空白はユーザーの意図が薄いので禁止寄りにする（最低でも末尾の空白は禁止）
+  if (/[ \t]+$/.test(raw)) {
+    return { ok: false, message: "末尾にスペースが入っています（WindowsではNGです）。" };
+  }
+  if (/\.+$/.test(raw)) {
+    return { ok: false, message: "末尾がピリオド(.)です（WindowsではNGです）。" };
+  }
+
+  // 禁止文字
+  if (WINDOWS_FORBIDDEN_CHARS_RE.test(raw)) {
+    return { ok: false, message: '禁止文字が含まれています: \\ / : * ? " < > |' };
+  }
+  if (CONTROL_CHARS_RE.test(raw)) {
+    return { ok: false, message: "制御文字（見えない文字）が含まれています。" };
+  }
+
+  // 予約語（CON.txt みたいなのもNGなので、拡張子を落として判定）
+  const base = raw.split(".")[0].trim().toUpperCase();
+  if (WINDOWS_RESERVED_NAMES.has(base)) {
+    return { ok: false, message: `Windows予約語（${base}）はファイル名に使えません。` };
+  }
+
+  // 長さ（余裕を見て 180 くらいで止める：日付やフォルダも足されるので）
+  // Obsidian/URI/ファイルパス長も絡むので控えめに
+  if (raw.length > 180) {
+    return { ok: false, message: "ファイル名が長すぎます（180文字以内にしてください）。" };
+  }
+
+  return { ok: true, message: "" };
+}
+
+// “置換して強制セーフ名にする”方も一応用意（使うかは後述）
+function sanitizeWindowsFileName(name) {
+  return String(name ?? "")
+    .replace(CONTROL_CHARS_RE, "")
+    .replace(WINDOWS_FORBIDDEN_CHARS_RE, " ")
+    .replace(/[ \t]+$/g, "")
+    .replace(/\.+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+  // =========================
+  // 履歴ストレージ（サイト横断）
+  // =========================
+
+  function getCreatedNotes() {
+    return GM_getValue(CREATED_NOTES_KEY, []);
+  }
+
+  function saveCreatedNote(filepath) {
+    const notes = getCreatedNotes();
+    if (!notes.includes(filepath)) {
+      notes.push(filepath);
+      GM_setValue(CREATED_NOTES_KEY, notes);
+    }
+  }
+
+  function noteExists(filepath) {
+    const notes = getCreatedNotes();
+    return notes.includes(filepath);
+  }
+
+  function saveLastNotePath(filepath) {
+    GM_setValue(LAST_NOTE_KEY, filepath);
+  }
+
+  function getLastNotePath() {
+    return GM_getValue(LAST_NOTE_KEY, null);
+  }
+
+  // 既存の localStorage（サイト別）に履歴が残っている場合、各サイトで1回だけGMへ移行して統合
+  function migrateLocalStorageToGMOncePerHost() {
+    const migratedKey = `obsidian_migrated_to_gm_v1__${location.hostname}`;
+    if (GM_getValue(migratedKey, false)) return;
+
+    try {
+      const lsLast = localStorage.getItem(LAST_NOTE_KEY);
+      const gmLast = GM_getValue(LAST_NOTE_KEY, null);
+      if (lsLast && !gmLast) {
+        GM_setValue(LAST_NOTE_KEY, lsLast);
+      }
+
+      const lsCreatedRaw = localStorage.getItem(CREATED_NOTES_KEY);
+      if (lsCreatedRaw) {
+        let lsCreated = [];
+        try {
+          lsCreated = JSON.parse(lsCreatedRaw) || [];
+        } catch {
+          lsCreated = [];
+        }
+
+        const gmCreated = GM_getValue(CREATED_NOTES_KEY, []);
+        const merged = Array.from(new Set([...gmCreated, ...lsCreated]));
+        GM_setValue(CREATED_NOTES_KEY, merged);
+      }
+
+      GM_setValue(migratedKey, true);
+    } catch {
+      // 失敗しても致命的ではないので無視
+    }
+  }
+
+  // =========================
+  // Icon (Webfont -> SVG fallback)
+  // =========================
+
+  const MATERIAL_SYMBOLS_HREF =
+    'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&icon_names=calendar_add_on,note_add,replay';
+
+  // ChatGPT / Claude は CSP で fonts.googleapis.com がブロックされがち → 最初からSVG固定
+  function forceSvgHost() {
+    const h = location.hostname;
+    return (
+      h.includes("chatgpt.com") ||
+      h.includes("chat.openai.com") ||
+      h.includes("claude.ai")
+    );
+  }
+
+  function ensureMaterialSymbolsCss() {
+    if (forceSvgHost()) return;
+    if (document.querySelector(`link[data-obsidian-ms="1"][href="${MATERIAL_SYMBOLS_HREF}"]`)) return;
+
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = MATERIAL_SYMBOLS_HREF;
+    link.dataset.obsidianMs = "1";
+    document.head.appendChild(link);
+  }
+
+  // あなたが貼ってくれた path d（Material Symbols の 960x960 座標系）
+  const SVG_PATHS = {
+    calendar_add_on:
+      "M700-80v-120H580v-60h120v-120h60v120h120v60H760v120h-60Zm-520-80q-24 0-42-18t-18-42v-540q0-24 18-42t42-18h65v-60h65v60h260v-60h65v60h65q24 0 42 18t18 42v302q-15-2-30-2t-30 2v-112H180v350h320q0 15 3 30t8 30H180Zm0-470h520v-130H180v130Zm0 0v-130 130Z",
+    note_add:
+      "M450-234h60v-129h130v-60H510v-130h-60v130H320v60h130v129ZM220-80q-24 0-42-18t-18-42v-680q0-24 18-42t42-18h361l219 219v521q0 24-18 42t-42 18H220Zm331-554v-186H220v680h520v-494H551ZM220-820v186-186 680-680Z",
+    replay:
+      "M339.5-108Q274-136 225-185t-77-114.5Q120-365 120-440h60q0 125 87.5 212.5T480-140q125 0 212.5-87.5T780-440q0-125-85-212.5T485-740h-23l73 73-41 42-147-147 147-147 41 41-78 78h23q75 0 140.5 28T735-695q49 49 77 114.5T840-440q0 75-28 140.5T735-185q-49 49-114.5 77T480-80q-75 0-140.5-28Z",
+  };
+
+  function makeSvgIcon(iconName, sizePx = 22) {
+    const pathD = SVG_PATHS[iconName];
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+
+    // Material Symbols のパスは 960x960 & Yがマイナス方向の座標系
+    svg.setAttribute("viewBox", "0 -960 960 960");
+    svg.setAttribute("width", String(sizePx));
+    svg.setAttribute("height", String(sizePx));
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.display = "block";
+
+    const path = document.createElementNS(svgNS, "path");
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("d", pathD || "M0 0");
+    svg.appendChild(path);
+
+    return svg;
+  }
+
+  function makeFontIcon(iconName) {
+    const span = document.createElement("span");
+    span.className = "material-symbols-outlined obsidian-capture-icon";
+    span.textContent = iconName;
+    span.dataset.iconName = iconName;
+    span.setAttribute("aria-hidden", "true");
+    return span;
+  }
+
+  function canUseMaterialSymbolsFont() {
+    try {
+      return !!document.fonts?.check?.('16px "Material Symbols Outlined"');
+    } catch {
+      return false;
+    }
+  }
+
+  async function fallbackIconsIfNeeded(rootEl, timeoutMs = 1200) {
+    if (forceSvgHost()) return;
+
+    const waitFonts = (async () => {
+      if (!document.fonts?.ready) return;
+      await document.fonts.ready;
+    })();
+
+    const waitTimeout = new Promise((resolve) => setTimeout(resolve, timeoutMs));
+    await Promise.race([waitFonts, waitTimeout]);
+
+    if (canUseMaterialSymbolsFont()) return;
+
+    const spans = rootEl.querySelectorAll(".obsidian-capture-icon[data-icon-name]");
+    for (const span of spans) {
+      const iconName = span.dataset.iconName;
+      span.replaceWith(makeSvgIcon(iconName, 22));
+    }
+  }
+
+  function makeIconButton({ iconName, label, onClick }) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "obsidian-capture-btn";
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.addEventListener("click", onClick);
+
+    if (forceSvgHost()) {
+      btn.appendChild(makeSvgIcon(iconName, 22));
+    } else {
+      btn.appendChild(makeFontIcon(iconName));
+    }
+    return btn;
+  }
+
+  // =========================
+  // Turndownインスタンスの初期化（表/チェックリスト強化）
+  // =========================
+
+  let turndownService = null;
+
+  function escapePipes(s) {
+    return String(s).replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+  }
+
+  function tableToMarkdown(rows) {
+    if (!rows || !rows.length) return "";
+
+    const colCount = Math.max(...rows.map(r => (r ? r.length : 0)), 0);
+    if (colCount === 0) return "";
+
+    const norm = (r) => {
+      const out = (r || []).slice(0, colCount);
+      while (out.length < colCount) out.push("");
+      return out;
+    };
+
+    const header = norm(rows[0]).map(escapePipes);
+    const sep = new Array(colCount).fill("---");
+
+    const lines = [];
+    lines.push(`| ${header.join(" | ")} |`);
+    lines.push(`| ${sep.join(" | ")} |`);
+
+    for (const r of rows.slice(1)) {
+      const row = norm(r).map(escapePipes);
+      lines.push(`| ${row.join(" | ")} |`);
+    }
+
+    return "\n\n" + lines.join("\n") + "\n\n";
+  }
+
+  function initTurndown() {
+    if (typeof TurndownService === "undefined") {
+      console.error("Turndown library not loaded");
+      return null;
+    }
+
+    const service = new TurndownService({
+      headingStyle: "atx",
+      hr: "---",
+      bulletListMarker: "-",
+      codeBlockStyle: "fenced",
+      fence: "```",
+      emDelimiter: "*",
+      strongDelimiter: "**",
+      linkStyle: "inlined",
+      linkReferenceStyle: "full",
+    });
+
+    // --- コードブロックを強く拾う（pre は fenced に）---
+    service.addRule("fencedCodeBlockStrong", {
+      filter(node) {
+        return node && node.nodeName === "PRE";
+      },
+      replacement(content, node) {
+        const raw = node.textContent || "";
+        const cleaned = raw
+          .replace(/^\s*コードをコピーする\s*\n?/m, "")
+          .replace(/^\s*Copy code\s*\n?/m, "");
+
+        let lang = "";
+        const code = node.querySelector("code");
+        const cls = code && code.className ? code.className : "";
+        const m = cls.match(/language-([a-z0-9_-]+)/i);
+        if (m) lang = m[1];
+
+        const body = cleaned.replace(/\n$/, "");
+        return `\n\n\`\`\`${lang}\n${body}\n\`\`\`\n\n`;
+      }
+    });
+
+    // --- タスクリストを強制（li内のcheckboxをGFMに） ---
+    // --- タスクリストを強制（ChatGPTの構造も拾う） ---
+service.addRule("taskListItemsCustom", {
+  filter(node) {
+    if (!node || node.nodeName !== "LI") return false;
+
+    // 1) いままでの正攻法（input/role）
+    if (node.querySelector('input[type="checkbox"], [role="checkbox"]')) return true;
+
+    // 2) markdown-it系の典型（ChatGPTで出がち）
+    // <ul class="contains-task-list"><li class="task-list-item">...
+    const liClass = node.className || "";
+    const ul = node.closest && node.closest("ul");
+    const ulClass = ul ? (ul.className || "") : "";
+
+    if (/(^|\s)task-list-item(\s|$)/.test(liClass)) return true;
+    if (/(^|\s)contains-task-list(\s|$)/.test(ulClass)) return true;
+
+    // 3) チェックUIがSVGやspanで描かれてるケースの保険
+    // （aria-checked / data-state / data-checked 等を拾う）
+    if (node.querySelector('[aria-checked], [data-state], [data-checked]')) return true;
+
+    // 4) 最後の保険：先頭にチェックっぽい記号が含まれる
+    const t = (node.textContent || "").trim();
+    return /^(\[.\]|\u2610|\u2611|\u2713|\u2705)\s+/.test(t); // [ ] / [x] / □ / ☑ / ✓ / ✅
+  },
+
+  replacement(content, node) {
+    // checked 判定（あるものは全部拾う）
+    const cb =
+      node.querySelector('input[type="checkbox"]') ||
+      node.querySelector('[role="checkbox"]') ||
+      node.querySelector('[aria-checked]') ||
+      node.querySelector('[data-checked]') ||
+      node.querySelector('[data-state]');
+
+    let checked = false;
+
+    // input の checked
+    if (cb && typeof cb.checked === "boolean") checked = cb.checked;
+
+    // aria-checked="true"
+    if (!checked && cb && cb.getAttribute) {
+      const aria = cb.getAttribute("aria-checked");
+      if (aria === "true") checked = true;
+    }
+
+    // data-state="checked" / data-checked="true"
+    if (!checked && cb && cb.getAttribute) {
+      const ds = cb.getAttribute("data-state");
+      const dc = cb.getAttribute("data-checked");
+      if (ds === "checked" || dc === "true") checked = true;
+    }
+
+    // 記号から推定（最後の保険）
+    if (!checked) {
+      const rawText = (node.textContent || "").trim();
+      if (/^(\[x\]|\u2611|\u2713|\u2705)\s+/i.test(rawText)) checked = true; // [x] / ☑ / ✓ / ✅
+    }
+
+    // テキスト抽出：checkbox UIを除去してから読む
+    const clone = node.cloneNode(true);
+    clone.querySelectorAll(
+      'input[type="checkbox"], [role="checkbox"], [aria-checked], [data-checked], [data-state]'
+    ).forEach(el => el.remove());
+
+    // 先頭に残ってる [ ] や □ を剥がす（重複防止）
+    let text = (clone.textContent || "").trim().replace(/\s+/g, " ");
+    text = text.replace(/^(\[.\]|\u2610|\u2611|\u2713|\u2705)\s+/i, "");
+
+    const box = checked ? "[x]" : "[ ]";
+    return `\n- ${box} ${text}\n`;
+  }
+});
+
+    // --- 本物の <table> を Markdown表に ---
+    service.addRule("tablesCustom", {
+      filter(node) {
+        return node && node.nodeName === "TABLE";
+      },
+      replacement(content, node) {
+        const trList = Array.from(node.querySelectorAll("tr"));
+        if (!trList.length) return "";
+
+        const rows = trList.map(tr => {
+          const cells = Array.from(tr.querySelectorAll("th,td"));
+          return cells.map(td => (td.textContent || "").trim());
+        });
+
+        return tableToMarkdown(rows);
+      }
+    });
+
+    // --- 疑似テーブル（role="table"/"grid"）を Markdown表に（Geminiなど） ---
+    service.addRule("roleTablesCustom", {
+      filter(node) {
+        if (!node || node.nodeType !== 1) return false;
+        const role = node.getAttribute && node.getAttribute("role");
+        return role === "table" || role === "grid";
+      },
+      replacement(content, node) {
+        const roleRows = Array.from(node.querySelectorAll('[role="row"]'));
+        if (!roleRows.length) {
+          return "\n\n" + ((node.textContent || "").trim()) + "\n\n";
+        }
+
+        const rows = roleRows.map(r => {
+          const cells = Array.from(
+            r.querySelectorAll('[role="columnheader"], [role="rowheader"], [role="cell"]')
+          );
+          return cells.map(c => (c.textContent || "").trim());
+        }).filter(r => r.some(x => x && x.length));
+
+        if (!rows.length) {
+          return "\n\n" + ((node.textContent || "").trim()) + "\n\n";
+        }
+
+        return tableToMarkdown(rows);
+      }
+    });
+
+    // --- リンクのルール（title属性を保持） ---
+    service.addRule("links", {
+      filter: "a",
+      replacement: function (content, node) {
+        const href = node.getAttribute("href");
+        const title = node.getAttribute("title");
+        if (!href) return content;
+        if (title) return "[" + content + "](" + href + ' "' + title + '")';
+        return "[" + content + "](" + href + ")";
+      },
+    });
+
+    return service;
+  }
+
+  function getSelectionHtml() {
     const sel = window.getSelection?.();
-    const txt = sel ? sel.toString().trim() : "";
-    return txt || "";
+    if (!sel || sel.rangeCount === 0) return "";
+
+    const range = sel.getRangeAt(0);
+    const container = document.createElement("div");
+    container.appendChild(range.cloneContents());
+    return container.innerHTML;
+  }
+
+  function getSelectionMarkdown() {
+    const html = getSelectionHtml();
+    if (!html) return "";
+
+    if (!turndownService) {
+      turndownService = initTurndown();
+    }
+    if (!turndownService) {
+      return window.getSelection?.()?.toString().trim() || "";
+    }
+    return turndownService.turndown(html).trim();
   }
 
   let lastPointedEl = null;
@@ -38,16 +508,20 @@
     return r.width > 0 && r.height > 0;
   }
 
-  function textFromEl(el) {
+  function markdownFromEl(el) {
     if (!el) return "";
-    return (el.innerText || el.textContent || "").trim();
+    if (!turndownService) turndownService = initTurndown();
+    if (!turndownService) return (el.innerText || el.textContent || "").trim();
+    return turndownService.turndown(el.innerHTML).trim();
   }
 
   function closestBySelectors(startEl, selectors) {
     let el = startEl;
     while (el && el !== document.documentElement) {
       for (const sel of selectors) {
-        try { if (el.matches && el.matches(sel)) return el; } catch {}
+        try {
+          if (el.matches && el.matches(sel)) return el;
+        } catch {}
       }
       el = el.parentElement;
     }
@@ -56,111 +530,256 @@
 
   function findWholeReplyElement() {
     const host = location.hostname;
+
     const fromPointer = (() => {
       const el = lastPointedEl;
       if (!el) return null;
+
       if (host.includes("chatgpt.com") || host.includes("chat.openai.com")) {
-        return closestBySelectors(el, ['[data-message-author-role="assistant"]', 'article']);
+        return closestBySelectors(el, ['[data-message-author-role="assistant"]', "article"]);
       }
       if (host.includes("gemini.google.com")) {
-        return closestBySelectors(el, ['message-content', 'div[role="article"]', 'main div[role="main"] div', 'main div']);
+        return closestBySelectors(el, ["message-content", 'div[role="article"]', 'main div[role="main"] div', "main div"]);
       }
       if (host.includes("t3.chat")) {
-        return closestBySelectors(el, ['[data-message-role="assistant"]', 'article', 'div[role="article"]']);
+        return closestBySelectors(el, ['[data-message-role="assistant"]', "article", 'div[role="article"]']);
       }
       if (host.includes("claude.ai")) {
-        return closestBySelectors(el, ['.standard-markdown', '[class*="standard-markdown"]']);
+        return closestBySelectors(el, [".standard-markdown", '[class*="standard-markdown"]']);
       }
       return null;
     })();
-    if (fromPointer && isVisible(fromPointer) && textFromEl(fromPointer)) return fromPointer;
+
+    if (fromPointer && isVisible(fromPointer) && fromPointer.innerHTML) return fromPointer;
 
     if (host.includes("chatgpt.com") || host.includes("chat.openai.com")) {
       const nodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
       return nodes.length ? nodes[nodes.length - 1] : null;
     }
     if (host.includes("gemini.google.com")) {
+      // まずは適切なセレクタでメッセージコンテナを直接探す
+      const directSelectors = [
+        '[data-message-role="assistant"]',
+        'model-response',
+        '.model-response-text',
+        '.response-container'
+      ];
+
+      for (const selector of directSelectors) {
+        const elements = Array.from(document.querySelectorAll(selector))
+          .filter(el => isVisible(el) && el.innerHTML && el.innerHTML.length > 50);
+        if (elements.length) {
+          return elements[elements.length - 1];
+        }
+      }
+
+      // フォールバック：候補を見つけて、その親を辿る
       const candidates = Array.from(document.querySelectorAll("main *"))
         .filter(el => el instanceof Element && isVisible(el))
         .filter(el => (el.innerText || "").trim().length > 200);
-      return candidates.length ? candidates[candidates.length - 1] : null;
+
+      if (candidates.length) {
+        const lastCandidate = candidates[candidates.length - 1];
+        // 親要素を辿ってメッセージ全体を含むコンテナを探す
+        const messageContainer = closestBySelectors(lastCandidate, [
+          '[data-message-role="assistant"]',
+          'model-response',
+          '.model-response-text',
+          'article',
+          'div[role="article"]',
+          'main > div',
+          'main > section'
+        ]);
+        return messageContainer || lastCandidate;
+      }
+
+      return null;
     }
     if (host.includes("t3.chat")) {
       const nodes = Array.from(document.querySelectorAll("article, div[role='article']"));
       for (let i = nodes.length - 1; i >= 0; i--) {
-        const t = textFromEl(nodes[i]);
+        const t = markdownFromEl(nodes[i]);
         if (t && t.length > 80) return nodes[i];
       }
       return null;
     }
     if (host.includes("claude.ai")) {
-      // Claude.aiのメッセージ要素を探す（standard-markdownクラス）
-      const messages = Array.from(document.querySelectorAll('.standard-markdown'))
-        .filter(el => isVisible(el) && textFromEl(el).length > 50);
-      
-      // 最後のメッセージを返す
+      const messages = Array.from(document.querySelectorAll(".standard-markdown"))
+        .filter(el => isVisible(el) && el.innerHTML && el.innerHTML.length > 50);
       return messages.length > 0 ? messages[messages.length - 1] : null;
     }
+
     return null;
   }
 
-  async function copyToClipboard(text) {
-    if (typeof GM_setClipboard === "function") {
-      GM_setClipboard(text, "text");
-      return;
-    }
-    await navigator.clipboard.writeText(text);
+  function getCurrentDateString() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}${month}${day}`;
   }
 
-  function openObsidianAppendFromClipboard() {
-    const url = `obsidian://advanced-uri?vault=${encodeURIComponent(VAULT_NAME)}&daily=true&clipboard=true&mode=append`;
+  function openObsidianDailyAppend(content) {
+    const url = `obsidian://advanced-uri?vault=${encodeURIComponent(VAULT_NAME)}&daily=true&data=${encodeURIComponent(content)}&mode=append`;
     window.location.href = url;
   }
 
-  async function onClick() {
-    const selected = getSelectionText();
+  function openObsidianNewNote(filepath, content, isAppend) {
+    const mode = isAppend ? "append" : "overwrite";
+    const data = isAppend ? `\n\n---\n\n${content}` : content;
+    const url = `obsidian://advanced-uri?vault=${encodeURIComponent(VAULT_NAME)}&filepath=${encodeURIComponent(filepath)}&data=${encodeURIComponent(data)}&mode=${mode}`;
+    window.location.href = url;
+  }
+
+  async function onClickDaily() {
+    const selected = getSelectionMarkdown();
     let payload = selected;
+
     if (!payload) {
       const replyEl = findWholeReplyElement();
-      payload = textFromEl(replyEl);
+      payload = markdownFromEl(replyEl);
       if (!payload) {
         alert("保存する返答を特定できなかった。");
         return;
       }
     }
-    const textToAppend = PREFIX + payload + SUFFIX;
-    try {
-      await copyToClipboard(textToAppend);
-      openObsidianAppendFromClipboard();
-    } catch (e) {
-      alert("コピーに失敗しました。");
+
+    openObsidianDailyAppend(PREFIX + payload + SUFFIX);
+  }
+
+  async function onClickNewNote() {
+  const selected = getSelectionMarkdown();
+  let payload = selected;
+
+  if (!payload) {
+    const replyEl = findWholeReplyElement();
+    payload = markdownFromEl(replyEl);
+    if (!payload) {
+      alert("保存する返答を特定できなかった。");
+      return;
     }
   }
 
+  // ---- ファイル名入力（禁止文字チェック + 修正案を次promptにプリセット）----
+  let noteName = "";
+  let defaultValue = ""; // 次回promptに入れるデフォルト文字列
+
+  for (;;) {
+    const input = prompt(
+      "ノート名を入力してください（日付は自動で追加されます）:",
+      defaultValue
+    );
+    if (input === null) return; // キャンセル
+
+    const candidate = String(input);
+
+    const v = validateWindowsFileName(candidate);
+    if (v.ok) {
+      noteName = candidate.trim();
+      break;
+    }
+
+    const fixed = sanitizeWindowsFileName(candidate);
+    // 次のpromptに修正案を入れておく（修正案が空なら空のまま）
+    defaultValue = fixed || "";
+
+    // アラートは情報として出す（ここでOK押した後にpromptが出る）
+    alert(`そのファイル名は使えません。\n理由: ${v.message}\n\n禁止文字を除いて入力し直してください。`);
+  }
+
+  const dateStr = getCurrentDateString();
+  const filename = `${dateStr}_${noteName}.md`;
+  const filepath = `/${INBOX_FOLDER}/${filename}`;
+
+  const exists = noteExists(filepath);
+  openObsidianNewNote(filepath, payload, exists);
+
+  saveCreatedNote(filepath);
+  saveLastNotePath(filepath);
+}
+
+  async function onClickLastNote() {
+    const selected = getSelectionMarkdown();
+    let payload = selected;
+
+    if (!payload) {
+      const replyEl = findWholeReplyElement();
+      payload = markdownFromEl(replyEl);
+      if (!payload) {
+        alert("保存する返答を特定できなかった。");
+        return;
+      }
+    }
+
+    const lastPath = getLastNotePath();
+    if (!lastPath) {
+      alert("前回保存したノートがありません。");
+      return;
+    }
+
+    openObsidianNewNote(lastPath, payload, true);
+  }
+
   function injectButton() {
-    // スタイルを <style> タグとして注入
+    if (document.querySelector(".obsidian-capture-container")) return;
+
+    ensureMaterialSymbolsCss();
+
+    const BTN_SIZE = 42;
+    const ICON_SIZE = 22;
+
     const style = document.createElement("style");
     style.textContent = `
-      .obsidian-capture-btn {
+      .obsidian-capture-container {
         position: fixed;
         right: 16px;
         bottom: 16px;
         z-index: 999999;
-        padding: 10px 14px;
-        border-radius: 10px;
-        font-size: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .obsidian-capture-btn {
+        width: ${BTN_SIZE}px;
+        height: ${BTN_SIZE}px;
+        padding: 0;
+        border-radius: 999px;
         cursor: pointer;
-        transition: all 0.2s ease;
-        /* ライトモード用デフォルト */
+        transition: transform 0.15s ease, background-color 0.2s ease;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+
         background-color: #ffffff !important;
         color: #333333 !important;
         border: 1px solid rgba(0,0,0,0.15) !important;
         box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
       }
+
       .obsidian-capture-btn:hover {
         background-color: #e8e8e8 !important;
+        transform: translateY(-1px);
       }
-      /* ダークモード検知 (OS設定、またはサイトのクラス) */
+
+      .obsidian-capture-btn:active {
+        transform: translateY(0px);
+      }
+
+      .material-symbols-outlined {
+        font-family: "Material Symbols Outlined";
+        font-weight: normal;
+        font-style: normal;
+        font-size: ${ICON_SIZE}px;
+        line-height: 1;
+        display: inline-block;
+        white-space: nowrap;
+        user-select: none;
+        -webkit-font-smoothing: antialiased;
+        font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+      }
+
       @media (prefers-color-scheme: dark) {
         .obsidian-capture-btn {
           background-color: #2d2d2d !important;
@@ -172,29 +791,57 @@
           background-color: #3d3d3d !important;
         }
       }
-      /* ChatGPT/Gemini/Claudeのダークモード用クラスがhtml/bodyにある場合 */
+
       html.dark .obsidian-capture-btn,
       body.dark .obsidian-capture-btn,
       [data-theme="dark"] .obsidian-capture-btn {
-          background-color: #2d2d2d !important;
-          color: #efefef !important;
-          border: 1px solid rgba(255,255,255,0.2) !important;
+        background-color: #2d2d2d !important;
+        color: #efefef !important;
+        border: 1px solid rgba(255,255,255,0.2) !important;
       }
       html.dark .obsidian-capture-btn:hover,
       body.dark .obsidian-capture-btn:hover,
       [data-theme="dark"] .obsidian-capture-btn:hover {
-          background-color: #3d3d3d !important;
+        background-color: #3d3d3d !important;
       }
     `;
     document.head.appendChild(style);
 
-    const btn = document.createElement("button");
-    btn.textContent = BUTTON_TEXT;
-    btn.type = "button";
-    btn.className = "obsidian-capture-btn";
-    btn.addEventListener("click", onClick);
-    document.body.appendChild(btn);
+    const container = document.createElement("div");
+    container.className = "obsidian-capture-container";
+
+    container.appendChild(makeIconButton({
+      iconName: "calendar_add_on",
+      label: "Dailyへ追記",
+      onClick: onClickDaily
+    }));
+
+    container.appendChild(makeIconButton({
+      iconName: "note_add",
+      label: "新規ノート",
+      onClick: onClickNewNote
+    }));
+
+    container.appendChild(makeIconButton({
+      iconName: "replay",
+      label: "前回のノート",
+      onClick: onClickLastNote
+    }));
+
+    document.body.appendChild(container);
+
+    fallbackIconsIfNeeded(container).catch(() => {});
   }
 
-  injectButton();
+  function waitForTurndown() {
+    if (typeof TurndownService !== "undefined") {
+      turndownService = initTurndown();
+      migrateLocalStorageToGMOncePerHost();
+      injectButton();
+    } else {
+      setTimeout(waitForTurndown, 100);
+    }
+  }
+
+  waitForTurndown();
 })();
