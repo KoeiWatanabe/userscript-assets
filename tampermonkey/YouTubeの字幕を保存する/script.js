@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.4.1
+// @version      0.4.2
 // @description  Adds 2 save buttons to YouTube transcript panel header: TXT(with timestamps) and TXT(no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -232,11 +232,16 @@
     btn.className = "tm-transcript-save-btn";
     btn.setAttribute("aria-label", ariaLabel);
     btn.title = title;
-    btn.innerHTML = `
-      <svg viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
-        <path d="${pathD}"></path>
-      </svg>
-    `;
+
+    // innerHTML は YouTube の TrustedTypes CSP でブロックされるため DOM API を使う
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 -960 960 960");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", pathD);
+    svg.appendChild(path);
+    btn.appendChild(svg);
 
     btn.addEventListener("click", async () => {
       try {
