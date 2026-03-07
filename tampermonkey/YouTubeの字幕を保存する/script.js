@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.3.1
+// @version      0.4.0
 // @description  Adds 2 save buttons to YouTube transcript panel header: TXT(with timestamps) and TXT(no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -88,7 +88,48 @@
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
+  // ── New DOM helpers (transcript-segment-view-model) ──────────────────────
+
+  function hasNewTranscript() {
+    return !!document.querySelector("transcript-segment-view-model");
+  }
+
+  function extractTranscriptTextNew() {
+    const segments = document.querySelectorAll("transcript-segment-view-model");
+    if (!segments.length) return { ok: false, reason: "transcript-segment-view-model not found" };
+    const lines = [];
+    segments.forEach((seg) => {
+      const textNode = seg.querySelector("span.yt-core-attributed-string");
+      const t = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
+      if (t) lines.push(t);
+    });
+    if (!lines.length) return { ok: false, reason: "no transcript lines found" };
+    return { ok: true, text: lines.join("\n") };
+  }
+
+  function extractTranscriptSegmentsNew() {
+    const items = document.querySelectorAll("transcript-segment-view-model");
+    if (!items.length) return { ok: false, reason: "transcript-segment-view-model not found" };
+    const segs = [];
+    items.forEach((item) => {
+      const tsNode = item.querySelector(".ytwTranscriptSegmentViewModelTimestamp");
+      const textNode = item.querySelector("span.yt-core-attributed-string");
+      const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
+      const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
+      if (!lineText) return;
+      const seconds = parseTimestampToSeconds(tsText);
+      segs.push({ tsText: seconds == null ? "" : tsText, seconds, text: lineText });
+    });
+    if (!segs.length) return { ok: false, reason: "no transcript segments found" };
+    const hasAnyTs = segs.some((s) => typeof s.seconds === "number" && !Number.isNaN(s.seconds));
+    return { ok: true, segments: segs, hasAnyTs };
+  }
+
+  // ── Old DOM helpers (#segments-container) ────────────────────────────────
+
   function extractTranscriptText() {
+    if (hasNewTranscript()) return extractTranscriptTextNew();
+
     const container = document.querySelector("#segments-container");
     if (!container) return { ok: false, reason: "segments-container not found" };
 
@@ -107,7 +148,6 @@
   }
 
   function parseTimestampToSeconds(ts) {
-    // Accepts "SS", "M:SS", "H:MM:SS" (as displayed in YouTube transcript)
     const s = (ts || "").trim();
     if (!s) return null;
     const parts = s.split(":").map((p) => p.trim());
@@ -119,6 +159,8 @@
   }
 
   function extractTranscriptSegments() {
+    if (hasNewTranscript()) return extractTranscriptSegmentsNew();
+
     const container = document.querySelector("#segments-container");
     if (!container) return { ok: false, reason: "segments-container not found" };
 
@@ -147,13 +189,21 @@
   }
 
   function buildTimestampedTxt(segments) {
-    // Keep YouTube-style timestamps as-is (e.g., 0:12, 1:02:03)
     const lines = segments.map((s) => (s.tsText ? `${s.tsText}\t${s.text}` : s.text));
     return lines.join("\n");
   }
 
   function findTranscriptHeader() {
-    // Transcript が開いてる時にだけ存在する #segments-container を起点に探す
+    // ── New DOM: PAmodern_transcript_view panel ──
+    const modernPanel = document.querySelector(
+      '[target-id="PAmodern_transcript_view"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]'
+    );
+    if (modernPanel) {
+      const titleHeader = modernPanel.querySelector("ytd-engagement-panel-title-header-renderer");
+      return titleHeader?.querySelector("#header") || null;
+    }
+
+    // ── Old DOM: #segments-container based ──
     const segments = document.querySelector("#segments-container");
     if (!segments) return null;
 
@@ -162,9 +212,8 @@
       segments.closest("ytd-engagement-panel-section-renderer") ||
       segments.parentElement;
 
-    // あなたのDOM情報: <div id="header" class="... ytd-engagement-panel-title-header-renderer">
     const header =
-      panelRoot?.querySelector('ytd-engagement-panel-title-header-renderer #header') ||
+      panelRoot?.querySelector("ytd-engagement-panel-title-header-renderer #header") ||
       panelRoot?.querySelector("#header.style-scope.ytd-engagement-panel-title-header-renderer") ||
       panelRoot?.querySelector("#header");
 
@@ -207,9 +256,6 @@
 
       // すでにあるなら何もしない
       if (header.querySelector(`#${BTN_ID_WITH_TS}`) || header.querySelector(`#${BTN_ID_NO_TS}`)) return;
-
-      // ︙ のプレースホルダ（あなたが特定したやつ）
-      const info = header.querySelector("#information-button");
 
       const btnWithTs = makeIconButton({
         id: BTN_ID_WITH_TS,
@@ -256,16 +302,31 @@
         },
       });
 
-      // ✅ 指定の順：左から（テキストあり）→（テキストなし）
       const buttons = [btnWithTs, btnNoTs];
 
-      if (info && info.parentElement) {
-        // info の直前へまとめて挿入
-        buttons.forEach((b) => info.parentElement.insertBefore(b, info));
-      } else {
-        // フォールバック：ヘッダー末尾へ
-        buttons.forEach((b) => header.appendChild(b));
+      // 新DOM: #action-buttons に追加（空のコンテナ）
+      const actionButtons = header.querySelector("#action-buttons");
+      if (actionButtons) {
+        buttons.forEach((b) => actionButtons.appendChild(b));
+        return;
       }
+
+      // 旧DOM: #information-button の直前に挿入
+      const info = header.querySelector("#information-button");
+      if (info && info.parentElement) {
+        buttons.forEach((b) => info.parentElement.insertBefore(b, info));
+        return;
+      }
+
+      // フォールバック: #visibility-button の直前に挿入
+      const visibilityBtn = header.querySelector("#visibility-button");
+      if (visibilityBtn && visibilityBtn.parentElement) {
+        buttons.forEach((b) => visibilityBtn.parentElement.insertBefore(b, visibilityBtn));
+        return;
+      }
+
+      // 最終フォールバック: ヘッダー末尾へ
+      buttons.forEach((b) => header.appendChild(b));
     } catch (e) {
       console.warn("[tm transcript] inject failed:", e);
     }
@@ -273,7 +334,12 @@
 
   function start() {
     const mo = new MutationObserver(() => {
-      if (document.querySelector("#segments-container")) inject();
+      if (
+        document.querySelector("#segments-container") ||
+        document.querySelector("transcript-segment-view-model")
+      ) {
+        inject();
+      }
     });
     mo.observe(document.documentElement, { childList: true, subtree: true });
 
