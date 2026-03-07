@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.4.2
-// @description  Adds 2 save buttons to YouTube transcript panel header: TXT(with timestamps) and TXT(no timestamps).
+// @version      0.4.3
+// @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Alt+T (no timestamps) / Alt+Shift+T (with timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
@@ -186,6 +186,77 @@
 
     const hasAnyTs = segs.some((s) => typeof s.seconds === "number" && !Number.isNaN(s.seconds));
     return { ok: true, segments: segs, hasAnyTs };
+  }
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────────────
+
+  // セグメント未ロード時に "Show transcript" ボタンを自動クリックして待機する
+  async function openTranscriptPanel(timeoutMs = 5000) {
+    // すでにセグメントが DOM にある場合はそのまま返す
+    if (hasNewTranscript() || document.querySelector("#segments-container")) return true;
+
+    // "show transcript" / "トランスクリプトを表示" 等のボタンを探す
+    const btn = Array.from(document.querySelectorAll("button")).find((b) =>
+      /transcript/i.test(b.textContent.trim())
+    );
+    if (!btn) return false;
+
+    btn.click();
+
+    // セグメントが DOM に現れるまで最大 timeoutMs 待機
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(100);
+      if (hasNewTranscript() || document.querySelector("#segments-container")) return true;
+    }
+    return false;
+  }
+
+  async function downloadViaShortcut(withTs) {
+    const loaded = await openTranscriptPanel();
+    if (!loaded) {
+      alert(
+        "トランスクリプトを読み込めませんでした。\n動画の説明欄から「Show transcript」を先に開いてみてください。"
+      );
+      return;
+    }
+
+    if (withTs) {
+      const res = extractTranscriptSegments();
+      if (!res.ok) { alert(`取得失敗: ${res.reason}`); return; }
+      if (!res.hasAnyTs) { alert("タイムスタンプを取得できませんでした。"); return; }
+      const title = sanitizeFilename(getVideoTitle());
+      downloadText(buildTimestampedTxt(res.segments), `${title} - transcript (with timestamps).txt`);
+    } else {
+      const res = extractTranscriptText();
+      if (!res.ok) { alert(`取得失敗: ${res.reason}`); return; }
+      const title = sanitizeFilename(getVideoTitle());
+      downloadText(res.text, `${title} - transcript.txt`);
+    }
+  }
+
+  function registerShortcuts() {
+    document.addEventListener("keydown", (e) => {
+      // /watch ページ以外は無視
+      if (!location.pathname.startsWith("/watch")) return;
+
+      // テキスト入力中は無視
+      const tag = document.activeElement?.tagName?.toUpperCase();
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        document.activeElement?.isContentEditable
+      ) return;
+
+      const key = e.key.toLowerCase();
+      const isAltT      = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
+      const isAltShiftT = e.altKey &&  e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
+      if (!isAltT && !isAltShiftT) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      downloadViaShortcut(isAltShiftT);
+    });
   }
 
   function buildTimestampedTxt(segments) {
@@ -373,6 +444,7 @@
     });
 
     inject();
+    registerShortcuts();
 
     window.addEventListener("yt-navigate-finish", () => {
       setTimeout(inject, 400);
