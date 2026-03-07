@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.4.6
+// @version      0.4.7
 // @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -207,7 +207,11 @@
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await sleep(100);
-      if (hasNewTranscript() || document.querySelector("#segments-container")) return true;
+      if (hasNewTranscript() || document.querySelector("#segments-container")) {
+        // パネルを新たに開いた場合、全セグメントのロード完了を待つ
+        await sleep(1000);
+        return true;
+      }
     }
     return false;
   }
