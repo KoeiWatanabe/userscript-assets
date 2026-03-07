@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.4.5
-// @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Alt+T (toggle panel) / 無変換+T (with timestamps) / 無変換+Shift+T (no timestamps).
+// @version      0.4.6
+// @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
@@ -190,23 +190,6 @@
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
 
-  // Shift+T: トランスクリプトパネルを開閉する
-  function toggleTranscriptPanel() {
-    const panel = document.querySelector('[target-id="PAmodern_transcript_view"]');
-
-    if (panel?.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED") {
-      // 開いている → Close ボタンをクリックして閉じる
-      const closeBtn = panel.querySelector("#visibility-button button");
-      if (closeBtn) closeBtn.click();
-    } else {
-      // 閉じている → "Show transcript" / "トランスクリプトを表示" ボタンを探してクリック
-      const showBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-        /transcript/i.test(b.textContent.trim())
-      );
-      if (showBtn) showBtn.click();
-    }
-  }
-
   // セグメント未ロード時に "Show transcript" ボタンを自動クリックして待機する
   async function openTranscriptPanel(timeoutMs = 5000) {
     // すでにセグメントが DOM にある場合はそのまま返す
@@ -253,16 +236,7 @@
   }
 
   function registerShortcuts() {
-    // 無変換キーは標準の修飾キーではないため、押下状態をフラグで管理する
-    let muhenkanDown = false;
-
     document.addEventListener("keydown", (e) => {
-      // 無変換キー (NonConvert) の押下を記録
-      if (e.code === "NonConvert") {
-        muhenkanDown = true;
-        return;
-      }
-
       // /watch ページ以外は無視
       if (!location.pathname.startsWith("/watch")) return;
 
@@ -275,28 +249,17 @@
       ) return;
 
       const key = e.key.toLowerCase();
-      // Alt+T: パネル開閉
-      const isAltT         = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
-      // 無変換+T: タイムスタンプ付きで保存
-      const isMuhenkanT    = muhenkanDown && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && key === "t";
-      // 無変換+Shift+T: タイムスタンプなしで保存
-      const isMuhenkanShiftT = muhenkanDown && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && key === "t";
+      // Alt+T: タイムスタンプ付きで保存
+      const isAltT      = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
+      // Alt+Shift+T: タイムスタンプなしで保存
+      const isAltShiftT = e.altKey &&  e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
 
-      if (!isAltT && !isMuhenkanT && !isMuhenkanShiftT) return;
+      if (!isAltT && !isAltShiftT) return;
 
       e.preventDefault();
       e.stopPropagation();
-
-      if (isAltT) toggleTranscriptPanel();
-      else downloadViaShortcut(isMuhenkanT); // isMuhenkanT=true → with timestamps
+      downloadViaShortcut(isAltT); // isAltT=true → with timestamps
     });
-
-    document.addEventListener("keyup", (e) => {
-      if (e.code === "NonConvert") muhenkanDown = false;
-    });
-
-    // ウィンドウのフォーカスが外れた場合もフラグをリセット
-    window.addEventListener("blur", () => { muhenkanDown = false; });
   }
 
   function buildTimestampedTxt(segments) {
