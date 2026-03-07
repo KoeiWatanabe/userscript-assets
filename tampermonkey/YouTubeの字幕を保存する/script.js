@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.4.4
-// @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Shift+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
+// @version      0.4.5
+// @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Alt+T (toggle panel) / 無変換+T (with timestamps) / 無変換+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
@@ -253,7 +253,16 @@
   }
 
   function registerShortcuts() {
+    // 無変換キーは標準の修飾キーではないため、押下状態をフラグで管理する
+    let muhenkanDown = false;
+
     document.addEventListener("keydown", (e) => {
+      // 無変換キー (NonConvert) の押下を記録
+      if (e.code === "NonConvert") {
+        muhenkanDown = true;
+        return;
+      }
+
       // /watch ページ以外は無視
       if (!location.pathname.startsWith("/watch")) return;
 
@@ -266,21 +275,28 @@
       ) return;
 
       const key = e.key.toLowerCase();
-      // Shift+T: パネル開閉
-      const isShiftT    = e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && key === "t";
-      // Alt+T: タイムスタンプ付きで保存
-      const isAltT      = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
-      // Alt+Shift+T: タイムスタンプなしで保存
-      const isAltShiftT = e.altKey &&  e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
+      // Alt+T: パネル開閉
+      const isAltT         = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
+      // 無変換+T: タイムスタンプ付きで保存
+      const isMuhenkanT    = muhenkanDown && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && key === "t";
+      // 無変換+Shift+T: タイムスタンプなしで保存
+      const isMuhenkanShiftT = muhenkanDown && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && key === "t";
 
-      if (!isShiftT && !isAltT && !isAltShiftT) return;
+      if (!isAltT && !isMuhenkanT && !isMuhenkanShiftT) return;
 
       e.preventDefault();
       e.stopPropagation();
 
-      if (isShiftT) toggleTranscriptPanel();
-      else downloadViaShortcut(isAltT); // isAltT=true → with timestamps, isAltShiftT=true → no timestamps
+      if (isAltT) toggleTranscriptPanel();
+      else downloadViaShortcut(isMuhenkanT); // isMuhenkanT=true → with timestamps
     });
+
+    document.addEventListener("keyup", (e) => {
+      if (e.code === "NonConvert") muhenkanDown = false;
+    });
+
+    // ウィンドウのフォーカスが外れた場合もフラグをリセット
+    window.addEventListener("blur", () => { muhenkanDown = false; });
   }
 
   function buildTimestampedTxt(segments) {
