@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.4.9
+// @version      0.5.0
 // @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -190,8 +190,16 @@
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
 
+  // 現在 DOM にあるセグメント数を返す（新旧DOM両対応）
+  function countSegments() {
+    return (
+      document.querySelectorAll("transcript-segment-view-model").length +
+      document.querySelectorAll("#segments-container ytd-transcript-segment-renderer").length
+    );
+  }
+
   // セグメント未ロード時に "Show transcript" ボタンを自動クリックして待機する
-  async function openTranscriptPanel(timeoutMs = 5000) {
+  async function openTranscriptPanel(timeoutMs = 15000) {
     // すでにセグメントが DOM にある場合はそのまま返す
     if (hasNewTranscript() || document.querySelector("#segments-container")) return true;
 
@@ -203,17 +211,32 @@
 
     btn.click();
 
-    // セグメントが DOM に現れるまで最大 timeoutMs 待機
+    // セグメント数が STABLE_MS の間変化しなくなったらロード完了とみなす
+    const POLL_MS   = 200;   // ポーリング間隔
+    const STABLE_MS = 600;   // この時間カウントが変わらなければ完了
     const deadline = Date.now() + timeoutMs;
+    let lastCount = 0;
+    let stableMs  = 0;
+
     while (Date.now() < deadline) {
-      await sleep(100);
-      if (hasNewTranscript() || document.querySelector("#segments-container")) {
-        // パネルを新たに開いた場合、全セグメントのロード完了を待つ
-        await sleep(5000);
-        return true;
+      await sleep(POLL_MS);
+      const count = countSegments();
+
+      if (count > 0) {
+        if (count === lastCount) {
+          stableMs += POLL_MS;
+          if (stableMs >= STABLE_MS) return true;
+        } else {
+          stableMs  = 0;
+          lastCount = count;
+        }
+      } else {
+        stableMs  = 0;
+        lastCount = 0;
       }
     }
-    return false;
+
+    return lastCount > 0;
   }
 
   async function downloadViaShortcut(withTs) {
