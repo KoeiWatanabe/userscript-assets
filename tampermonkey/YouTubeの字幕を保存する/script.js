@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.4.0
+// @version      0.4.1
 // @description  Adds 2 save buttons to YouTube transcript panel header: TXT(with timestamps) and TXT(no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -194,13 +194,17 @@
   }
 
   function findTranscriptHeader() {
-    // ── New DOM: PAmodern_transcript_view panel ──
-    const modernPanel = document.querySelector(
-      '[target-id="PAmodern_transcript_view"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]'
-    );
-    if (modernPanel) {
-      const titleHeader = modernPanel.querySelector("ytd-engagement-panel-title-header-renderer");
-      return titleHeader?.querySelector("#header") || null;
+    // ── New DOM: transcript-segment-view-model から親パネルをたどる ──
+    // visibility属性に依存しないため、セグメントが既にDOMにある場合も対応できる
+    const seg = document.querySelector("transcript-segment-view-model");
+    if (seg) {
+      const panel =
+        seg.closest("ytd-engagement-panel-section-list-renderer") ||
+        document.querySelector('[target-id="PAmodern_transcript_view"]');
+      if (panel) {
+        const titleHeader = panel.querySelector("ytd-engagement-panel-title-header-renderer");
+        return titleHeader?.querySelector("#header") || null;
+      }
     }
 
     // ── Old DOM: #segments-container based ──
@@ -333,15 +337,35 @@
   }
 
   function start() {
-    const mo = new MutationObserver(() => {
-      if (
-        document.querySelector("#segments-container") ||
-        document.querySelector("transcript-segment-view-model")
-      ) {
-        inject();
+    const mo = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        // セグメントがDOMに追加された（初回レンダリング）
+        if (m.type === "childList") {
+          if (
+            document.querySelector("#segments-container") ||
+            document.querySelector("transcript-segment-view-model")
+          ) {
+            inject();
+            return;
+          }
+        }
+        // パネルのvisibilityが変化した（セグメントが既にDOMにある場合）
+        if (
+          m.type === "attributes" &&
+          m.attributeName === "visibility" &&
+          m.target.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"
+        ) {
+          inject();
+          return;
+        }
       }
     });
-    mo.observe(document.documentElement, { childList: true, subtree: true });
+    mo.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["visibility"],
+    });
 
     inject();
 
