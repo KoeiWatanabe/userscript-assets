@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.5.0
-// @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
+// @version      0.5.1
+// @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
@@ -190,6 +190,22 @@
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
 
+  // Ctrl+Alt+T: トランスクリプトパネルを開閉する
+  function toggleTranscriptPanel() {
+    const panel = document.querySelector('[target-id="PAmodern_transcript_view"]');
+    if (panel?.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED") {
+      // 開いている → Close ボタンをクリックして閉じる
+      const closeBtn = panel.querySelector("#visibility-button button");
+      if (closeBtn) closeBtn.click();
+    } else {
+      // 閉じている → "Show transcript" ボタンを探してクリック
+      const showBtn = Array.from(document.querySelectorAll("button")).find((b) =>
+        /transcript/i.test(b.textContent.trim())
+      );
+      if (showBtn) showBtn.click();
+    }
+  }
+
   // 現在 DOM にあるセグメント数を返す（新旧DOM両対応）
   function countSegments() {
     return (
@@ -276,16 +292,19 @@
       ) return;
 
       const key = e.key.toLowerCase();
+      // Ctrl+Alt+T: パネル開閉
+      const isCtrlAltT  = e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey && key === "t";
       // Alt+T: タイムスタンプ付きで保存
       const isAltT      = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
       // Alt+Shift+T: タイムスタンプなしで保存
       const isAltShiftT = e.altKey &&  e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
 
-      if (!isAltT && !isAltShiftT) return;
+      if (!isCtrlAltT && !isAltT && !isAltShiftT) return;
 
       e.preventDefault();
       e.stopPropagation();
-      downloadViaShortcut(isAltT); // isAltT=true → with timestamps
+      if (isCtrlAltT) toggleTranscriptPanel();
+      else downloadViaShortcut(isAltT); // isAltT=true → with timestamps
     });
   }
 
