@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      6.16
+// @version      6.14
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -10,7 +10,7 @@
 // @require      https://cdn.jsdelivr.net/npm/marked/marked.min.js
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにメモ帳を作成/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにメモ帳を作成/script.js
-// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにメモ帳を作成/icon.svg
+// @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIj4KICA8Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI1MCIgZmlsbD0iI0EzMkEyQSIgLz4KCiAgPGc+CiAgICA8cG9seWdvbiBwb2ludHM9IjIwLDE1IDIwLDg1IDgwLDg1IDgwLDM1IDYwLDE1IiBmaWxsPSIjRTJEREU4IiAvPgogICAgCiAgICA8cG9seWdvbiBwb2ludHM9IjYwLDE1IDYwLDM1IDgwLDM1IiBmaWxsPSIjQzhDNEM0IiAvPgoKICAgIDxnIHN0cm9rZT0iIzlDOTVBQSIgc3Ryb2tlLXdpZHRoPSIzLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+CiAgICAgIDxsaW5lIHgxPSIzMiIgeTE9IjM2IiB4Mj0iNjgiIHkyPSIzNiIgLz4KICAgICAgPGxpbmUgeDE9IjMyIiB5MT0iNDgiIHgyPSI2OCIgeTI9IjQ4IiAvPgogICAgICA8bGluZSB4MT0iMzIiIHkxPSI2MCIgeDI9IjUyIiB5Mj0iNjAiIC8+CiAgICAgIDxsaW5lIHgxPSIzMiIgeTE9IjcyIiB4Mj0iNDAiIHkyPSI3MiIgLz4KICAgIDwvZz4KICA8L2c+CgogIDxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDYwLCA1OCkgcm90YXRlKDQ1KSIgb3BhY2l0eT0iMC4xNSI+CiAgICA8cmVjdCB4PSItOCIgeT0iLTQyIiB3aWR0aD0iMTYiIGhlaWdodD0iNTUiIHJ4PSIyIiBmaWxsPSIjMDAwMDAwIiAvPgogICAgPHBvbHlnb24gcG9pbnRzPSItOCwxMyA4LDEzIDAsMjUiIGZpbGw9IiMwMDAwMDAiIC8+CiAgPC9nPgoKICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSg1OCwgNTYpIHJvdGF0ZSg0NSkiPgogICAgPHJlY3QgeD0iLTgiIHk9Ii00MiIgd2lkdGg9IjE2IiBoZWlnaHQ9IjEyIiByeD0iMiIgZmlsbD0iI0ZGNkI1NyIgLz4KICAgIDxyZWN0IHg9Ii04IiB5PSItMzAiIHdpZHRoPSIxNiIgaGVpZ2h0PSI3IiBmaWxsPSIjRDNDQkU1IiAvPgogICAgPHJlY3QgeD0iLTgiIHk9Ii0yMyIgd2lkdGg9IjgiIGhlaWdodD0iMzYiIGZpbGw9IiNGRjhBNDciIC8+CiAgICA8cmVjdCB4PSIwIiB5PSItMjMiIHdpZHRoPSI4IiBoZWlnaHQ9IjM2IiBmaWxsPSIjRTU2OTI1IiAvPgogICAgPHBvbHlnb24gcG9pbnRzPSItOCwxMyA4LDEzIDAsMjUiIGZpbGw9IiNGNUQxQTIiIC8+CiAgICA8cG9seWdvbiBwb2ludHM9Ii0yLjYsMjEgMi42LDIxIDAsMjUiIGZpbGw9IiM0QTJFNEIiIC8+CiAgPC9nPgo8L3N2Zz4K
 // ==/UserScript==
 
 (function() {
@@ -211,15 +211,6 @@
             z-index: 11;
         }
 
-        #yt-note-panel.is-dragging #yt-note-textarea,
-        #yt-note-panel.is-dragging #yt-note-view {
-            pointer-events: none;
-        }
-
-        #yt-note-panel.is-dragging {
-            transition: none !important;
-        }
-
         #yt-note-move-handle {
             cursor: move;
             user-select: none;
@@ -404,7 +395,7 @@
         }
 
         #yt-note-view strong {
-            color: #648c50;
+            color: #ffeb3b;
         }
 
         #yt-note-view em {
@@ -586,7 +577,7 @@
             }
 
             #yt-note-view strong {
-                color: #648c50;
+                color: rgb(100, 140, 80);
             }
 
             .yt-timestamp-link {
@@ -1148,16 +1139,16 @@
     let panelLeft = 0;
     let panelTop = 0;
 
-    const clampW = (w, vw) =>
+    const clampW = w =>
         Math.min(
             Math.max(w, MIN_PANEL_WIDTH),
-            (vw || window.innerWidth) - PANEL_MARGIN * 2
+            window.innerWidth - PANEL_MARGIN * 2
         );
 
-    const clampH = (h, vh) =>
+    const clampH = h =>
         Math.min(
             Math.max(h, MIN_CONTENT_HEIGHT),
-            (vh || window.innerHeight) - PANEL_MARGIN * 2
+            window.innerHeight - PANEL_MARGIN * 2
         );
 
     function commitPanelPos() {
@@ -1248,28 +1239,24 @@
         }
 
         if (dragState.type.includes('n')) {
-            const nextH = clampH(dragState.startH - dy, dragState.vh);
+            const nextH = clampH(dragState.startH - dy);
             t = dragState.startTop + (dragState.startH - nextH);
             h = nextH;
         }
 
         if (dragState.type.includes('s')) {
-            h = clampH(dragState.startH + dy, dragState.vh);
+            h = clampH(dragState.startH + dy);
         }
 
         if (dragState.type.includes('w')) {
-            const nextW = clampW(dragState.startW - dx, dragState.vw);
+            const nextW = clampW(dragState.startW - dx);
             l = dragState.startLeft + (dragState.startW - nextW);
             w = nextW;
         }
 
         if (dragState.type.includes('e')) {
-            w = clampW(dragState.startW + dx, dragState.vw);
+            w = clampW(dragState.startW + dx);
         }
-
-        // リサイズ後の位置が画面外に出ないようクランプ
-        l = Math.max(l, PANEL_MARGIN);
-        t = Math.max(t, PANEL_MARGIN);
 
         applyPanelRect(l, t, w, h);
     }
@@ -1321,8 +1308,6 @@
         };
 
         el.addEventListener('pointerdown', e => {
-            if (e.button !== 0) return;
-
             if (
                 type === 'move' &&
                 e.target.closest('button, a, input, select, textarea')
@@ -1374,28 +1359,6 @@
         document.getElementById('yt-note-move-handle'),
         'move'
     );
-
-    // =====================================================
-    //  ウィンドウリサイズ時のパネル位置・サイズ補正
-    // =====================================================
-
-    window.addEventListener('resize', () => {
-        if (panel.style.display !== 'flex') return;
-        // ドラッグ中はドラッグロジック側で制御するので何もしない
-        if (dragState) return;
-
-        const maxW = clampW(currentPanelWidth);
-        const maxH = clampH(currentPanelHeight);
-        if (maxW !== currentPanelWidth) {
-            currentPanelWidth = maxW;
-            panel.style.width = `${maxW}px`;
-        }
-        if (maxH !== currentPanelHeight) {
-            currentPanelHeight = maxH;
-            panel.style.height = `${maxH}px`;
-        }
-        constrainPanelPos();
-    });
 
     // =====================================================
     //  プリセットサイズボタン

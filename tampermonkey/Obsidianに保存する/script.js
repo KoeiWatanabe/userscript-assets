@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Obsidianに保存する
 // @namespace    local.obsidian.capture
-// @version      2.6
-// @description  選択があれば選択範囲、なければ直近で触った返答をマークダウン形式でObsidianの新規ノートに保存（アイコン化・SVGフォールバック・履歴サイト横断・表/チェックリスト強化）
+// @version      2.8
+// @description  選択があれば選択範囲、なければ直近で触った返答をマークダウン形式でObsidianの新規ノートに保存＋チャット全体MDダウンロード（アイコン化・SVGフォールバック・履歴サイト横断・表/チェックリスト強化）
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @match        https://gemini.google.com/*
@@ -156,7 +156,7 @@ function sanitizeWindowsFileName(name) {
   // =========================
 
   const MATERIAL_SYMBOLS_HREF =
-    'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&icon_names=calendar_add_on,note_add,replay';
+    'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&icon_names=calendar_add_on,download,note_add';
 
   // ChatGPT / Claude は CSP で fonts.googleapis.com がブロックされがち → 最初からSVG固定
   function forceSvgHost() {
@@ -185,8 +185,8 @@ function sanitizeWindowsFileName(name) {
       "M700-80v-120H580v-60h120v-120h60v120h120v60H760v120h-60Zm-520-80q-24 0-42-18t-18-42v-540q0-24 18-42t42-18h65v-60h65v60h260v-60h65v60h65q24 0 42 18t18 42v302q-15-2-30-2t-30 2v-112H180v350h320q0 15 3 30t8 30H180Zm0-470h520v-130H180v130Zm0 0v-130 130Z",
     note_add:
       "M450-234h60v-129h130v-60H510v-130h-60v130H320v60h130v129ZM220-80q-24 0-42-18t-18-42v-680q0-24 18-42t42-18h361l219 219v521q0 24-18 42t-42 18H220Zm331-554v-186H220v680h520v-494H551ZM220-820v186-186 680-680Z",
-    replay:
-      "M339.5-108Q274-136 225-185t-77-114.5Q120-365 120-440h60q0 125 87.5 212.5T480-140q125 0 212.5-87.5T780-440q0-125-85-212.5T485-740h-23l73 73-41 42-147-147 147-147 41 41-78 78h23q75 0 140.5 28T735-695q49 49 77 114.5T840-440q0 75-28 140.5T735-185q-49 49-114.5 77T480-80q-75 0-140.5-28Z",
+    download:
+      "M480-336 288-528l51-51 105 105v-342h72v342l105-105 51 51-192 192ZM263.72-192Q234-192 213-213.15T192-264v-72h72v72h432v-72h72v72q0 29.7-21.16 50.85Q725.68-192 695.96-192H263.72Z",
   };
 
   function makeSvgIcon(iconName, sizePx = 22) {
@@ -340,30 +340,25 @@ function sanitizeWindowsFileName(name) {
     });
 
     // --- タスクリストを強制（li内のcheckboxをGFMに） ---
-    // --- タスクリストを強制（ChatGPTの構造も拾う） ---
+    // 検出条件は保守的にし、Radix UI等のdata-state属性との衝突を回避
 service.addRule("taskListItemsCustom", {
   filter(node) {
     if (!node || node.nodeName !== "LI") return false;
 
-    // 1) いままでの正攻法（input/role）
-    if (node.querySelector('input[type="checkbox"], [role="checkbox"]')) return true;
+    // 1) 実際の checkbox input（最も確実）
+    if (node.querySelector('input[type="checkbox"]')) return true;
 
-    // 2) markdown-it系の典型（ChatGPTで出がち）
-    // <ul class="contains-task-list"><li class="task-list-item">...
-    const liClass = node.className || "";
-    const ul = node.closest && node.closest("ul");
-    const ulClass = ul ? (ul.className || "") : "";
+    // 2) ARIA role="checkbox"
+    if (node.querySelector('[role="checkbox"]')) return true;
 
-    if (/(^|\s)task-list-item(\s|$)/.test(liClass)) return true;
-    if (/(^|\s)contains-task-list(\s|$)/.test(ulClass)) return true;
+    // 3) aria-checked（明示的なチェックボックスセマンティクス）
+    if (node.querySelector('[aria-checked="true"], [aria-checked="false"]')) return true;
 
-    // 3) チェックUIがSVGやspanで描かれてるケースの保険
-    // （aria-checked / data-state / data-checked 等を拾う）
-    if (node.querySelector('[aria-checked], [data-state], [data-checked]')) return true;
+    // 4) テキストが [x] / [ ] で始まる（Gemini等はチェックボックスをプレーンテキストで描画）
+    const text = (node.textContent || "").trim();
+    if (/^\[[ xX]\]\s+/.test(text)) return true;
 
-    // 4) 最後の保険：先頭にチェックっぽい記号が含まれる
-    const t = (node.textContent || "").trim();
-    return /^(\[.\]|\u2610|\u2611|\u2713|\u2705)\s+/.test(t); // [ ] / [x] / □ / ☑ / ✓ / ✅
+    return false;
   },
 
   replacement(content, node) {
@@ -399,18 +394,23 @@ service.addRule("taskListItemsCustom", {
       if (/^(\[x\]|\u2611|\u2713|\u2705)\s+/i.test(rawText)) checked = true; // [x] / ☑ / ✓ / ✅
     }
 
-    // テキスト抽出：checkbox UIを除去してから読む
-    const clone = node.cloneNode(true);
-    clone.querySelectorAll(
-      'input[type="checkbox"], [role="checkbox"], [aria-checked], [data-checked], [data-state]'
-    ).forEach(el => el.remove());
+    // Turndownが再帰的に変換済みの content を使う（ネスト構造が保持される）
+    // Turndownデフォルトの listItem と同じインデント処理を適用
+    content = content
+      .replace(/^\n+/, '')       // 先頭の改行を除去
+      .replace(/\n+$/, '\n')    // 末尾の改行を正規化
+      .replace(/\n/gm, '\n    '); // ネストされた内容をインデント
 
-    // 先頭に残ってる [ ] や □ を剥がす（重複防止）
-    let text = (clone.textContent || "").trim().replace(/\s+/g, " ");
-    text = text.replace(/^(\[.\]|\u2610|\u2611|\u2713|\u2705)\s+/i, "");
+    // 先頭に残ってるチェックボックス記号を除去（重複防止）
+    // エスケープ済み: \[x\], \[ \]  未エスケープ: [x], [ ]  記号: ☐☑✓✅
+    content = content.replace(/^\\?\[[ xX]\\?\]\s*/i, '');
+    content = content.replace(/^[\u2610\u2611\u2713\u2705]\s*/i, '');
 
     const box = checked ? "[x]" : "[ ]";
-    return `\n- ${box} ${text}\n`;
+    return (
+      '- ' + box + ' ' + content +
+      (node.nextSibling && !/\n$/.test(content) ? '\n' : '')
+    );
   }
 });
 
@@ -475,19 +475,19 @@ service.addRule("taskListItemsCustom", {
     return service;
   }
 
-  function getSelectionHtml() {
+  function getSelectionContainer() {
     const sel = window.getSelection?.();
-    if (!sel || sel.rangeCount === 0) return "";
+    if (!sel || sel.rangeCount === 0) return null;
 
     const range = sel.getRangeAt(0);
     const container = document.createElement("div");
     container.appendChild(range.cloneContents());
-    return container.innerHTML;
+    return container.childNodes.length > 0 ? container : null;
   }
 
   function getSelectionMarkdown() {
-    const html = getSelectionHtml();
-    if (!html) return "";
+    const container = getSelectionContainer();
+    if (!container) return "";
 
     if (!turndownService) {
       turndownService = initTurndown();
@@ -495,7 +495,8 @@ service.addRule("taskListItemsCustom", {
     if (!turndownService) {
       return window.getSelection?.()?.toString().trim() || "";
     }
-    return turndownService.turndown(html).trim();
+    // DOM要素を直接渡す（Trusted Types CSP対策）
+    return turndownService.turndown(container).trim();
   }
 
   let lastPointedEl = null;
@@ -508,11 +509,22 @@ service.addRule("taskListItemsCustom", {
     return r.width > 0 && r.height > 0;
   }
 
+  // Turndownがエスケープしたチェックボックス記法を復元（ \[ \] → [ ]、\[x\] → [x] ）
+  function unescapeCheckboxes(md) {
+    return md.replace(/^(\s*-\s+)\\\[([ xX])\\\]/gm, '$1[$2]');
+  }
+
   function markdownFromEl(el) {
     if (!el) return "";
     if (!turndownService) turndownService = initTurndown();
     if (!turndownService) return (el.innerText || el.textContent || "").trim();
-    return turndownService.turndown(el.innerHTML).trim();
+    // Claude のビジュアライゼーションウィジェットを除去（該当サイトのみ）
+    const target = (location.hostname.includes("claude.ai") && typeof stripClaudeVisualizationWidgets === "function")
+      ? stripClaudeVisualizationWidgets(el)
+      : el;
+    // DOM要素を直接渡す（Trusted Types CSP対策：innerHTML経由だとブロックされるサイトがある）
+    const md = turndownService.turndown(target).trim();
+    return unescapeCheckboxes(md);
   }
 
   function closestBySelectors(startEl, selectors) {
@@ -699,26 +711,301 @@ service.addRule("taskListItemsCustom", {
   saveLastNotePath(filepath);
 }
 
-  async function onClickLastNote() {
-    const selected = getSelectionMarkdown();
-    let payload = selected;
+  // =========================
+  // ユーティリティ：連続する重複パラグラフを除去
+  // （Claude UIのツール使用ブロックでサマリーが2要素に重複表示される問題への対策）
+  // =========================
 
-    if (!payload) {
-      const replyEl = findWholeReplyElement();
-      payload = markdownFromEl(replyEl);
-      if (!payload) {
-        alert("保存する返答を特定できなかった。");
-        return;
+  function removeDuplicateParagraphs(md) {
+    const parts = md.split(/\n\n+/);
+    const result = [];
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      if (result.length > 0 && trimmed === result[result.length - 1].trim()) continue;
+      result.push(part);
+    }
+    return result.join('\n\n');
+  }
+
+  // =========================
+  // チャット全体ダウンロード機能
+  // =========================
+
+  function formatDateForFilename(date) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const h = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    return `${y}-${m}-${d} ${h}.${min}`;
+  }
+
+  function sanitizeFilenameForDownload(name) {
+    return name.replace(/[\\\/:*?"<>|]/g, '_').trim();
+  }
+
+  function downloadMarkdownFile(filename, content) {
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function getServiceNameForExport() {
+    const host = location.hostname;
+    if (host.includes('chatgpt.com') || host.includes('chat.openai.com')) return 'chatgpt';
+    if (host.includes('gemini.google.com')) return 'gemini';
+    if (host.includes('claude.ai')) return 'claude';
+    return null;
+  }
+
+  function extractFullChatGPT() {
+    const title = document.title || 'Untitled';
+    const messages = [];
+    const turns = document.querySelectorAll('[data-testid^="conversation-turn"]');
+
+    function processUser(el) {
+      const textEl = el.querySelector('.whitespace-pre-wrap');
+      const text = textEl ? textEl.textContent.trim() : el.innerText.trim();
+      if (text) messages.push({ role: 'user', content: text });
+    }
+
+    function processAssistant(el) {
+      const mdEl = el.querySelector('.markdown');
+      if (mdEl) {
+        const md = markdownFromEl(mdEl);
+        if (md) messages.push({ role: 'assistant', content: md });
+      } else {
+        const text = el.innerText.trim();
+        if (text) messages.push({ role: 'assistant', content: text });
       }
     }
 
-    const lastPath = getLastNotePath();
-    if (!lastPath) {
-      alert("前回保存したノートがありません。");
+    if (turns.length > 0) {
+      turns.forEach(turn => {
+        const userEl = turn.querySelector('[data-message-author-role="user"]');
+        // ChatGPTでは1ターン内に複数のassistant要素がある場合がある
+        // （思考/検索ステップ + 本体の返答）。最後の要素が本体。
+        const assistantEls = turn.querySelectorAll('[data-message-author-role="assistant"]');
+        if (userEl) processUser(userEl);
+        if (assistantEls.length > 0) {
+          processAssistant(assistantEls[assistantEls.length - 1]);
+        }
+      });
+    } else {
+      // フォールバック: ターンが見つからない場合は全要素を走査
+      // assistant要素が連続する場合は最後の1つだけを採用
+      const allMsgs = document.querySelectorAll('[data-message-author-role]');
+      let pendingAssistant = null;
+      allMsgs.forEach(el => {
+        const role = el.getAttribute('data-message-author-role');
+        if (role === 'user') {
+          // 先に溜まっているassistantがあれば確定
+          if (pendingAssistant) {
+            processAssistant(pendingAssistant);
+            pendingAssistant = null;
+          }
+          processUser(el);
+        } else if (role === 'assistant') {
+          // 連続するassistantは上書き（最後のものだけ残す）
+          pendingAssistant = el;
+        }
+      });
+      // 末尾に残ったassistantを処理
+      if (pendingAssistant) {
+        processAssistant(pendingAssistant);
+      }
+    }
+
+    let model = '';
+    const modelSelector = document.querySelector('button[aria-label*="モデル"], button[aria-label*="Model"]');
+    if (modelSelector) {
+      const t = modelSelector.textContent.trim();
+      if (t.length < 30) model = t;
+    }
+    if (!model) {
+      const modelBtns = document.querySelectorAll('button');
+      for (const btn of modelBtns) {
+        const t = btn.textContent.trim();
+        if (t.match(/^(GPT-|ChatGPT|o[134]|gpt)/i) && t.length < 30) {
+          model = t;
+          break;
+        }
+      }
+    }
+
+    return { title, messages, model, service: 'ChatGPT' };
+  }
+
+  function extractFullGemini() {
+    const messages = [];
+
+    let title = '';
+    const activeTitle = document.querySelector('.selected .conversation-title, .active .conversation-title');
+    if (activeTitle) {
+      title = activeTitle.textContent.trim();
+    }
+    if (!title) {
+      title = document.title.replace(' - Google Gemini', '').replace('Google Gemini', '').trim() || 'Untitled';
+    }
+
+    const userQueries = document.querySelectorAll('user-query');
+    const modelResponses = document.querySelectorAll('model-response');
+
+    const maxLen = Math.max(userQueries.length, modelResponses.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (i < userQueries.length) {
+        const queryText = userQueries[i].querySelector('.query-text');
+        let text = queryText ? queryText.textContent.trim() : userQueries[i].innerText.trim();
+        text = text.replace(/^あなたのプロンプト\s*/, '').trim();
+        if (text) messages.push({ role: 'user', content: text });
+      }
+      if (i < modelResponses.length) {
+        const mdEl = modelResponses[i].querySelector('message-content .markdown');
+        if (mdEl) {
+          const md = markdownFromEl(mdEl);
+          if (md) messages.push({ role: 'assistant', content: md });
+        } else {
+          const responseText = modelResponses[i].querySelector('.model-response-text');
+          const text = responseText ? responseText.innerText.trim() : '';
+          if (text) messages.push({ role: 'assistant', content: text });
+        }
+      }
+    }
+
+    return { title, messages, model: '', service: 'Gemini' };
+  }
+
+  // Claudeのビジュアライゼーションウィジェット要素をクローンから除去
+  function stripClaudeVisualizationWidgets(el) {
+    const clone = el.cloneNode(true);
+
+    // 1) <style> 要素（::view-transition CSS）
+    clone.querySelectorAll('style').forEach(s => s.remove());
+
+    // 2) モーダル背景 (div.fixed.z-modal)
+    clone.querySelectorAll('div.fixed').forEach(d => {
+      if (d.className.includes('z-modal')) d.remove();
+    });
+
+    // 3) ウィジェットUI本体 (ease-out transition-all font-ui flex-col を含むクラス)
+    clone.querySelectorAll('div').forEach(d => {
+      const cls = d.className || '';
+      if (cls.includes('transition-all') && cls.includes('font-ui') && cls.includes('flex-col')) {
+        d.remove();
+      }
+    });
+
+    return clone;
+  }
+
+  function extractFullClaude() {
+    const titleBtn = document.querySelector('[data-testid="chat-title-button"]');
+    const title = titleBtn ? titleBtn.textContent.trim() : document.title.replace(' - Claude', '').trim() || 'Untitled';
+
+    const messages = [];
+    const allMsgEls = document.querySelectorAll('[data-testid="user-message"], .font-claude-response');
+
+    allMsgEls.forEach(el => {
+      if (el.matches('[data-testid="user-message"]')) {
+        const text = el.innerText.trim();
+        if (text) messages.push({ role: 'user', content: text });
+      } else if (el.matches('.font-claude-response')) {
+        // 入れ子の .font-claude-response はスキップ（二重抽出防止）
+        if (el.parentElement && el.parentElement.closest('.font-claude-response')) return;
+        const cleaned = stripClaudeVisualizationWidgets(el);
+        const md = removeDuplicateParagraphs(markdownFromEl(cleaned));
+        if (md) messages.push({ role: 'assistant', content: md });
+      }
+    });
+
+    let model = '';
+    const allButtons = document.querySelectorAll('button');
+    for (const btn of allButtons) {
+      const t = btn.textContent.trim();
+      if (t.match(/^(Sonnet|Opus|Haiku|Claude)/i) && t.length < 30) {
+        model = t;
+        break;
+      }
+    }
+
+    return { title, messages, model, service: 'Claude' };
+  }
+
+  function generateFullMarkdown(data) {
+    const lines = [];
+    lines.push('# ' + data.title);
+    lines.push('');
+    if (data.model) {
+      lines.push('Model: ' + data.model);
+    }
+    lines.push('Created: ' + new Date().toLocaleString());
+    lines.push('Exported from: ' + data.service);
+    lines.push('');
+
+    for (const msg of data.messages) {
+      if (msg.role === 'user') {
+        lines.push('### User');
+        lines.push('');
+        lines.push(msg.content);
+        lines.push('');
+      } else if (msg.role === 'assistant') {
+        lines.push('### Assistant');
+        lines.push('');
+        lines.push(msg.content);
+        lines.push('');
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  function exportChat() {
+    const service = getServiceNameForExport();
+    if (!service) {
+      alert('このサイトではダウンロード機能はサポートされていません。');
       return;
     }
 
-    openObsidianNewNote(lastPath, payload, true);
+    let data;
+    try {
+      switch (service) {
+        case 'chatgpt': data = extractFullChatGPT(); break;
+        case 'gemini': data = extractFullGemini(); break;
+        case 'claude': data = extractFullClaude(); break;
+      }
+    } catch (e) {
+      alert('チャット履歴の取得中にエラーが発生しました: ' + e.message);
+      console.error('Chat export error:', e);
+      return;
+    }
+
+    if (!data || data.messages.length === 0) {
+      alert('チャット履歴が見つかりませんでした。チャットページを開いてから実行してください。');
+      return;
+    }
+
+    const markdown = generateFullMarkdown(data);
+    const filename = sanitizeFilenameForDownload(data.title) + ' - ' + formatDateForFilename(new Date()) + '.md';
+    downloadMarkdownFile(filename, markdown);
+  }
+
+  function setupExportShortcut() {
+    // T3chatではショートカット不要
+    if (location.hostname.includes('t3.chat')) return;
+
+    document.addEventListener('keydown', (e) => {
+      if (e.altKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        exportChat();
+      }
+    });
   }
 
   function injectButton() {
@@ -822,11 +1109,14 @@ service.addRule("taskListItemsCustom", {
       onClick: onClickNewNote
     }));
 
-    container.appendChild(makeIconButton({
-      iconName: "replay",
-      label: "前回のノート",
-      onClick: onClickLastNote
-    }));
+    // T3chat以外ではダウンロードボタンを追加
+    if (!location.hostname.includes('t3.chat')) {
+      container.appendChild(makeIconButton({
+        iconName: "download",
+        label: "チャット全体をMarkdownでダウンロード (Alt+S)",
+        onClick: exportChat
+      }));
+    }
 
     document.body.appendChild(container);
 
@@ -838,6 +1128,7 @@ service.addRule("taskListItemsCustom", {
       turndownService = initTurndown();
       migrateLocalStorageToGMOncePerHost();
       injectButton();
+      setupExportShortcut();
     } else {
       setTimeout(waitForTurndown, 100);
     }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YTチャットからチャンネルに飛ぶ
 // @namespace    https://example.com/
-// @version      5.0.0
+// @version      5.0.1
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
 // @grant        GM_openInTab

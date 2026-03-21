@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YT高評価数を非表示に
+// @name         YouTubeのレイアウト調整
 // @namespace    https://example.com/
 // @version      3.2.0
-// @description  YouTubeの高評価数だけ非表示（アイコンは残す・監視を#actionsに限定して軽量化）
+// @description  YouTubeのレイアウトを調整する（高評価数の非表示、Hideボタンの非表示など）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_addStyle
@@ -97,4 +97,13 @@
   `;
 
   GM_addStyle(css);
+
+  /* =========================================================
+     4) 動画プレーヤー上の Hide ボタンを非表示
+     ========================================================= */
+  GM_addStyle(`
+    .ytp-ce-hide-button-container {
+      display: none !important;
+    }
+  `);
 })();

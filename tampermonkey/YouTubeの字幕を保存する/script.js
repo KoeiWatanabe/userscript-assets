@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      0.5.1
-// @description  Adds 2 save buttons to YouTube transcript panel header. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
+// @version      1.5.1
+// @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
+// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/icon_128.png
 // ==/UserScript==
 
 (() => {
@@ -15,6 +16,7 @@
   const BTN_ID_NO_TS = "tm-transcript-save-btn";
   const BTN_ID_WITH_TS = "tm-transcript-save-btn-ts";
   const STYLE_ID = "tm-transcript-save-style";
+  const NOTIFY_ICON = "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/icon_128.png"; // 通知アイコンURL（null ならデフォルトアイコン）
 
   // Default save icon (used for no-timestamp TXT)
   const SAVE_ICON_PATH =
@@ -55,8 +57,149 @@
         display: block;
         fill: currentColor;
       }
+      @keyframes tm-transcript-notify-in {
+        0%   { opacity: 0; transform: translate(-50%, -100%); }
+        5%   { opacity: 1; transform: translate(-50%, 0); }
+        85%  { opacity: 1; transform: translate(-50%, 0); }
+        100% { opacity: 0; transform: translate(-50%, -100%); }
+      }
+      @keyframes tm-transcript-notify-stay {
+        0%   { opacity: 0; transform: translate(-50%, -100%); }
+        15%  { opacity: 1; transform: translate(-50%, 0); }
+        100% { opacity: 1; transform: translate(-50%, 0); }
+      }
+      .tm-transcript-notify {
+        position: absolute;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border-radius: 14px;
+        padding: 10px 14px;
+        pointer-events: none;
+        z-index: 2022;
+        min-width: 260px;
+        max-width: 400px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: -apple-system, BlinkMacSystemFont, "Noto Sans JP", "Helvetica Neue", sans-serif;
+      }
+      .tm-transcript-notify.--auto {
+        animation: tm-transcript-notify-in 5s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+      }
+      .tm-transcript-notify.--stay {
+        animation: tm-transcript-notify-stay 0.6s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+      }
+      .tm-transcript-notify.--dark {
+        background: rgba(30, 30, 30, 0.88);
+        box-shadow: 0 4px 24px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(255,255,255,0.1) inset;
+      }
+      .tm-transcript-notify.--light {
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06);
+      }
+      .tm-transcript-notify__icon-fallback {
+        width: 36px; height: 36px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #FF3B30, #FF6B6B);
+        display: flex; align-items: center; justify-content: center;
+        flex-shrink: 0;
+        color: #fff; font-size: 18px; font-weight: bold;
+      }
+      .tm-transcript-notify__icon-img {
+        width: 36px; height: 36px;
+        border-radius: 8px;
+        object-fit: cover;
+        flex-shrink: 0;
+      }
+      .tm-transcript-notify__body { display: flex; flex-direction: column; gap: 1px; }
+      .tm-transcript-notify__title { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; }
+      .tm-transcript-notify__msg   { font-size: 12px; font-weight: 400; }
+      .tm-transcript-notify__time  { font-size: 11px; margin-left: auto; align-self: flex-start; flex-shrink: 0; }
+      .tm-transcript-notify.--dark .tm-transcript-notify__title { color: rgba(255,255,255,0.95); }
+      .tm-transcript-notify.--dark .tm-transcript-notify__msg   { color: rgba(255,255,255,0.6); }
+      .tm-transcript-notify.--dark .tm-transcript-notify__time  { color: rgba(255,255,255,0.35); }
+      .tm-transcript-notify.--light .tm-transcript-notify__title { color: rgba(0,0,0,0.88); }
+      .tm-transcript-notify.--light .tm-transcript-notify__msg   { color: rgba(0,0,0,0.5); }
+      .tm-transcript-notify.--light .tm-transcript-notify__time  { color: rgba(0,0,0,0.3); }
     `;
     document.head.appendChild(style);
+  }
+
+  // ── iOS風通知 ──
+  let _notifyTimer = 0;
+  /**
+   * 通知を表示する。
+   * @param {string} message - 通知メッセージ
+   * @param {"auto"|"stay"} mode - "auto": 3秒で自動消去, "stay": 手動で消すまで表示
+   * @returns {function} dismiss - 通知を消す関数
+   */
+  function showNotify(message, mode = "auto") {
+    addStyleOnce();
+    const player = document.querySelector("#movie_player");
+    if (!player) return () => {};
+
+    // 既存の通知を除去
+    const existing = player.querySelector(".tm-transcript-notify");
+    if (existing) existing.remove();
+    if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = 0; }
+
+    const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const banner = document.createElement("div");
+    banner.className = `tm-transcript-notify --${mode} ` + (isDark ? "--dark" : "--light");
+
+    // アイコン
+    if (NOTIFY_ICON) {
+      const img = document.createElement("img");
+      img.className = "tm-transcript-notify__icon-img";
+      img.src = NOTIFY_ICON;
+      img.onerror = () => {
+        const fallback = document.createElement("div");
+        fallback.className = "tm-transcript-notify__icon-fallback";
+        fallback.textContent = "\u5B57"; // 「字」
+        img.replaceWith(fallback);
+      };
+      banner.appendChild(img);
+    } else {
+      const icon = document.createElement("div");
+      icon.className = "tm-transcript-notify__icon-fallback";
+      icon.textContent = "\u5B57"; // 「字」
+      banner.appendChild(icon);
+    }
+
+    // テキスト
+    const body = document.createElement("div");
+    body.className = "tm-transcript-notify__body";
+    const title = document.createElement("div");
+    title.className = "tm-transcript-notify__title";
+    title.textContent = "YouTubeの字幕を保存する";
+    const msg = document.createElement("div");
+    msg.className = "tm-transcript-notify__msg";
+    msg.textContent = message;
+    body.appendChild(title);
+    body.appendChild(msg);
+
+    // 時刻ラベル
+    const time = document.createElement("div");
+    time.className = "tm-transcript-notify__time";
+    time.textContent = "\u4ECA"; // 「今」
+
+    banner.appendChild(body);
+    banner.appendChild(time);
+    player.appendChild(banner);
+
+    const dismiss = () => {
+      if (banner.parentNode) banner.remove();
+      if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = 0; }
+    };
+
+    if (mode === "auto") {
+      _notifyTimer = setTimeout(dismiss, 5500);
+    }
+
+    return dismiss;
   }
 
   function sanitizeFilename(name) {
@@ -67,7 +210,27 @@
       .slice(0, 120);
   }
 
+  /**
+   * 原語（オリジナル言語）の動画タイトルを返す。
+   * ブラウザの表示言語が英語でも、YouTubeの内部データから翻訳前のタイトルを取得する。
+   */
   function getVideoTitle() {
+    // 1. microformat: SEO/OGP 用データなので原語タイトルが保持されている
+    try {
+      const micro =
+        window.ytInitialPlayerResponse?.microformat?.playerMicroformatRenderer;
+      if (micro?.title?.simpleText?.trim()) return micro.title.simpleText.trim();
+    } catch (_) {/* ignore */}
+
+    // 2. movie_player の内部レスポンス（SPA遷移後でも更新される）
+    try {
+      const player = document.getElementById("movie_player");
+      const resp = player?.getPlayerResponse?.();
+      const micro2 = resp?.microformat?.playerMicroformatRenderer;
+      if (micro2?.title?.simpleText?.trim()) return micro2.title.simpleText.trim();
+    } catch (_) {/* ignore */}
+
+    // 3. フォールバック: DOM から取得（翻訳済みの場合あり）
     const h1 = document.querySelector("h1.ytd-watch-metadata yt-formatted-string");
     if (h1?.textContent?.trim()) return h1.textContent.trim();
     const meta = document.querySelector('meta[name="title"]')?.getAttribute("content");
@@ -88,10 +251,57 @@
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
+  // ── Chapter detection ───────────────────────────────────────────────────
+
+  function hasChapters() {
+    return !!(
+      document.querySelector("timeline-chapter-view-model") ||
+      document.querySelector("#segments-container ytd-transcript-section-header-renderer")
+    );
+  }
+
   // ── New DOM helpers (transcript-segment-view-model) ──────────────────────
 
   function hasNewTranscript() {
     return !!document.querySelector("transcript-segment-view-model");
+  }
+
+  /**
+   * チャプター + 字幕セグメントを DOM 順に取得する（新DOM専用）。
+   * 返り値の entries 配列は { type: "chapter"|"segment", ... } の混在リスト。
+   */
+  function extractTranscriptWithChaptersNew() {
+    const items = document.querySelectorAll(
+      "timeline-chapter-view-model, transcript-segment-view-model"
+    );
+    if (!items.length) return { ok: false, reason: "transcript elements not found" };
+
+    const entries = [];
+    items.forEach((el) => {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "timeline-chapter-view-model") {
+        const titleEl = el.querySelector(".ytwTimelineChapterViewModelTitle");
+        const title = (titleEl?.textContent || "").trim();
+        if (title) entries.push({ type: "chapter", title });
+      } else {
+        const tsNode = el.querySelector(".ytwTranscriptSegmentViewModelTimestamp");
+        const textNode = el.querySelector("span.yt-core-attributed-string");
+        const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
+        const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
+        if (!lineText) return;
+        const seconds = parseTimestampToSeconds(tsText);
+        entries.push({ type: "segment", tsText: seconds == null ? "" : tsText, seconds, text: lineText });
+      }
+    });
+
+    const hasAnySegment = entries.some((e) => e.type === "segment");
+    if (!hasAnySegment) return { ok: false, reason: "no transcript segments found" };
+
+    const hasAnyChapter = entries.some((e) => e.type === "chapter");
+    const hasAnyTs = entries.some(
+      (e) => e.type === "segment" && typeof e.seconds === "number" && !Number.isNaN(e.seconds)
+    );
+    return { ok: true, entries, hasAnyChapter, hasAnyTs };
   }
 
   function extractTranscriptTextNew() {
@@ -126,6 +336,51 @@
   }
 
   // ── Old DOM helpers (#segments-container) ────────────────────────────────
+
+  /**
+   * チャプター + 字幕セグメントを DOM 順に取得する（旧DOM専用）。
+   * ytd-transcript-section-header-renderer をチャプター区切りとして認識する。
+   */
+  function extractTranscriptWithChaptersOld() {
+    const container = document.querySelector("#segments-container");
+    if (!container) return { ok: false, reason: "segments-container not found" };
+
+    const items = container.querySelectorAll(
+      "ytd-transcript-section-header-renderer, ytd-transcript-segment-renderer"
+    );
+    if (!items.length) return { ok: false, reason: "transcript elements not found" };
+
+    const entries = [];
+    items.forEach((el) => {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "ytd-transcript-section-header-renderer") {
+        const titleEl = el.querySelector("h2") || el.querySelector("span.yt-core-attributed-string");
+        const title = (titleEl?.textContent || "").trim();
+        if (title) entries.push({ type: "chapter", title });
+      } else {
+        const tsNode =
+          el.querySelector(".segment-timestamp") ||
+          el.querySelector("yt-formatted-string.segment-timestamp") ||
+          el.querySelector("#timestamp") ||
+          el.querySelector("span");
+        const textNode = el.querySelector("yt-formatted-string.segment-text");
+        const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
+        const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
+        if (!lineText) return;
+        const seconds = parseTimestampToSeconds(tsText);
+        entries.push({ type: "segment", tsText: seconds == null ? "" : tsText, seconds, text: lineText });
+      }
+    });
+
+    const hasAnySegment = entries.some((e) => e.type === "segment");
+    if (!hasAnySegment) return { ok: false, reason: "no transcript segments found" };
+
+    const hasAnyChapter = entries.some((e) => e.type === "chapter");
+    const hasAnyTs = entries.some(
+      (e) => e.type === "segment" && typeof e.seconds === "number" && !Number.isNaN(e.seconds)
+    );
+    return { ok: true, entries, hasAnyChapter, hasAnyTs };
+  }
 
   function extractTranscriptText() {
     if (hasNewTranscript()) return extractTranscriptTextNew();
@@ -256,7 +511,16 @@
   }
 
   async function downloadViaShortcut(withTs) {
+    // トランスクリプトが未ロードなら「読み込み中」通知を表示
+    const needsLoad = !hasNewTranscript() && !document.querySelector("#segments-container");
+    let dismissLoading = null;
+    if (needsLoad) {
+      dismissLoading = showNotify("読み込み中…", "stay");
+    }
+
     const loaded = await openTranscriptPanel();
+    if (dismissLoading) dismissLoading();
+
     if (!loaded) {
       alert(
         "トランスクリプトを読み込めませんでした。\n動画の説明欄から「Show transcript」を先に開いてみてください。"
@@ -264,17 +528,37 @@
       return;
     }
 
+    const title = sanitizeFilename(getVideoTitle());
+
+    // チャプターがある場合は .md 形式で保存
+    if (hasChapters()) {
+      const res = hasNewTranscript()
+        ? extractTranscriptWithChaptersNew()
+        : extractTranscriptWithChaptersOld();
+      if (!res.ok) { alert(`取得失敗: ${res.reason}`); return; }
+      if (withTs && !res.hasAnyTs) { alert("タイムスタンプを取得できませんでした。"); return; }
+      const md = buildMarkdownWithChapters(res.entries, withTs);
+      const suffix = withTs ? " - transcript (with timestamps).md" : " - transcript.md";
+      const filename = `${title}${suffix}`;
+      downloadText(md, filename);
+      showNotify(`字幕を ${filename} として保存しました`);
+      return;
+    }
+
+    // チャプターなし → 従来通り .txt 形式
     if (withTs) {
       const res = extractTranscriptSegments();
       if (!res.ok) { alert(`取得失敗: ${res.reason}`); return; }
       if (!res.hasAnyTs) { alert("タイムスタンプを取得できませんでした。"); return; }
-      const title = sanitizeFilename(getVideoTitle());
-      downloadText(buildTimestampedTxt(res.segments), `${title} - transcript (with timestamps).txt`);
+      const filename = `${title} - transcript (with timestamps).txt`;
+      downloadText(buildTimestampedTxt(res.segments), filename);
+      showNotify(`字幕を ${filename} として保存しました`);
     } else {
       const res = extractTranscriptText();
       if (!res.ok) { alert(`取得失敗: ${res.reason}`); return; }
-      const title = sanitizeFilename(getVideoTitle());
-      downloadText(res.text, `${title} - transcript.txt`);
+      const filename = `${title} - transcript.txt`;
+      downloadText(res.text, filename);
+      showNotify(`字幕を ${filename} として保存しました`);
     }
   }
 
@@ -310,6 +594,28 @@
 
   function buildTimestampedTxt(segments) {
     const lines = segments.map((s) => (s.tsText ? `${s.tsText}\t${s.text}` : s.text));
+    return lines.join("\n");
+  }
+
+  /**
+   * チャプター付き entries からマークダウン文字列を生成する。
+   * チャプターは ## 見出し、字幕は本文テキスト。
+   */
+  function buildMarkdownWithChapters(entries, withTimestamps) {
+    const lines = [];
+    entries.forEach((e) => {
+      if (e.type === "chapter") {
+        if (lines.length > 0) lines.push(""); // チャプター前に空行
+        lines.push(`## ${e.title}`);
+        lines.push(""); // チャプター後に空行
+      } else {
+        if (withTimestamps && e.tsText) {
+          lines.push(`${e.tsText}\t${e.text}`);
+        } else {
+          lines.push(e.text);
+        }
+      }
+    });
     return lines.join("\n");
   }
 
@@ -392,23 +698,30 @@
         ariaLabel: "タイムスタンプありで字幕を保存（TXT）",
         pathD: TS_ICON_PATH,
         onClick: async () => {
+          const title = sanitizeFilename(getVideoTitle());
+          if (hasChapters()) {
+            const res = hasNewTranscript()
+              ? extractTranscriptWithChaptersNew()
+              : extractTranscriptWithChaptersOld();
+            if (!res.ok) { alert(`トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`); return; }
+            if (!res.hasAnyTs) { alert("タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。"); return; }
+            const mdFilename = `${title} - transcript (with timestamps).md`;
+            downloadText(buildMarkdownWithChapters(res.entries, true), mdFilename);
+            showNotify(`字幕を ${mdFilename} として保存しました`);
+            return;
+          }
           const res = extractTranscriptSegments();
           if (!res.ok) {
-            alert(
-              `トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`
-            );
+            alert(`トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`);
             return;
           }
           if (!res.hasAnyTs) {
-            alert(
-              "タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。"
-            );
+            alert("タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。");
             return;
           }
-
-          const title = sanitizeFilename(getVideoTitle());
-          const txt = buildTimestampedTxt(res.segments);
-          downloadText(txt, `${title} - transcript (with timestamps).txt`);
+          const tsFilename = `${title} - transcript (with timestamps).txt`;
+          downloadText(buildTimestampedTxt(res.segments), tsFilename);
+          showNotify(`字幕を ${tsFilename} として保存しました`);
         },
       });
 
@@ -418,16 +731,25 @@
         ariaLabel: "タイムスタンプなしで字幕を保存（TXT）",
         pathD: SAVE_ICON_PATH,
         onClick: async () => {
-          const res = extractTranscriptText();
-          if (!res.ok) {
-            alert(
-              `トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`
-            );
+          const title = sanitizeFilename(getVideoTitle());
+          if (hasChapters()) {
+            const res = hasNewTranscript()
+              ? extractTranscriptWithChaptersNew()
+              : extractTranscriptWithChaptersOld();
+            if (!res.ok) { alert(`トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`); return; }
+            const mdFilenameNoTs = `${title} - transcript.md`;
+            downloadText(buildMarkdownWithChapters(res.entries, false), mdFilenameNoTs);
+            showNotify(`字幕を ${mdFilenameNoTs} として保存しました`);
             return;
           }
-
-          const title = sanitizeFilename(getVideoTitle());
-          downloadText(res.text, `${title} - transcript.txt`);
+          const res = extractTranscriptText();
+          if (!res.ok) {
+            alert(`トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`);
+            return;
+          }
+          const txtFilename = `${title} - transcript.txt`;
+          downloadText(res.text, txtFilename);
+          showNotify(`字幕を ${txtFilename} として保存しました`);
         },
       });
 

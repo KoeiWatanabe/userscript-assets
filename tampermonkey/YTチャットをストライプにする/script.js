@@ -1,14 +1,11 @@
 // ==UserScript==
-// @name         YTチャットをストライプにする
+// @name         YouTubeのライブチャットをストライプにする
 // @namespace    ytcs
-// @version      6.3.1
+// @version      6.3.3
 // @description  YouTubeライブチャットを“到着順しましま”で読みやすく
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
 // @run-at       document-idle
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットをストライプにする/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットをストライプにする/script.js
@@ -21,16 +18,9 @@
   /**********************
    * Settings
    **********************/
-  const DEFAULTS = {
-    lightStripe: "rgba(0, 0, 0, 0.035)",
-    darkStripe:  "rgba(255, 255, 255, 0.01)",
-  };
-
-  const KEY_LIGHT = "lightStripe";
-  const KEY_DARK  = "darkStripe";
-  const KEY_ENABLE_ROUNDED = "enableRounded";
-  const DEFAULT_ENABLE_ROUNDED = false;
-  const RADIUS_PX = "6px";
+  const LIGHT_STRIPE = "rgba(0, 0, 0, 0.05)";
+  const DARK_STRIPE  = "rgba(255, 255, 255, 0.1)";
+  const RADIUS_PX    = "6px";
 
   const TARGET_TAGS = new Set([
     "YT-LIVE-CHAT-TEXT-MESSAGE-RENDERER",
@@ -73,16 +63,10 @@
    **********************/
   // スタイル要素を自作せず、変数CSSの定義だけを行う
   function updateCss() {
-    const light = GM_getValue(KEY_LIGHT, DEFAULTS.lightStripe);
-    const dark  = GM_getValue(KEY_DARK,  DEFAULTS.darkStripe);
-    const color = isDark() ? dark : light;
-
-    const rounded = GM_getValue(KEY_ENABLE_ROUNDED, DEFAULT_ENABLE_ROUNDED);
-    const radius = rounded ? RADIUS_PX : "0px";
+    const color = isDark() ? DARK_STRIPE : LIGHT_STRIPE;
 
     const root = document.documentElement;
     root.style.setProperty("--ytcs-stripe-color", color);
-    root.style.setProperty("--ytcs-radius", radius);
 
     if (isDarkReaderPresent()) {
       root.setAttribute("data-ytcs-darkreader", "1");
@@ -95,12 +79,12 @@
   GM_addStyle(`
     :root:not([data-ytcs-darkreader]) [data-ytcs-s="1"] {
       background-color: var(--ytcs-stripe-color) !important;
-      border-radius: var(--ytcs-radius) !important;
+      border-radius: ${RADIUS_PX} !important;
     }
     :root[data-ytcs-darkreader] [data-ytcs-s="1"] {
       background-color: transparent !important;
       box-shadow: inset 0 0 0 9999px rgba(127,127,127,0.08) !important;
-      border-radius: var(--ytcs-radius) !important;
+      border-radius: ${RADIUS_PX} !important;
     }
   `);
 
@@ -160,32 +144,10 @@
   }
 
   /**********************
-   * Menu
-   **********************/
-  function promptColor(label, key, fallback) {
-    const current = GM_getValue(key, fallback);
-    const next = prompt(`Color for ${label}\nNow: ${current}`, current);
-    if (next != null) {
-      GM_setValue(key, next.trim());
-      updateCss();
-    }
-  }
-
-  function registerMenu() {
-    GM_registerMenuCommand("Stripe color (Light)…", () => promptColor("Light", KEY_LIGHT, DEFAULTS.lightStripe));
-    GM_registerMenuCommand("Stripe color (Dark)…", () => promptColor("Dark", KEY_DARK, DEFAULTS.darkStripe));
-    GM_registerMenuCommand("Toggle rounded corners", () => {
-      GM_setValue(KEY_ENABLE_ROUNDED, !GM_getValue(KEY_ENABLE_ROUNDED, DEFAULT_ENABLE_ROUNDED));
-      updateCss();
-    });
-  }
-
-  /**********************
    * Init
    **********************/
   function init() {
     updateCss();
-    registerMenu();
 
     // 初回実行
     startObserving();
