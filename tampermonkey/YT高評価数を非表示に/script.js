@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         YouTubeのレイアウト調整
 // @namespace    https://example.com/
-// @version      3.2.0
+// @version      3.2.1
 // @description  YouTubeのレイアウトを調整する（高評価数の非表示、Hideボタンの非表示など）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_addStyle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YT高評価数を非表示に/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YT高評価数を非表示に/script.js
-// @icon         https://lh3.googleusercontent.com/Rzh9eUOk4CP3W-GO1IIFlH8btzW6YuubQQbNDZYRVgYGRsz1Dr-TdZI75kBkt2mVaOtAsHvMG4Et_ErwxMwLaiMs72E=s120
+// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YT高評価数を非表示に/icon.png
 // ==/UserScript==
 
 (function () {
