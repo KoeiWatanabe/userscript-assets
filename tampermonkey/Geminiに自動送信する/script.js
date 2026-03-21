@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Geminiに自動送信する
 // @namespace    http://tampermonkey.net/
-// @version      1.3.2
+// @version      1.3.3
 // @description  URLクエリパラメータ ?q= の内容をGeminiのチャットに自動入力して送信する
 // @author       You
 // @match        https://gemini.google.com/*
