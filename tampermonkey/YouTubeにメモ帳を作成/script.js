@@ -1,10 +1,13 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      6.16
+// @version      6.17
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
 // @require      https://cdn.jsdelivr.net/npm/marked/marked.min.js
@@ -15,6 +18,24 @@
 
 (function() {
     'use strict';
+
+    GM_registerMenuCommand('GAS URLを再設定', () => {
+        const current = GM_getValue('GAS_URL', '');
+        const input = prompt(
+            'Google Apps Script のデプロイURLを入力してください:\n' +
+            '（現在の値: ' + (current || '未設定') + '）'
+        );
+        if (input === null) return;
+        if (input.trim().startsWith('https://script.google.com/')) {
+            GM_setValue('GAS_URL', input.trim());
+            alert('GAS URLを更新しました。ページを再読込すると反映されます。');
+        } else if (input.trim() === '') {
+            GM_setValue('GAS_URL', '');
+            alert('GAS URLをクリアしました。');
+        } else {
+            alert('無効なURLです。https://script.google.com/ で始まるURLを入力してください。');
+        }
+    });
 
     // =====================================================
     //  ★ プリセットサイズ設定（ここを書き換えて調整）
@@ -744,8 +765,19 @@
     const geminiModeBtn = document.getElementById('yt-note-gemini-mode-btn');
     const trimBtn = document.getElementById('yt-note-trim-btn');
 
-    const GAS_URL =
-        'https://script.google.com/macros/s/AKfycbzX2aXVtTAxJYZmIBzUQyrI84OSgMMmG-1t19IAfk3rCqvXahF7J0mGC980RPQZhOuT/exec';
+    let GAS_URL = GM_getValue('GAS_URL', '');
+    if (!GAS_URL) {
+        const input = prompt(
+            '【初回設定】Google Apps Script のデプロイURLを入力してください:\n' +
+            '（例: https://script.google.com/macros/s/xxxxx/exec）'
+        );
+        if (input && input.trim().startsWith('https://script.google.com/')) {
+            GAS_URL = input.trim();
+            GM_setValue('GAS_URL', GAS_URL);
+        } else {
+            alert('有効なGAS URLが入力されませんでした。メモの保存・読込機能は無効です。\nページを再読込すると再入力できます。');
+        }
+    }
 
     const ICON_VIEW = `
         <svg
@@ -813,6 +845,13 @@
         toggleBtn.classList.toggle('is-open', !isOpen);
         tabWrap.classList.toggle('is-open', !isOpen);
         toggleBtn.title = isOpen ? 'メモ帳を開く' : 'メモ帳を閉じる';
+    });
+
+    document.addEventListener('keydown', e => {
+        if (e.altKey && (e.key === 'm' || e.key === 'M')) {
+            e.preventDefault();
+            toggleBtn.click();
+        }
     });
 
     panel.addEventListener('click', e => {
@@ -909,15 +948,17 @@
         const content = textarea.value;
         localStorage.setItem(`yt_note_${currentVideoId}`, content);
 
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: GAS_URL,
-            data: JSON.stringify({
-                videoId: currentVideoId,
-                content: content
-            }),
-            headers: { 'Content-Type': 'application/json' }
-        });
+        if (GAS_URL) {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: GAS_URL,
+                data: JSON.stringify({
+                    videoId: currentVideoId,
+                    content: content
+                }),
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
     }
 
     function loadNote() {
@@ -939,6 +980,7 @@
         textarea.value = localNote;
         applyInitialMode(localNote);
 
+        if (!GAS_URL) return;
         GM_xmlhttpRequest({
             method: 'GET',
             url: `${GAS_URL}?videoId=${currentVideoId}`,
