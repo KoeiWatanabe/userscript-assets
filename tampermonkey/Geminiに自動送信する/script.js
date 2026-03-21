@@ -15,23 +15,23 @@
     'use strict';
 
     // --- 設定 ---
-    const PARAM_NAME  = 'q';         // 使用するURLパラメータ名
-    const MODE_PARAM   = 'mode';      // モード指定パラメータ名（think / fast / pro）
+    const PARAM_NAME = 'q';         // 使用するURLパラメータ名
+    const MODE_PARAM = 'mode';      // モード指定パラメータ名（think / fast / pro）
     const DEFAULT_MODE = 'fast';    // デフォルトモード（URLに ?mode= がない場合に使用）
     const INPUT_DELAY_MS = 1000;     // 入力後、送信ボタンを押すまでの待機時間(ms)
-    const MAX_WAIT_MS    = 15000;    // 要素を待つ最大時間(ms)
+    const MAX_WAIT_MS = 15000;    // 要素を待つ最大時間(ms)
 
     // モード名とメニュー内テキストのマッピング（実機確認済み 2026-03-07）
     const MODE_TEXT_MAP = {
         think: '思考モード',   // ?mode=think
-        fast:  '高速モード',   // ?mode=fast
-        pro:   'Pro',          // ?mode=pro
+        fast: '高速モード',   // ?mode=fast
+        pro: 'Pro',          // ?mode=pro
     };
 
     // --- メイン処理 ---
 
     const params = new URLSearchParams(window.location.search);
-    const query  = params.get(PARAM_NAME);
+    const query = params.get(PARAM_NAME);
     if (!query) return;
 
     const modeKey = params.get(MODE_PARAM) ?? DEFAULT_MODE; // 'think' | 'fast' | 'pro'

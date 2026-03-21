@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeコメント欄の名前をもとに戻す＋
 // @namespace    https://example.com/
-// @version      1.0.0
+// @version      1.0.1
 // @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
 // @match        https://www.youtube.com/*
 // @match        https://www.youtube.com/live_chat*
@@ -369,6 +369,10 @@
     let bannerObserver = null;
     let tickerEl = null;
     let tickerObserver = null;
+    let replyPanelEl = null;
+    let replyPanelObserver = null;
+    let pinnedMsgEl = null;
+    let pinnedMsgObserver = null;
 
     const nodeQueue = new Set();
     let rafScheduled = false;
@@ -473,6 +477,39 @@
         tickerObserver.observe(tickerEl, { childList: true, subtree: true });
         enqueueNode(tickerEl);
       }
+
+      // Ticker item detail popup (pinned message renderer)
+      const pinnedMsgFound = document.querySelector('yt-live-chat-pinned-message-renderer#pinned-message');
+      if (pinnedMsgFound && (pinnedMsgEl !== pinnedMsgFound || !pinnedMsgObserver)) {
+        if (pinnedMsgObserver) {
+          try { pinnedMsgObserver.disconnect(); } catch (_) { }
+        }
+        pinnedMsgEl = pinnedMsgFound;
+        pinnedMsgObserver = createChildListObserver();
+        pinnedMsgObserver.observe(pinnedMsgEl, { childList: true, subtree: true });
+        enqueueNode(pinnedMsgEl);
+      }
+
+      // Ticker item detail / reply thread engagement panel
+      const replyPanelFound = document.querySelector(
+        'ytd-engagement-panel-section-list-renderer[target-id="PAreply_thread"]'
+      );
+      if (replyPanelFound && (replyPanelEl !== replyPanelFound || !replyPanelObserver)) {
+        if (replyPanelObserver) {
+          try { replyPanelObserver.disconnect(); } catch (_) { }
+        }
+        replyPanelEl = replyPanelFound;
+        replyPanelObserver = new MutationObserver((mutList) => {
+          for (const mut of mutList) {
+            // Handle added nodes
+            for (const node of mut.addedNodes) enqueueNode(node);
+            // Handle attribute changes (panel becoming visible)
+            if (mut.type === 'attributes') enqueueNode(mut.target);
+          }
+        });
+        replyPanelObserver.observe(replyPanelEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['visibility'] });
+        enqueueNode(replyPanelEl);
+      }
     }
 
     function reset() {
@@ -491,6 +528,16 @@
         tickerObserver = null;
       }
       tickerEl = null;
+      if (pinnedMsgObserver) {
+        try { pinnedMsgObserver.disconnect(); } catch (_) { }
+        pinnedMsgObserver = null;
+      }
+      pinnedMsgEl = null;
+      if (replyPanelObserver) {
+        try { replyPanelObserver.disconnect(); } catch (_) { }
+        replyPanelObserver = null;
+      }
+      replyPanelEl = null;
     }
 
     return { attachObserverIfNeeded, reset };

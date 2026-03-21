@@ -1,12 +1,10 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風にする
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.0.1
+// @version      2.0.4
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
-// @match        https://www.youtube.com/watch*
-// @match        https://www.youtube.com/live_chat*
-// @match        https://www.youtube.com/live_chat_replay*
+// @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeをニコニコ風に/script.js
@@ -24,9 +22,9 @@
   const CONFIG = {
     fontFamily: '"Noto Sans JP", sans-serif',
     fontWeight: 'bold',
-    opacity: 0.85,          // コメント不透明度
+    opacity: 0.9,          // コメント不透明度
     duration: 6,            // コメントが画面を横切る秒数
-    maxLines: 16,           // 同時表示行数（画面を何分割するか）
+    maxLines: 14,           // 同時表示行数（画面を何分割するか）
     lineHeightRatio: 1.4,   // 行の高さ = fontSize × この値
     color: '#FFFFFF',       // デフォルト文字色
     shadowColor: '#000000', // 文字影の色
@@ -396,6 +394,7 @@
   let enabled = true;
   let chatObserver = null;
   let chatObservedItems = null;
+  let chatPollTimer = 0;
   const processedIds = new Set(); // 重複コメント排除用
   const processedIdQueue = [];   // FIFO順で管理
 
@@ -737,6 +736,23 @@
     chatObserver = new MutationObserver(handleChatMutation);
     chatObserver.observe(itemList, { childList: true });
     chatObservedItems = itemList;
+
+    // Top chat / Live chat 切替時に #items が差し替わるのを検知するポーリング
+    if (!chatPollTimer) {
+      chatPollTimer = setInterval(() => {
+        try {
+          const cf = document.querySelector('#chatframe');
+          if (!cf) return;
+          const cd = cf.contentDocument;
+          if (!cd) return;
+          const newItems = cd.querySelector('yt-live-chat-item-list-renderer #items');
+          if (newItems && newItems !== chatObservedItems) {
+            observeChat();
+          }
+        } catch (e) { /* ignore */ }
+      }, 2000);
+    }
+
     return true;
   }
 
@@ -765,6 +781,10 @@
   }
 
   function retryObserveChat(attempt) {
+    // ※ ポーリングはここでリセットしない。
+    //   observeChat() が「同一 #items → 早期リターン」するパスでは
+    //   ポーリングが再起動されないため、停止すると切替検知が永久に失われる。
+    //   ポーリングのリセットは yt-navigate-finish（ページ遷移）時のみ行う。
     if (observeChat()) return;
     if (attempt < 15) {
       setTimeout(() => retryObserveChat(attempt + 1), 1000);
@@ -795,8 +815,15 @@
     }
   });
 
+  // ── 動画ページかどうか判定 ──
+  function isWatchPage() {
+    const path = window.location.pathname;
+    return path === '/watch' || path.startsWith('/live/');
+  }
+
   // ── 初期化 ──
   function init() {
+    if (!isWatchPage()) return; // 動画ページ以外では何もしない
     overlay = createOverlay();
     if (!overlay) {
       const waitPlayer = new MutationObserver(() => {
@@ -816,11 +843,15 @@
 
   // ── SPA ナビゲーション対応 ──
   document.addEventListener('yt-navigate-finish', () => {
-    if (window.location.pathname === '/watch' || window.location.pathname.startsWith('/live/')) {
+    if (isWatchPage()) {
       if (chatObserver) {
         chatObserver.disconnect();
         chatObserver = null;
         chatObservedItems = null;
+      }
+      if (chatPollTimer) {
+        clearInterval(chatPollTimer);
+        chatPollTimer = 0;
       }
       resetRuntimeState(true);
       setTimeout(() => {
