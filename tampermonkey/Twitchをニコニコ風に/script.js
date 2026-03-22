@@ -30,7 +30,7 @@
     modColor: '#5E84F1',
     vipColor: '#E005B9',
     bgOpacity: 0.35,
-    notifyIcon: "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeをニコニコ風に/icon_128.png",
+    notifyIcon: "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitchをニコニコ風に/icon_128.png",
   };
 
   // ─── 動的フォントサイズ ───
