@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitchをニコニコ風にする
 // @namespace    https://github.com/tampermonkey-twitch-danmaku
-// @version      1.2.0
+// @version      1.2.1
 // @description  Twitchチャットのコメントをニコニコ動画風に動画上へ弾幕表示する（ライブ・VOD両対応）
 // @author       You
 // @match        https://www.twitch.tv/*
@@ -21,7 +21,7 @@
     fontWeight: 'bold',
     opacity: 0.9,
     duration: 6,
-    maxLines: 14,
+    maxLines: 15,
     lineHeightRatio: 1.4,
     color: '#FFFFFF',
     shadowColor: '#000000',
@@ -29,7 +29,6 @@
     broadcasterColor: '#FFD600',
     modColor: '#5E84F1',
     vipColor: '#E005B9',
-    bgOpacity: 0.35,
     notifyIcon: "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitchをニコニコ風に/icon_128.png",
   };
 
@@ -40,7 +39,6 @@
     if (!overlayHeight) return;
     fontSize = Math.floor(overlayHeight * CONFIG.displayArea / (CONFIG.maxLines * CONFIG.lineHeightRatio));
 
-    // ★ ここが重要：計算結果が小さすぎる場合は強制的に大きくする
     if (fontSize < 24) {
       fontSize = 24;
     }
@@ -149,16 +147,6 @@
           -1px 1px 2px ${CONFIG.shadowColor};
         backface-visibility: hidden;
       }
-      .tw-danmaku-emoji {
-        height: var(--tw-danmaku-fs, 32px);
-        width: auto;
-        min-width: 1em;
-        min-height: var(--tw-danmaku-fs, 32px);
-        vertical-align: middle;
-        margin: 0 2px;
-        display: inline-block;
-        object-fit: contain;  /* ← これを追加 */
-      }
       @keyframes tw-danmaku-notify-in {
         0%   { opacity: 0; transform: translate(-50%, -100%); }
         8%   { opacity: 1; transform: translate(-50%, 0); }
@@ -188,10 +176,6 @@
         background: rgba(30, 30, 30, 0.88);
         box-shadow: 0 4px 24px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(255,255,255,0.1) inset;
       }
-      .tw-danmaku-notify.--light {
-        background: rgba(255, 255, 255, 0.92);
-        box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06);
-      }
       .tw-danmaku-notify__icon-fallback {
         width: 36px; height: 36px;
         border-radius: 8px;
@@ -213,9 +197,6 @@
       .tw-danmaku-notify.--dark .tw-danmaku-notify__title { color: rgba(255,255,255,0.95); }
       .tw-danmaku-notify.--dark .tw-danmaku-notify__msg   { color: rgba(255,255,255,0.6); }
       .tw-danmaku-notify.--dark .tw-danmaku-notify__time  { color: rgba(255,255,255,0.35); }
-      .tw-danmaku-notify.--light .tw-danmaku-notify__title { color: rgba(0,0,0,0.88); }
-      .tw-danmaku-notify.--light .tw-danmaku-notify__msg   { color: rgba(0,0,0,0.5); }
-      .tw-danmaku-notify.--light .tw-danmaku-notify__time  { color: rgba(0,0,0,0.3); }
     `;
     document.head.appendChild(style);
   }
@@ -230,9 +211,8 @@
     if (existing) existing.remove();
     if (notifyTimer) { clearTimeout(notifyTimer); notifyTimer = 0; }
 
-    const isDark = true; // Twitchは基本ダークモード
     const banner = document.createElement('div');
-    banner.className = 'tw-danmaku-notify ' + (isDark ? '--dark' : '--light');
+    banner.className = 'tw-danmaku-notify --dark';
 
     if (CONFIG.notifyIcon) {
       const img = document.createElement('img');
@@ -396,45 +376,15 @@
 
   // ── チャット情報抽出（ライブ・VOD共通）──
   function extractChatInfo(node) {
-    const usernameEl = node.querySelector('[data-a-target="chat-message-username"], .chat-author__display-name');
-    const authorName = usernameEl ? (usernameEl.textContent || '').trim() : '';
-    const authorColor = usernameEl ? usernameEl.style.color : '';
-
-    // バッジからユーザー種別を判定
+    // バッジからユーザー種別を判定し、文字色を決定
     const badges = node.querySelectorAll('img.chat-badge');
-    let isBroadcaster = false;
-    let isMod = false;
-    let isVip = false;
-    let isSub = false;
-
     for (const badge of badges) {
       const alt = (badge.alt || '').toLowerCase();
-      if (alt.includes('broadcaster') || alt.includes('配信者')) isBroadcaster = true;
-      if (alt.includes('moderator') || alt.includes('モデレーター')) isMod = true;
-      if (alt.includes('vip')) isVip = true;
-      if (alt.includes('subscriber') || alt.includes('サブスクライバー')) isSub = true;
+      if (alt.includes('broadcaster') || alt.includes('配信者')) return { textColor: CONFIG.broadcasterColor };
+      if (alt.includes('moderator') || alt.includes('モデレーター')) return { textColor: CONFIG.modColor };
+      if (alt.includes('vip')) return { textColor: CONFIG.vipColor };
     }
-
-    const info = {
-      authorName,
-      authorColor: authorColor || CONFIG.color,
-      textColor: CONFIG.color,
-      bgColor: null,
-      isSpecial: false,
-    };
-
-    if (isBroadcaster) {
-      info.textColor = CONFIG.broadcasterColor;
-      info.isSpecial = true;
-    } else if (isMod) {
-      info.textColor = CONFIG.modColor;
-      info.isSpecial = true;
-    } else if (isVip) {
-      info.textColor = CONFIG.vipColor;
-      info.isSpecial = true;
-    }
-
-    return info;
+    return { textColor: CONFIG.color };
   }
 
   // ── メッセージ本文要素を取得 ──
