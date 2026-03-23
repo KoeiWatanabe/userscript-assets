@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.5.1
+// @version      1.6.2
 // @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -27,6 +27,8 @@
     'M173-293q-77-77-77-187t77-187q77-77 187-77t187 77q77 77 77 187t-77 187q-77 77-187 77t-187-77Zm594 101L648-311l50-52 33 34v-438h72v437l33-33 51 51-120 120ZM496-343.79q56-55.8 56-136Q552-560 496.21-616q-55.8-56-136-56Q280-672 224-616.21q-56 55.8-56 136Q168-400 223.79-344q55.8 56 136 56Q440-288 496-343.79ZM420-372l51-51-75-75v-126h-72v156l96 96Zm-60-108Z';
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  let _lastCheckedVideoId = "";
 
   function addStyleOnce() {
     if (document.getElementById(STYLE_ID)) return;
@@ -239,6 +241,54 @@
     return "youtube-transcript";
   }
 
+  // ── ライブ配信判定 & 字幕有無チェック ─────────────────────────────────
+
+  function getVideoId() {
+    return new URLSearchParams(location.search).get("v") || "";
+  }
+
+  function isCurrentlyLive() {
+    try {
+      const player = document.getElementById("movie_player");
+      const resp = player?.getPlayerResponse?.();
+      return resp?.videoDetails?.isLive === true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function checkSubtitleAvailability() {
+    if (!location.pathname.startsWith("/watch")) return;
+
+    const videoId = getVideoId();
+    if (!videoId || videoId === _lastCheckedVideoId) return;
+    _lastCheckedVideoId = videoId;
+
+    // プレーヤーデータが準備できるまで待機
+    const deadline = Date.now() + 10000;
+    let resp = null;
+    while (Date.now() < deadline) {
+      try {
+        const player = document.getElementById("movie_player");
+        resp = player?.getPlayerResponse?.();
+        if (resp?.videoDetails?.videoId === videoId) break;
+      } catch (_) {/* ignore */}
+      await sleep(500);
+    }
+    if (!resp || resp.videoDetails?.videoId !== videoId) return;
+
+    // ライブ配信中はスキップ（アーカイブは isLive === false なので通知される）
+    if (resp.videoDetails?.isLive === true) return;
+
+    const tracks = resp.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!tracks || tracks.length === 0) {
+      showNotify("この動画には字幕がありません");
+    } else {
+      const langs = tracks.map((t) => t.name?.simpleText || t.languageCode).join(", ");
+      showNotify(`字幕あり: ${langs}`);
+    }
+  }
+
   function downloadText(text, filename) {
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -253,11 +303,91 @@
 
   // ── Chapter detection ───────────────────────────────────────────────────
 
-  function hasChapters() {
+  function hasDomChapters() {
     return !!(
       document.querySelector("timeline-chapter-view-model") ||
       document.querySelector("#segments-container ytd-transcript-section-header-renderer")
     );
+  }
+
+  /**
+   * YouTube の内部プレイヤーデータからチャプター情報を取得する。
+   * トランスクリプトパネルにチャプターヘッダーが表示されないケースに対応。
+   * 返り値: [{ title, startSeconds }, ...] or null
+   */
+  function getChaptersFromPageData() {
+    try {
+      // ytd-watch-flexy の __data からチャプター情報を探す
+      // playerOverlays は __data 直下にある（playerResponse の中ではない）
+      const watchFlexy = document.querySelector("ytd-watch-flexy");
+      if (!watchFlexy) return null;
+
+      // 複数の取得パスを試す
+      const overlayRenderer =
+        watchFlexy.__data?.playerOverlays?.playerOverlayRenderer ||
+        watchFlexy.playerData?.playerResponse?.playerOverlays?.playerOverlayRenderer ||
+        window.ytInitialPlayerResponse?.playerOverlays?.playerOverlayRenderer;
+      if (!overlayRenderer) return null;
+
+      // decoratedPlayerBarRenderer 内の markersMap にチャプターがある
+      const playerBar =
+        overlayRenderer?.decoratedPlayerBarRenderer
+          ?.decoratedPlayerBarRenderer?.playerBar?.multiMarkersPlayerBarRenderer;
+      if (!playerBar?.markersMap) return null;
+
+      for (const marker of playerBar.markersMap) {
+        const chapters = marker?.value?.chapters;
+        if (!chapters?.length) continue;
+        const result = [];
+        for (const ch of chapters) {
+          const r = ch?.chapterRenderer;
+          if (!r) continue;
+          const title = r.title?.simpleText || r.title?.runs?.map((run) => run.text).join("") || "";
+          const startMs = r.timeRangeStartMillis ?? 0;
+          if (title) result.push({ title: title.trim(), startSeconds: Math.floor(startMs / 1000) });
+        }
+        if (result.length > 0) return result;
+      }
+      return null;
+    } catch (e) {
+      console.warn("[tm transcript] getChaptersFromPageData failed:", e);
+      return null;
+    }
+  }
+
+  /**
+   * チャプター情報（ページデータ由来）を字幕セグメントにマージする。
+   * 各チャプターの startSeconds に基づいて、適切な位置にチャプターエントリを挿入する。
+   */
+  function mergeChaptersWithSegments(chapters, segments) {
+    const entries = [];
+    let chapterIdx = 0;
+
+    for (const seg of segments) {
+      // 現在のセグメントの秒数以下の全チャプターを挿入
+      while (
+        chapterIdx < chapters.length &&
+        typeof seg.seconds === "number" &&
+        !Number.isNaN(seg.seconds) &&
+        chapters[chapterIdx].startSeconds <= seg.seconds
+      ) {
+        entries.push({ type: "chapter", title: chapters[chapterIdx].title });
+        chapterIdx++;
+      }
+      entries.push({ type: "segment", tsText: seg.tsText, seconds: seg.seconds, text: seg.text });
+    }
+
+    // 残りのチャプター（セグメントが途中で終わった場合）
+    while (chapterIdx < chapters.length) {
+      entries.push({ type: "chapter", title: chapters[chapterIdx].title });
+      chapterIdx++;
+    }
+
+    return entries;
+  }
+
+  function hasChapters() {
+    return hasDomChapters() || !!getChaptersFromPageData();
   }
 
   // ── New DOM helpers (transcript-segment-view-model) ──────────────────────
@@ -510,6 +640,35 @@
     return lastCount > 0;
   }
 
+  /**
+   * チャプター付きエントリを取得する統合関数。
+   * 1) DOM にチャプターヘッダーがあればそれを使う
+   * 2) なければページデータからチャプター情報を取得し、字幕セグメントとマージする
+   * チャプターが見つからなければ null を返す。
+   */
+  function extractChapteredEntries() {
+    // 1) DOM ベースのチャプター検出
+    if (hasDomChapters()) {
+      return hasNewTranscript()
+        ? extractTranscriptWithChaptersNew()
+        : extractTranscriptWithChaptersOld();
+    }
+
+    // 2) ページデータからチャプターを取得
+    const pageChapters = getChaptersFromPageData();
+    if (!pageChapters) return null;
+
+    // 字幕セグメントを取得してマージ
+    const segRes = extractTranscriptSegments();
+    if (!segRes.ok) return segRes; // { ok: false, reason: ... }
+
+    const entries = mergeChaptersWithSegments(pageChapters, segRes.segments);
+    const hasAnyChapter = entries.some((e) => e.type === "chapter");
+    if (!hasAnyChapter) return null;
+
+    return { ok: true, entries, hasAnyChapter, hasAnyTs: segRes.hasAnyTs };
+  }
+
   async function downloadViaShortcut(withTs) {
     // トランスクリプトが未ロードなら「読み込み中」通知を表示
     const needsLoad = !hasNewTranscript() && !document.querySelector("#segments-container");
@@ -531,13 +690,11 @@
     const title = sanitizeFilename(getVideoTitle());
 
     // チャプターがある場合は .md 形式で保存
-    if (hasChapters()) {
-      const res = hasNewTranscript()
-        ? extractTranscriptWithChaptersNew()
-        : extractTranscriptWithChaptersOld();
-      if (!res.ok) { alert(`取得失敗: ${res.reason}`); return; }
-      if (withTs && !res.hasAnyTs) { alert("タイムスタンプを取得できませんでした。"); return; }
-      const md = buildMarkdownWithChapters(res.entries, withTs);
+    const chapterRes = extractChapteredEntries();
+    if (chapterRes) {
+      if (!chapterRes.ok) { alert(`取得失敗: ${chapterRes.reason}`); return; }
+      if (withTs && !chapterRes.hasAnyTs) { alert("タイムスタンプを取得できませんでした。"); return; }
+      const md = buildMarkdownWithChapters(chapterRes.entries, withTs);
       const suffix = withTs ? " - transcript (with timestamps).md" : " - transcript.md";
       const filename = `${title}${suffix}`;
       downloadText(md, filename);
@@ -699,14 +856,12 @@
         pathD: TS_ICON_PATH,
         onClick: async () => {
           const title = sanitizeFilename(getVideoTitle());
-          if (hasChapters()) {
-            const res = hasNewTranscript()
-              ? extractTranscriptWithChaptersNew()
-              : extractTranscriptWithChaptersOld();
-            if (!res.ok) { alert(`トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`); return; }
-            if (!res.hasAnyTs) { alert("タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。"); return; }
+          const chapterRes = extractChapteredEntries();
+          if (chapterRes) {
+            if (!chapterRes.ok) { alert(`トランスクリプトを取得できませんでした：${chapterRes.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`); return; }
+            if (!chapterRes.hasAnyTs) { alert("タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。"); return; }
             const mdFilename = `${title} - transcript (with timestamps).md`;
-            downloadText(buildMarkdownWithChapters(res.entries, true), mdFilename);
+            downloadText(buildMarkdownWithChapters(chapterRes.entries, true), mdFilename);
             showNotify(`字幕を ${mdFilename} として保存しました`);
             return;
           }
@@ -732,13 +887,11 @@
         pathD: SAVE_ICON_PATH,
         onClick: async () => {
           const title = sanitizeFilename(getVideoTitle());
-          if (hasChapters()) {
-            const res = hasNewTranscript()
-              ? extractTranscriptWithChaptersNew()
-              : extractTranscriptWithChaptersOld();
-            if (!res.ok) { alert(`トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`); return; }
+          const chapterRes = extractChapteredEntries();
+          if (chapterRes) {
+            if (!chapterRes.ok) { alert(`トランスクリプトを取得できませんでした：${chapterRes.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`); return; }
             const mdFilenameNoTs = `${title} - transcript.md`;
-            downloadText(buildMarkdownWithChapters(res.entries, false), mdFilenameNoTs);
+            downloadText(buildMarkdownWithChapters(chapterRes.entries, false), mdFilenameNoTs);
             showNotify(`字幕を ${mdFilenameNoTs} として保存しました`);
             return;
           }
@@ -816,9 +969,12 @@
 
     inject();
     registerShortcuts();
+    checkSubtitleAvailability();
 
     window.addEventListener("yt-navigate-finish", () => {
+      _lastCheckedVideoId = ""; // ページ遷移時にリセット
       setTimeout(inject, 400);
+      checkSubtitleAvailability();
     });
   }
 
