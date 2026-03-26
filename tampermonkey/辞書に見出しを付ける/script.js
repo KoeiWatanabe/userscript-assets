@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         辞書に見出しを付ける
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  OALD / Cambridge Dictionary に意味の目次をサイドバーとしてページ内に組み込む
 // @match        https://www.oxfordlearnersdictionaries.com/definition/english/*
 // @match        https://dictionary.cambridge.org/dictionary/*
@@ -569,6 +569,42 @@
     renderEntryFlat(body, entry);
   }
 
+  // --- Cambridge: 品詞セクション（常に展開・クリックでジャンプ） ---
+  function renderCambridgeEntry(body, entry) {
+    if (entry.groups.length > 0) {
+      const totalSenses = entry.groups.reduce(
+        (sum, g) => sum + g.senses.filter((s) => s.num !== null).length,
+        0
+      );
+      const label = `${entry.pos} (${totalSenses})`;
+      const header = document.createElement("div");
+      header.className = "toc-collapsible open";
+      header.innerHTML = `<span>${label}</span>`;
+      if (entry.el) {
+        const eid = ensureId(entry.el, "dtoc-entry");
+        header.addEventListener("click", () => scrollToId(eid, "start"));
+      }
+      body.appendChild(header);
+      renderEntryContent(body, entry);
+    }
+
+    if (entry.idioms.length > 0) {
+      const header = document.createElement("div");
+      header.className = "toc-collapsible toc-sub open";
+      header.innerHTML = `<span>Idioms (${entry.idioms.length})</span>`;
+      body.appendChild(header);
+      renderIdioms(body, entry.idioms);
+    }
+
+    if (entry.phrasalVerbs.length > 0) {
+      const header = document.createElement("div");
+      header.className = "toc-collapsible toc-sub open";
+      header.innerHTML = `<span>Phrasal Verbs (${entry.phrasalVerbs.length})</span>`;
+      body.appendChild(header);
+      renderPhrasalVerbs(body, entry.phrasalVerbs);
+    }
+  }
+
   // --- Cambridge TOC Body ---
   function buildCambridgeBody(body, data) {
     data.dicts.forEach((dict) => {
@@ -582,13 +618,9 @@
       }
       body.appendChild(dictTitle);
 
-      if (dict.entries.length === 1) {
-        renderEntryFlat(body, dict.entries[0]);
-      } else {
-        dict.entries.forEach((entry) => {
-          renderEntryCollapsible(body, entry);
-        });
-      }
+      dict.entries.forEach((entry) => {
+        renderCambridgeEntry(body, entry);
+      });
     });
   }
 
