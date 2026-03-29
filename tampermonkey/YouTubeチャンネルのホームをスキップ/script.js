@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeチャンネルのホームをスキップ
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  YouTubeチャンネルページを自動的に/videosへリダイレクト。Alt+クリックで/streamsへ。
+// @version      1.2
+// @description  YouTubeチャンネルページを自動的に/videosへリダイレクト。配信・アーカイブ視聴中は/streamsへ。
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-start
@@ -14,17 +14,25 @@
 (function () {
     'use strict';
 
-    let altKeyHeld = false;
-
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Alt') altKeyHeld = true;
-    });
-    document.addEventListener('keyup', (e) => {
-        if (e.key === 'Alt') altKeyHeld = false;
-    });
-
     // チャンネルURLのパターン: /@handle, /channel/ID, /c/name
     const channelPattern = /^\/(@[^/]+|channel\/[^/]+|c\/[^/]+)\/?$/;
+
+    // 現在視聴中の動画が配信（ライブ or アーカイブ）かどうかを判定
+    function isWatchingLiveOrStream() {
+        // 動画ページでなければfalse
+        if (!location.pathname.startsWith('/watch')) return false;
+        // ライブ配信中のバッジ
+        const liveBadge = document.querySelector('.ytp-live-badge');
+        if (liveBadge && liveBadge.offsetParent !== null) return true;
+        // ライブチャット or チャットリプレイの存在
+        if (document.querySelector('ytd-live-chat-frame')) return true;
+        // ytInitialPlayerResponse から判定
+        try {
+            const flexy = document.querySelector('ytd-watch-flexy');
+            if (flexy?.playerData?.videoDetails?.isLiveContent) return true;
+        } catch (_) {}
+        return false;
+    }
 
     function shouldRedirect(pathname) {
         return channelPattern.test(pathname);
@@ -34,7 +42,7 @@
         const match = pathname.match(channelPattern);
         if (!match) return null;
         const base = '/' + match[1];
-        const suffix = altKeyHeld ? '/streams' : '/videos';
+        const suffix = isWatchingLiveOrStream() ? '/streams' : '/videos';
         return base + suffix;
     }
 
@@ -72,7 +80,7 @@
             if (url.origin !== location.origin) return;
             if (!shouldRedirect(url.pathname)) return;
 
-            const suffix = e.altKey ? '/streams' : '/videos';
+            const suffix = isWatchingLiveOrStream() ? '/streams' : '/videos';
             const match = url.pathname.match(channelPattern);
             const newUrl = url.origin + '/' + match[1] + suffix + url.search;
 
