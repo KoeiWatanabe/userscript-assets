@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeチャンネルのホームをスキップ
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  YouTubeチャンネルページを自動的に/videosへリダイレクト。配信・アーカイブ視聴中は/streamsへ。
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -13,6 +13,15 @@
 
 (function () {
     'use strict';
+
+    let altKeyHeld = false;
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Alt') altKeyHeld = true;
+    });
+    document.addEventListener('keyup', (e) => {
+        if (e.key === 'Alt') altKeyHeld = false;
+    });
 
     // チャンネルURLのパターン: /@handle, /channel/ID, /c/name
     const channelPattern = /^\/(@[^/]+|channel\/[^/]+|c\/[^/]+)\/?$/;
@@ -34,6 +43,16 @@
         return false;
     }
 
+    // 動画ページかどうかでリダイレクト先を決定
+    // 動画ページ: 自動判定（配信→/streams, 通常→/videos）
+    // それ以外: デフォルト/videos, Alt押下時は/streams
+    function getSuffix(altKey) {
+        if (location.pathname.startsWith('/watch')) {
+            return isWatchingLiveOrStream() ? '/streams' : '/videos';
+        }
+        return altKey ? '/streams' : '/videos';
+    }
+
     function shouldRedirect(pathname) {
         return channelPattern.test(pathname);
     }
@@ -42,8 +61,7 @@
         const match = pathname.match(channelPattern);
         if (!match) return null;
         const base = '/' + match[1];
-        const suffix = isWatchingLiveOrStream() ? '/streams' : '/videos';
-        return base + suffix;
+        return base + getSuffix(altKeyHeld);
     }
 
     // ページ遷移時のリダイレクト（初回読み込み・SPAナビゲーション両対応）
@@ -70,7 +88,32 @@
     });
     observer.observe(document, { subtree: true, childList: true });
 
-    // リンククリックのインターセプト（Alt+クリック対応）
+    // ホームフィード等のライブアバター（チャンネルアイコン+LIVEリング）クリックのインターセプト
+    // クリックすると配信に飛ぶのを防ぎ、チャンネルページにリダイレクトする
+    document.addEventListener('click', (e) => {
+        const liveRing = e.target.closest('.yt-spec-avatar-shape--live-ring');
+        if (!liveRing) return;
+
+        // 近くのコンテナからチャンネルURLを探す
+        const container = liveRing.closest('yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer');
+        if (!container) return;
+
+        const channelLink = container.querySelector('a[href^="/@"], a[href^="/channel/"], a[href^="/c/"]');
+        if (!channelLink) return;
+
+        const channelHref = channelLink.getAttribute('href');
+        const match = channelHref.match(channelPattern);
+        if (!match) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        const suffix = getSuffix(e.altKey);
+        window.location.href = location.origin + '/' + match[1] + suffix;
+    }, true);
+
+    // リンククリックのインターセプト
     document.addEventListener('click', (e) => {
         const anchor = e.target.closest('a');
         if (!anchor) return;
@@ -80,7 +123,7 @@
             if (url.origin !== location.origin) return;
             if (!shouldRedirect(url.pathname)) return;
 
-            const suffix = isWatchingLiveOrStream() ? '/streams' : '/videos';
+            const suffix = getSuffix(e.altKey);
             const match = url.pathname.match(channelPattern);
             const newUrl = url.origin + '/' + match[1] + suffix + url.search;
 
