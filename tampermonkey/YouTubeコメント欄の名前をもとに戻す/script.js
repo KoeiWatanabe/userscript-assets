@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeコメント欄の名前をもとに戻す＋
 // @namespace    https://example.com/
-// @version      1.0.0
+// @version      1.0.1
 // @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
 // @match        https://www.youtube.com/*
 // @match        https://www.youtube.com/live_chat*
@@ -325,6 +325,18 @@
       const href = (anchor && anchor.getAttribute) ? anchor.getAttribute('href') : authorEl.getAttribute?.('href');
       handle = extractHandleFromHref(href);
     }
+    // Ticker items: try to get handle from the parent renderer's channel link
+    if (!handle && authorEl.closest) {
+      const tickerItem = authorEl.closest(
+        'yt-live-chat-ticker-paid-message-item-renderer,' +
+        'yt-live-chat-ticker-paid-sticker-item-renderer,' +
+        'yt-live-chat-ticker-sponsor-item-renderer'
+      );
+      if (tickerItem) {
+        const link = tickerItem.querySelector('a[href*="/@"]');
+        if (link) handle = extractHandleFromHref(link.getAttribute('href'));
+      }
+    }
     if (!handle) return;
 
     // Only act if currently showing handle (avoid re-writing already-names)
@@ -353,6 +365,14 @@
   const LiveChat = (() => {
     let itemsEl = null;
     let observer = null;
+    let bannerEl = null;
+    let bannerObserver = null;
+    let tickerEl = null;
+    let tickerObserver = null;
+    let replyPanelEl = null;
+    let replyPanelObserver = null;
+    let pinnedMsgEl = null;
+    let pinnedMsgObserver = null;
 
     const nodeQueue = new Set();
     let rafScheduled = false;
@@ -390,36 +410,106 @@
         : [];
       for (const el of found) authorEls.push(el);
 
+      // Ticker paid message / sponsor items: author name is in #text span
+      const tickerTextSel =
+        'yt-live-chat-ticker-paid-message-item-renderer #text,' +
+        'yt-live-chat-ticker-paid-sticker-item-renderer #text,' +
+        'yt-live-chat-ticker-sponsor-item-renderer #text';
+
+      if (root.matches && root.matches(tickerTextSel)) {
+        authorEls.push(root);
+      }
+      const tickerTexts = root.querySelectorAll
+        ? root.querySelectorAll(tickerTextSel)
+        : [];
+      for (const el of tickerTexts) authorEls.push(el);
+
       if (authorEls.length === 0) return;
 
       for (const el of authorEls) processAuthorElement(el);
     }
 
     function findItemsElement() {
-      return document.querySelector('#items');
+      return document.querySelector('#item-list #items');
     }
 
-    function attachObserverIfNeeded() {
-      const found = findItemsElement();
-      if (!found) return;
-
-      if (itemsEl === found && observer) return;
-
-      if (observer) {
-        try { observer.disconnect(); } catch (_) { }
-        observer = null;
-      }
-
-      itemsEl = found;
-
-      observer = new MutationObserver((mutList) => {
+    function createChildListObserver() {
+      return new MutationObserver((mutList) => {
         for (const mut of mutList) {
           for (const node of mut.addedNodes) enqueueNode(node);
         }
       });
+    }
 
-      observer.observe(itemsEl, { childList: true, subtree: false });
-      enqueueNode(itemsEl);
+    function attachObserverIfNeeded() {
+      // Main chat items
+      const found = findItemsElement();
+      if (found && (itemsEl !== found || !observer)) {
+        if (observer) {
+          try { observer.disconnect(); } catch (_) { }
+        }
+        itemsEl = found;
+        observer = createChildListObserver();
+        observer.observe(itemsEl, { childList: true, subtree: false });
+        enqueueNode(itemsEl);
+      }
+
+      // Pinned message banner
+      const bannerFound = document.querySelector('yt-live-chat-banner-manager');
+      if (bannerFound && (bannerEl !== bannerFound || !bannerObserver)) {
+        if (bannerObserver) {
+          try { bannerObserver.disconnect(); } catch (_) { }
+        }
+        bannerEl = bannerFound;
+        bannerObserver = createChildListObserver();
+        bannerObserver.observe(bannerEl, { childList: true, subtree: true });
+        enqueueNode(bannerEl);
+      }
+
+      // Super chat / membership ticker
+      const tickerFound = document.querySelector('yt-live-chat-ticker-renderer #ticker-items');
+      if (tickerFound && (tickerEl !== tickerFound || !tickerObserver)) {
+        if (tickerObserver) {
+          try { tickerObserver.disconnect(); } catch (_) { }
+        }
+        tickerEl = tickerFound;
+        tickerObserver = createChildListObserver();
+        tickerObserver.observe(tickerEl, { childList: true, subtree: true });
+        enqueueNode(tickerEl);
+      }
+
+      // Ticker item detail popup (pinned message renderer)
+      const pinnedMsgFound = document.querySelector('yt-live-chat-pinned-message-renderer#pinned-message');
+      if (pinnedMsgFound && (pinnedMsgEl !== pinnedMsgFound || !pinnedMsgObserver)) {
+        if (pinnedMsgObserver) {
+          try { pinnedMsgObserver.disconnect(); } catch (_) { }
+        }
+        pinnedMsgEl = pinnedMsgFound;
+        pinnedMsgObserver = createChildListObserver();
+        pinnedMsgObserver.observe(pinnedMsgEl, { childList: true, subtree: true });
+        enqueueNode(pinnedMsgEl);
+      }
+
+      // Ticker item detail / reply thread engagement panel
+      const replyPanelFound = document.querySelector(
+        'ytd-engagement-panel-section-list-renderer[target-id="PAreply_thread"]'
+      );
+      if (replyPanelFound && (replyPanelEl !== replyPanelFound || !replyPanelObserver)) {
+        if (replyPanelObserver) {
+          try { replyPanelObserver.disconnect(); } catch (_) { }
+        }
+        replyPanelEl = replyPanelFound;
+        replyPanelObserver = new MutationObserver((mutList) => {
+          for (const mut of mutList) {
+            // Handle added nodes
+            for (const node of mut.addedNodes) enqueueNode(node);
+            // Handle attribute changes (panel becoming visible)
+            if (mut.type === 'attributes') enqueueNode(mut.target);
+          }
+        });
+        replyPanelObserver.observe(replyPanelEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['visibility'] });
+        enqueueNode(replyPanelEl);
+      }
     }
 
     function reset() {
@@ -428,6 +518,26 @@
         observer = null;
       }
       itemsEl = null;
+      if (bannerObserver) {
+        try { bannerObserver.disconnect(); } catch (_) { }
+        bannerObserver = null;
+      }
+      bannerEl = null;
+      if (tickerObserver) {
+        try { tickerObserver.disconnect(); } catch (_) { }
+        tickerObserver = null;
+      }
+      tickerEl = null;
+      if (pinnedMsgObserver) {
+        try { pinnedMsgObserver.disconnect(); } catch (_) { }
+        pinnedMsgObserver = null;
+      }
+      pinnedMsgEl = null;
+      if (replyPanelObserver) {
+        try { replyPanelObserver.disconnect(); } catch (_) { }
+        replyPanelObserver = null;
+      }
+      replyPanelEl = null;
     }
 
     return { attachObserverIfNeeded, reset };
