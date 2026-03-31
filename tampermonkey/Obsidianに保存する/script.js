@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Obsidianに保存する
 // @namespace    local.obsidian.capture
-// @version      2.8
+// @version      3.0
 // @description  選択があれば選択範囲、なければ直近で触った返答をマークダウン形式でObsidianの新規ノートに保存＋チャット全体MDダウンロード（アイコン化・SVGフォールバック・履歴サイト横断・表/チェックリスト強化）
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -341,34 +341,38 @@ function sanitizeWindowsFileName(name) {
 
     // --- タスクリストを強制（li内のcheckboxをGFMに） ---
     // 検出条件は保守的にし、Radix UI等のdata-state属性との衝突を回避
+    // 直接の子要素のみ検査し、ネストされたサブリスト内のチェックボックスで親LIが誤マッチするのを防ぐ
 service.addRule("taskListItemsCustom", {
   filter(node) {
     if (!node || node.nodeName !== "LI") return false;
 
-    // 1) 実際の checkbox input（最も確実）
-    if (node.querySelector('input[type="checkbox"]')) return true;
+    const directChildren = Array.from(node.children);
 
-    // 2) ARIA role="checkbox"
-    if (node.querySelector('[role="checkbox"]')) return true;
+    // 1) 直接の子に checkbox input がある（最も確実）
+    if (directChildren.some(c => c.tagName === 'INPUT' && c.type === 'checkbox')) return true;
 
-    // 3) aria-checked（明示的なチェックボックスセマンティクス）
-    if (node.querySelector('[aria-checked="true"], [aria-checked="false"]')) return true;
+    // 2) 直接の子に ARIA role="checkbox" がある
+    if (directChildren.some(c => c.getAttribute && c.getAttribute('role') === 'checkbox')) return true;
 
-    // 4) テキストが [x] / [ ] で始まる（Gemini等はチェックボックスをプレーンテキストで描画）
-    const text = (node.textContent || "").trim();
-    if (/^\[[ xX]\]\s+/.test(text)) return true;
+    // 3) 直接の子に aria-checked がある（明示的なチェックボックスセマンティクス）
+    if (directChildren.some(c => c.getAttribute && (c.getAttribute('aria-checked') === 'true' || c.getAttribute('aria-checked') === 'false'))) return true;
+
+    // 4) 最初のテキストノードが [x] / [ ] で始まる（Gemini等はチェックボックスをプレーンテキストで描画）
+    const firstText = Array.from(node.childNodes).find(n => n.nodeType === 3 && n.textContent.trim());
+    if (firstText && /^\[[ xX]\]\s+/.test(firstText.textContent.trim())) return true;
 
     return false;
   },
 
   replacement(content, node) {
-    // checked 判定（あるものは全部拾う）
+    // checked 判定（直接の子要素のみ検査）
+    const directChildren = Array.from(node.children);
     const cb =
-      node.querySelector('input[type="checkbox"]') ||
-      node.querySelector('[role="checkbox"]') ||
-      node.querySelector('[aria-checked]') ||
-      node.querySelector('[data-checked]') ||
-      node.querySelector('[data-state]');
+      directChildren.find(c => c.tagName === 'INPUT' && c.type === 'checkbox') ||
+      directChildren.find(c => c.getAttribute && c.getAttribute('role') === 'checkbox') ||
+      directChildren.find(c => c.getAttribute && c.hasAttribute('aria-checked')) ||
+      directChildren.find(c => c.getAttribute && c.hasAttribute('data-checked')) ||
+      directChildren.find(c => c.getAttribute && c.hasAttribute('data-state'));
 
     let checked = false;
 
@@ -388,10 +392,10 @@ service.addRule("taskListItemsCustom", {
       if (ds === "checked" || dc === "true") checked = true;
     }
 
-    // 記号から推定（最後の保険）
+    // 記号から推定（最後の保険 — 最初のテキストノードのみ）
     if (!checked) {
-      const rawText = (node.textContent || "").trim();
-      if (/^(\[x\]|\u2611|\u2713|\u2705)\s+/i.test(rawText)) checked = true; // [x] / ☑ / ✓ / ✅
+      const firstText = Array.from(node.childNodes).find(n => n.nodeType === 3 && n.textContent.trim());
+      if (firstText && /^(\[x\]|\u2611|\u2713|\u2705)\s+/i.test(firstText.textContent.trim())) checked = true;
     }
 
     // Turndownが再帰的に変換済みの content を使う（ネスト構造が保持される）
@@ -762,6 +766,7 @@ service.addRule("taskListItemsCustom", {
     if (host.includes('chatgpt.com') || host.includes('chat.openai.com')) return 'chatgpt';
     if (host.includes('gemini.google.com')) return 'gemini';
     if (host.includes('claude.ai')) return 'claude';
+    if (host.includes('t3.chat')) return 't3chat';
     return null;
   }
 
@@ -938,6 +943,91 @@ service.addRule("taskListItemsCustom", {
     return { title, messages, model, service: 'Claude' };
   }
 
+  function extractFullT3Chat() {
+    // タイトル取得: "ModelName_Title - T3 Chat" → "Title"
+    let title = document.title.replace(/\s*-\s*T3 Chat$/, '').trim();
+    const underscoreIdx = title.indexOf('_');
+    if (underscoreIdx > 0) {
+      title = title.substring(underscoreIdx + 1).trim();
+    }
+    title = title || 'Untitled';
+
+    const messages = [];
+    const articles = document.querySelectorAll('[role="article"]');
+
+    articles.forEach(article => {
+      const label = article.getAttribute('aria-label') || '';
+
+      if (label === 'Your message') {
+        const proseEl = article.querySelector('form > div.prose, form > div[class*="prose"]');
+        if (proseEl) {
+          const text = proseEl.innerText.trim();
+          if (text) messages.push({ role: 'user', content: text });
+        } else {
+          const form = article.querySelector('form');
+          if (form && form.firstElementChild) {
+            const text = form.firstElementChild.innerText.trim();
+            if (text) messages.push({ role: 'user', content: text });
+          }
+        }
+      } else if (label === 'Assistant message') {
+        // 思考過程・UIボタン等を除外してコンテンツを抽出
+        const contentWrapper = document.createElement('div');
+        Array.from(article.children).forEach(child => {
+          if (child.classList && child.classList.contains('sr-only')) return;
+          if (child.tagName === 'BUTTON') return;
+          if (child.tagName === 'DETAILS') return;
+          if (child.classList && (
+            child.classList.contains('thinking') ||
+            child.classList.contains('reasoning')
+          )) return;
+
+          // T3 Chat のコードブロック（div.group 内に pre がある）
+          // → 言語ラベルを取得し、クリーンな <pre><code class="language-xxx"> に変換
+          if (child.tagName === 'DIV' && child.querySelector('pre')) {
+            const pre = child.querySelector('pre');
+            const code = pre.querySelector('code');
+            const headerDiv = child.querySelector('[class*="top-0"]');
+            const langSpan = headerDiv ? headerDiv.querySelector('span') : null;
+            const lang = langSpan ? langSpan.textContent.trim() : '';
+            const newPre = document.createElement('pre');
+            const newCode = document.createElement('code');
+            if (lang) newCode.className = 'language-' + lang;
+            newCode.textContent = code ? code.textContent : pre.textContent;
+            newPre.appendChild(newCode);
+            contentWrapper.appendChild(newPre);
+            return;
+          }
+
+          // T3 Chat のテーブルラッパー（div 内に table がある）
+          // → table 要素だけ取り出す
+          if (child.tagName === 'DIV' && child.querySelector('table')) {
+            const table = child.querySelector('table');
+            contentWrapper.appendChild(table.cloneNode(true));
+            return;
+          }
+
+          // ボタンのみを含む DIV（アクションバー等）はスキップ
+          if (child.tagName === 'DIV' && child.querySelector('button')) return;
+
+          contentWrapper.appendChild(child.cloneNode(true));
+        });
+        const md = markdownFromEl(contentWrapper);
+        if (md) messages.push({ role: 'assistant', content: md });
+      }
+    });
+
+    // モデル名: combobox の aria-label から取得
+    let model = '';
+    const modelCombo = document.querySelector('[role="combobox"][aria-label*="Current model"]');
+    if (modelCombo) {
+      const match = modelCombo.getAttribute('aria-label').match(/Current model:\s*(.+)/);
+      if (match) model = match[1].trim();
+    }
+
+    return { title, messages, model, service: 'T3 Chat' };
+  }
+
   function generateFullMarkdown(data) {
     const lines = [];
     lines.push('# ' + data.title);
@@ -979,6 +1069,7 @@ service.addRule("taskListItemsCustom", {
         case 'chatgpt': data = extractFullChatGPT(); break;
         case 'gemini': data = extractFullGemini(); break;
         case 'claude': data = extractFullClaude(); break;
+        case 't3chat': data = extractFullT3Chat(); break;
       }
     } catch (e) {
       alert('チャット履歴の取得中にエラーが発生しました: ' + e.message);
@@ -997,9 +1088,6 @@ service.addRule("taskListItemsCustom", {
   }
 
   function setupExportShortcut() {
-    // T3chatではショートカット不要
-    if (location.hostname.includes('t3.chat')) return;
-
     document.addEventListener('keydown', (e) => {
       if (e.altKey && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
@@ -1109,14 +1197,11 @@ service.addRule("taskListItemsCustom", {
       onClick: onClickNewNote
     }));
 
-    // T3chat以外ではダウンロードボタンを追加
-    if (!location.hostname.includes('t3.chat')) {
-      container.appendChild(makeIconButton({
-        iconName: "download",
-        label: "チャット全体をMarkdownでダウンロード (Alt+S)",
-        onClick: exportChat
-      }));
-    }
+    container.appendChild(makeIconButton({
+      iconName: "download",
+      label: "チャット全体をMarkdownでダウンロード (Alt+S)",
+      onClick: exportChat
+    }));
 
     document.body.appendChild(container);
 
