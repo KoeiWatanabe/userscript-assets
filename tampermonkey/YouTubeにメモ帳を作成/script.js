@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      6.17
+// @version      6.18
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -1517,6 +1517,14 @@
     });
 
     updateSizeToggleIcon();
+
+    // =====================================================
+    //  フルスクリーン時に非表示
+    // =====================================================
+
+    document.addEventListener('fullscreenchange', () => {
+        container.style.display = document.fullscreenElement ? 'none' : '';
+    });
 
     // =====================================================
     //  強力な復活処理
