@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeチャンネルのホームをスキップ
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.4
 // @description  YouTubeチャンネルページを自動的に/videosへリダイレクト。配信・アーカイブ視聴中は/streamsへ。
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -26,26 +26,30 @@
         return m ? '/' + m[1] : null;
     }
 
-    function getActivePageElement() {
-        return document.querySelector('ytd-page-manager > :not([hidden])');
-    }
-
-    function getActiveWatchFlexy() {
-        const activePage = getActivePageElement();
-        return activePage?.tagName === 'YTD-WATCH-FLEXY' ? activePage : null;
-    }
-
     // 現在アクティブな watch ページがライブ配信・アーカイブか
+    // DOM構造で判定: yt-video-type.user.js と同じアプローチ
     function isWatchingStream() {
-        const watchFlexy = getActiveWatchFlexy();
-        if (!watchFlexy) return false;
+        // 配信中: プレイヤーの LIVE バッジが可視
+        const liveBadge = document.querySelector('.ytp-live-badge');
+        if (liveBadge && liveBadge.offsetParent !== null) return true;
 
-        if (watchFlexy.querySelector('.ytp-live-badge')?.offsetParent) return true;
-        if (watchFlexy.querySelector('ytd-live-chat-frame')) return true;
-        try {
-            if (watchFlexy.playerData?.videoDetails?.isLiveContent) return true;
-        } catch {}
+        // 配信アーカイブ: 日付テキストに "Streamed" または "配信済み" を含む
+        const dateText = document.querySelector('#info-strings yt-formatted-string')?.textContent ?? '';
+        if (/streamed|配信済み/i.test(dateText)) return true;
+
         return false;
+    }
+
+    // 現在視聴中の動画の投稿主チャンネルを取得
+    function getCurrentVideoChannelBase() {
+        // 動画ページからチャンネルリンクを取得
+        const ownerLink = document.querySelector(
+            '#owner-name a, ytd-video-owner-renderer a, #upload-info a[href^="/@"], #upload-info a[href^="/channel/"], #upload-info a[href^="/c/"]'
+        );
+        if (!ownerLink) return null;
+        const href = ownerLink.getAttribute('href');
+        const m = href.match(channelPattern);
+        return m ? '/' + m[1] : null;
     }
 
     // ---- InnerTube API ----
@@ -183,10 +187,6 @@
 
     let pendingChannelBase = null;
 
-    // yt-navigate-start 時点（DOM がまだ旧ページ状態）で保存する遷移元情報
-    let prevWasWatch = false;  // 動画ページからの遷移か
-    let prevWasStream = false; // その動画がライブ/アーカイブだったか
-
     async function handleChannelNavigation(currentPathname) {
         const channelBase = getChannelBase(currentPathname);
         if (!channelBase) return;
@@ -194,24 +194,13 @@
 
         pendingChannelBase = channelBase;
 
-        // 今回の判断に使う遷移元情報を取り出し、次の遷移に備えてリセット
-        const fromWatch = prevWasWatch;
-        const fromStream = prevWasStream;
-        prevWasWatch = false;
-        prevWasStream = false;
-
         // 判定中はホームを見せないようにする
         document.documentElement.style.visibility = 'hidden';
 
         try {
             let suffix;
 
-            if (fromWatch) {
-                // 動画ページからの遷移: 視聴コンテンツに基づいて即決（API不要）
-                suffix = fromStream ? '/streams' : '/videos';
-            } else {
-                suffix = await warmDecision(channelBase);
-            }
+            suffix = await warmDecision(channelBase);
 
             // 非同期待機中にページが変わっていたら中止
             if (location.pathname !== currentPathname) return;
@@ -230,15 +219,6 @@
     if (channelPattern.test(location.pathname)) {
         handleChannelNavigation(location.pathname);
     }
-
-    // ---- SPA ナビゲーション監視 ----
-
-    // navigate-start: DOMはまだ旧ページ状態なので、動画ページだったかを保存する
-    window.addEventListener('yt-navigate-start', () => {
-        const watchFlexy = getActiveWatchFlexy();
-        prevWasWatch = !!watchFlexy;
-        prevWasStream = prevWasWatch && isWatchingStream();
-    });
 
     window.addEventListener('yt-navigate-finish', () => {
         if (channelPattern.test(location.pathname)) {
@@ -271,6 +251,69 @@
         const channelBase = '/' + m[1];
         const suffix = await warmDecision(channelBase);
         window.location.href = location.origin + channelBase + suffix;
+    }, true);
+
+    // ---- リンククリックのインターセプト（動画ページからの遷移用） ----
+
+    document.addEventListener('click', (e) => {
+        const anchor = e.target.closest('a');
+        if (!anchor) return;
+
+        try {
+            const url = new URL(anchor.href, location.origin);
+            if (url.origin !== location.origin) return;
+
+            const m = url.pathname.match(channelPattern);
+            if (!m) return;
+
+            const clickedChannelBase = '/' + m[1];
+
+            // 動画ページ視聴中の場合
+            if (location.pathname.startsWith('/watch')) {
+                // 現在視聴中の動画の投稿主チャンネルを取得
+                const currentVideoChannelBase = getCurrentVideoChannelBase();
+
+                // 同一チャンネルの場合のみ、動画判別ロジックを使用
+                if (currentVideoChannelBase && clickedChannelBase === currentVideoChannelBase) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+
+                    const suffix = isWatchingStream() ? '/streams' : '/videos';
+                    const newUrl = url.origin + clickedChannelBase + suffix + url.search;
+
+                    // Ctrl+クリック / 中クリック: 新しいタブで開く
+                    if (e.ctrlKey || e.metaKey || e.button === 1) {
+                        window.open(newUrl, '_blank');
+                        return;
+                    }
+
+                    // 通常クリック
+                    window.location.href = newUrl;
+                    return;
+                }
+
+                // 別チャンネルの場合は、競争ロジックを使用（下に続く）
+            }
+
+            // 動画ページ以外、または別チャンネルへのクリックは競争ロジックを使用
+            e.preventDefault();
+            e.stopPropagation();
+            warmDecision(clickedChannelBase).then(suffix => {
+                 const newUrl = url.origin + clickedChannelBase + suffix + url.search;
+
+                 // Ctrl+クリック / 中クリック: 新しいタブで開く
+                 if (e.ctrlKey || e.metaKey || e.button === 1) {
+                     window.open(newUrl, '_blank');
+                     return;
+                 }
+
+                 window.location.href = newUrl;
+            });
+
+        } catch (_) {
+            // invalid URL, ignore
+        }
     }, true);
 
 })();
