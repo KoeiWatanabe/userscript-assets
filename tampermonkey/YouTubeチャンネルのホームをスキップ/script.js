@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeチャンネルのホームをスキップ
 // @namespace    http://tampermonkey.net/
-// @version      2.4
-// @description  YouTubeチャンネルページを自動的に/videosへリダイレクト。配信・アーカイブ視聴中は/streamsへ。
+// @version      3.3
+// @description  YouTubeチャンネルページを自動的に/videosへリダイレクト。動画視聴中の投稿主/コラボレーター遷移は動画タイプに合わせ、その他は件数比較で決定。
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-start
@@ -14,9 +14,8 @@
 (function () {
     'use strict';
 
-    const MAX_RACE_ROUNDS = 15; // 最大15ラウンド（15×30=450件まで比較）
+    const MAX_RACE_ROUNDS = 15;
 
-    // チャンネルURLのパターン: /@handle, /channel/ID, /c/name
     const channelPattern = /^\/(@[^/]+|channel\/[^/]+|c\/[^/]+)\/?$/;
 
     // ---- ユーティリティ ----
@@ -26,42 +25,22 @@
         return m ? '/' + m[1] : null;
     }
 
-    // 現在アクティブな watch ページがライブ配信・アーカイブか
-    // DOM構造で判定: yt-video-type.user.js と同じアプローチ
     function isWatchingStream() {
-        // 配信中: プレイヤーの LIVE バッジが可視
         const liveBadge = document.querySelector('.ytp-live-badge');
         if (liveBadge && liveBadge.offsetParent !== null) return true;
-
-        // 配信アーカイブ: 日付テキストに "Streamed" または "配信済み" を含む
         const dateText = document.querySelector('#info-strings yt-formatted-string')?.textContent ?? '';
         if (/streamed|配信済み/i.test(dateText)) return true;
-
         return false;
-    }
-
-    // 現在視聴中の動画の投稿主チャンネルを取得
-    function getCurrentVideoChannelBase() {
-        // 動画ページからチャンネルリンクを取得
-        const ownerLink = document.querySelector(
-            '#owner-name a, ytd-video-owner-renderer a, #upload-info a[href^="/@"], #upload-info a[href^="/channel/"], #upload-info a[href^="/c/"]'
-        );
-        if (!ownerLink) return null;
-        const href = ownerLink.getAttribute('href');
-        const m = href.match(channelPattern);
-        return m ? '/' + m[1] : null;
     }
 
     // ---- InnerTube API ----
 
-    // HTMLから INNERTUBE_API_KEY と INNERTUBE_CLIENT_VERSION を抽出
     function extractApiInfo(html) {
         const apiKey = (html.match(/"INNERTUBE_API_KEY":"([^"]+)"/) ?? [])[1] ?? '';
         const clientVersion = (html.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/) ?? [])[1] ?? '2.20260401.08.00';
         return { apiKey, clientVersion };
     }
 
-    // continuation token を使って次ページを取得
     async function fetchContinuation(token, apiKey, clientVersion) {
         try {
             const resp = await fetch(`/youtubei/v1/browse?key=${apiKey}`, {
@@ -86,9 +65,6 @@
         }
     }
 
-    // ---- タブ初期ページの取得 ----
-
-    // 指定URLをfetchし、選択タブのアイテム数・continuation token・API情報を返す
     async function fetchTabFirstPage(url) {
         try {
             const resp = await fetch(url, { credentials: 'include' });
@@ -111,20 +87,15 @@
 
     // ---- 競争方式の件数比較 ----
 
-    // /videos と /streams を並行取得し、どちらが多いかを競争形式で決定する。
-    // 片方のページが尽きた時点でもう片方の勝ちとして打ち切る（最大 MAX_RACE_ROUNDS ラウンド）。
     async function decideSuffix(channelBase) {
         const base = location.origin + channelBase;
 
-        // ページ1を並行取得
         const [videosPage, streamsPage] = await Promise.all([
             fetchTabFirstPage(base + '/videos'),
             fetchTabFirstPage(base + '/streams'),
         ]);
 
-        // 配信タブが存在しない（取得失敗 or 0件 & token無し）→ 動画へ
         if (!streamsPage || (streamsPage.count === 0 && !streamsPage.token)) return '/videos';
-        // 動画タブが存在しない → 配信へ
         if (!videosPage || (videosPage.count === 0 && !videosPage.token)) return '/streams';
 
         let vCount = videosPage.count;
@@ -132,15 +103,12 @@
         let vToken = videosPage.token;
         let sToken = streamsPage.token;
 
-        // API情報は動画ページから取得
         const { apiKey, clientVersion } = videosPage.apiInfo;
 
-        // ページ1の時点でどちらかが終了している場合
         if (!vToken && !sToken) return sCount > vCount ? '/streams' : '/videos';
-        if (!vToken) return '/streams'; // 動画が先に尽きた → 配信の方が多い
-        if (!sToken) return '/videos';  // 配信が先に尽きた → 動画の方が多い
+        if (!vToken) return '/streams';
+        if (!sToken) return '/videos';
 
-        // 競争: 両方に continuation がある間、並行で次ページを取得
         for (let round = 0; round < MAX_RACE_ROUNDS; round++) {
             const [vNext, sNext] = await Promise.all([
                 fetchContinuation(vToken, apiKey, clientVersion),
@@ -152,19 +120,17 @@
             vToken = vNext.token;
             sToken = sNext.token;
 
-            // どちらかが尽きた
             if (!vToken && !sToken) return sCount > vCount ? '/streams' : '/videos';
             if (!vToken) return '/streams';
             if (!sToken) return '/videos';
         }
 
-        // MAX_RACE_ROUNDS 消化: それでも両方 450件超なら動画をデフォルト
         return '/videos';
     }
 
-    // ---- 重複フェッチ防止（キャッシュなし版） ----
+    // ---- 重複フェッチ防止 ----
 
-    const inflight = new Map(); // 進行中の decideSuffix を共有
+    const inflight = new Map();
 
     function warmDecision(channelBase) {
         if (inflight.has(channelBase)) return inflight.get(channelBase);
@@ -186,28 +152,35 @@
     // ---- リダイレクト処理 ----
 
     let pendingChannelBase = null;
+    let fromWatchStreamState = null;
+
+    window.addEventListener('yt-navigate-start', () => {
+        fromWatchStreamState = location.pathname.startsWith('/watch')
+            ? isWatchingStream()
+            : null;
+    });
 
     async function handleChannelNavigation(currentPathname) {
         const channelBase = getChannelBase(currentPathname);
         if (!channelBase) return;
-        if (pendingChannelBase === channelBase) return; // 既に処理中
+        if (pendingChannelBase === channelBase) return;
 
         pendingChannelBase = channelBase;
-
-        // 判定中はホームを見せないようにする
         document.documentElement.style.visibility = 'hidden';
 
         try {
-            let suffix;
+            // yt-navigate-start で保存した状態があればそちらを優先（@handleなしチャンネルのフォールバック）
+            // なければ競争ロジックで決定
+            const watchStream = fromWatchStreamState;
+            fromWatchStreamState = null;
+            const suffix = (watchStream !== null)
+                ? (watchStream ? '/streams' : '/videos')
+                : await warmDecision(channelBase);
 
-            suffix = await warmDecision(channelBase);
-
-            // 非同期待機中にページが変わっていたら中止
             if (location.pathname !== currentPathname) return;
 
             window.location.replace(location.origin + channelBase + suffix + location.search);
         } catch {
-            // エラー時はホームをそのまま表示
             document.documentElement.style.visibility = '';
         } finally {
             pendingChannelBase = null;
@@ -223,10 +196,16 @@
     window.addEventListener('yt-navigate-finish', () => {
         if (channelPattern.test(location.pathname)) {
             handleChannelNavigation(location.pathname);
+        } else {
+            // チャンネルホーム以外に着地した場合、fromWatchStreamState は用済みなのでクリア。
+            // （例: /watch → popup → /@channelA/videos と直接遷移した際に
+            //   yt-navigate-start が false をセットするが、handleChannelNavigation が
+            //   呼ばれないため残留し、次の遷移で誤って使われるのを防ぐ）
+            fromWatchStreamState = null;
         }
     });
 
-    // ---- ホームフィードのライブアバター（LIVEリング）クリックのインターセプト ----
+    // ---- ホームフィードのライブアバタークリック ----
 
     document.addEventListener('click', async (e) => {
         const liveRing = e.target.closest('.yt-spec-avatar-shape--live-ring');
@@ -253,66 +232,137 @@
         window.location.href = location.origin + channelBase + suffix;
     }, true);
 
-    // ---- リンククリックのインターセプト（動画ページからの遷移用） ----
 
-    document.addEventListener('click', (e) => {
-        const anchor = e.target.closest('a');
-        if (!anchor) return;
+    // ---- 【修正版】リンククリックのインターセプト ----
 
-        try {
-            const url = new URL(anchor.href, location.origin);
-            if (url.origin !== location.origin) return;
+    document.addEventListener('click', async (e) => {
+        // 1. 動画ページ（/watch）限定の処理
+        if (location.pathname.startsWith('/watch')) {
+            
+            // A. ポップアップ内アイテムの検知（ユーザー提案のロジックを改良）
+            // ターゲット: チャンネルアイコンクリック時に出るポップアップリスト
+            const popupItem = e.target.closest('yt-list-item-view-model');
+            if (popupItem && popupItem.closest('yt-dialog-view-model')) {
+                // チャンネル特定処理
+                let channelBase = null;
 
-            const m = url.pathname.match(channelPattern);
-            if (!m) return;
+                // 方法1: 中に<a>タグが隠れていないか探す（最優先・確実）
+                const hiddenLink = popupItem.querySelector('a[href^="/@"], a[href^="/channel/"], a[href^="/c/"]');
+                if (hiddenLink) {
+                    channelBase = getChannelBase(hiddenLink.getAttribute('href'));
+                } 
+                // 方法2: <a>タグがない場合、字幕テキストから@ハンドルを抽出（ユーザー提案のフォールバック）
+                else {
+                    const subtitle = popupItem.querySelector('.yt-list-item-view-model__subtitle');
+                    // @handle 形式を抽出
+                    const handle = subtitle?.textContent?.match(/@[\w.-]+/)?.[0];
+                    if (handle) {
+                        channelBase = '/' + handle;
+                    }
+                }
 
-            const clickedChannelBase = '/' + m[1];
-
-            // 動画ページ視聴中の場合
-            if (location.pathname.startsWith('/watch')) {
-                // 現在視聴中の動画の投稿主チャンネルを取得
-                const currentVideoChannelBase = getCurrentVideoChannelBase();
-
-                // 同一チャンネルの場合のみ、動画判別ロジックを使用
-                if (currentVideoChannelBase && clickedChannelBase === currentVideoChannelBase) {
+                // チャンネルが特定できればリダイレクト
+                if (channelBase) {
                     e.preventDefault();
                     e.stopPropagation();
                     e.stopImmediatePropagation();
 
+                    // 【重要】投稿主・コラボレーターなので「動画判定ロジック」を使う
                     const suffix = isWatchingStream() ? '/streams' : '/videos';
-                    const newUrl = url.origin + clickedChannelBase + suffix + url.search;
-
-                    // Ctrl+クリック / 中クリック: 新しいタブで開く
+                    
+                    const newUrl = location.origin + channelBase + suffix;
                     if (e.ctrlKey || e.metaKey || e.button === 1) {
                         window.open(newUrl, '_blank');
+                    } else {
+                        window.location.href = newUrl;
+                    }
+                    return; // 処理終了
+                }
+            }
+
+            // B. 通常のリンククリック（投稿主エリアなど）
+            const anchor = e.target.closest('a');
+            if (anchor) {
+                try {
+                    const url = new URL(anchor.href, location.origin);
+                    if (url.origin !== location.origin) return;
+
+                    const m = url.pathname.match(channelPattern);
+                    if (!m) return;
+
+                    const clickedChannelBase = '/' + m[1];
+
+                    // 投稿主エリア（動画下のチャンネル名/アイコン）からのクリックか判定
+                    const isOwnerArea = anchor.closest('#owner, ytd-video-owner-renderer, #upload-info');
+
+                    if (isOwnerArea) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+
+                        // 【重要】投稿主なので「動画判定ロジック」を使う
+                        const suffix = isWatchingStream() ? '/streams' : '/videos';
+                        const newUrl = url.origin + clickedChannelBase + suffix + url.search;
+
+                        if (e.ctrlKey || e.metaKey || e.button === 1) {
+                            window.open(newUrl, '_blank');
+                        } else {
+                            window.location.href = newUrl;
+                        }
                         return;
                     }
 
-                    // 通常クリック
-                    window.location.href = newUrl;
-                    return;
-                }
+                    // C. /watchページ内だが、関係ないチャンネルリンク（コメント欄、サイドバーなど）
+                    // -> 処理がここに来た = isOwnerAreaではない
+                    
+                    // 【重要】関係ないチャンネルなので「競争ロジック」を使う
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
 
-                // 別チャンネルの場合は、競争ロジックを使用（下に続く）
+                    const openInNewTab = e.ctrlKey || e.metaKey || e.button === 1;
+                    const suffix = await warmDecision(clickedChannelBase);
+                    const newUrl = url.origin + clickedChannelBase + suffix + url.search;
+
+                    if (openInNewTab) {
+                        window.open(newUrl, '_blank');
+                    } else {
+                        window.location.href = newUrl;
+                    }
+
+                } catch (_) {}
             }
 
-            // 動画ページ以外、または別チャンネルへのクリックは競争ロジックを使用
-            e.preventDefault();
-            e.stopPropagation();
-            warmDecision(clickedChannelBase).then(suffix => {
-                 const newUrl = url.origin + clickedChannelBase + suffix + url.search;
+        } else {
+            // 2. /watch 以外のページ（ホーム、トレンドなど）
+            // すべてのチャンネルリンクで「競争ロジック」を使う
 
-                 // Ctrl+クリック / 中クリック: 新しいタブで開く
-                 if (e.ctrlKey || e.metaKey || e.button === 1) {
-                     window.open(newUrl, '_blank');
-                     return;
-                 }
+            const anchor = e.target.closest('a');
+            if (!anchor) return;
 
-                 window.location.href = newUrl;
-            });
+            try {
+                const url = new URL(anchor.href, location.origin);
+                if (url.origin !== location.origin) return;
 
-        } catch (_) {
-            // invalid URL, ignore
+                const m = url.pathname.match(channelPattern);
+                if (!m) return;
+
+                const clickedChannelBase = '/' + m[1];
+
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+
+                const suffix = await warmDecision(clickedChannelBase);
+                const newUrl = url.origin + clickedChannelBase + suffix + url.search;
+
+                if (e.ctrlKey || e.metaKey || e.button === 1) {
+                    window.open(newUrl, '_blank');
+                } else {
+                    window.location.href = newUrl;
+                }
+
+            } catch (_) {}
         }
     }, true);
 
