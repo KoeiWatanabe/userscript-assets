@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      1.8.0
+// @version      1.9.0
 // @description  メトリクス非表示（ホバー時表示）・サイドバー整理・おすすめタブ削除・原文デフォルト表示
 // @author       Gemini & Claude
 // @match        https://x.com/*
@@ -96,6 +96,8 @@
   const processedButtons = new WeakSet();
   // 言語ラベル未描画のボタンを保留（WeakRef で参照保持・GC 可能）
   const pendingButtons = new Set();
+  // 原文を一度表示済みのセル（ユーザーが翻訳に戻した場合の再クリックを防止）
+  const originalShownCells = new WeakSet();
 
   /** 左サイドバーのプレミアムリンクをテキストベースでも削除 */
   function cleanPremiumLinks(roots) {
@@ -203,15 +205,23 @@
     const cellDiv = btn.closest('[data-testid="cellInnerDiv"]');
     if (!cellDiv) return;
 
+    // このセルで既に原文を表示済み → ユーザーが翻訳に戻した可能性があるため再クリックしない
+    if (originalShownCells.has(cellDiv)) {
+      processedButtons.add(btn);
+      return;
+    }
+
     const sourceLang = getSourceLanguage(cellDiv);
     if (sourceLang === null) {
-      // ラベルがまだ描画されていない → 保留
       pendingButtons.add(new WeakRef(btn));
       return;
     }
 
     processedButtons.add(btn);
-    if (SHOW_ORIGINAL_LANGS.has(sourceLang)) btn.click();
+    if (SHOW_ORIGINAL_LANGS.has(sourceLang)) {
+      originalShownCells.add(cellDiv);
+      btn.click();
+    }
   }
 
   /** 保留中ボタンの再試行（毎 RAF で呼ぶ） */
@@ -228,11 +238,19 @@
         pendingButtons.delete(ref);
         continue;
       }
+      if (originalShownCells.has(cellDiv)) {
+        pendingButtons.delete(ref);
+        processedButtons.add(btn);
+        continue;
+      }
       const sourceLang = getSourceLanguage(cellDiv);
       if (sourceLang !== null) {
         pendingButtons.delete(ref);
         processedButtons.add(btn);
-        if (SHOW_ORIGINAL_LANGS.has(sourceLang)) btn.click();
+        if (SHOW_ORIGINAL_LANGS.has(sourceLang)) {
+          originalShownCells.add(cellDiv);
+          btn.click();
+        }
       }
     }
   }
