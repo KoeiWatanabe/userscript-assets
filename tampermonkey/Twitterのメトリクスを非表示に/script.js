@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      1.2.0
+// @version      1.3.0
 // @description  メトリクス非表示（ホバー時表示）・サイドバー整理・おすすめタブ削除・原文デフォルト表示
 // @author       Gemini & Claude
 // @match        https://x.com/*
@@ -102,6 +102,9 @@
   let lastUrl = location.href;
   const PROCESSED_ATTR = 'data-show-original-done';
 
+  // 原文を表示したい言語（「○○からの翻訳」の○○部分）
+  const SHOW_ORIGINAL_LANGS = ['英語'];
+
   /** 左サイドバーのプレミアムリンクをテキストベースでも削除 */
   function cleanPremiumLinks() {
     document.querySelectorAll('nav a, header a').forEach((a) => {
@@ -169,15 +172,32 @@
     });
   }
 
-  /** 「原文を表示」ボタンを自動クリック */
+  /** 「○○からの翻訳」ラベルからソース言語名を取得する */
+  function getSourceLanguage(cellDiv) {
+    for (const span of cellDiv.querySelectorAll('span')) {
+      const text = span.textContent.trim();
+      if (text.endsWith('からの翻訳')) {
+        return text.replace('からの翻訳', '');
+      }
+    }
+    return null;
+  }
+
+  /** 「原文を表示」ボタンを自動クリック（SHOW_ORIGINAL_LANGS に含まれる言語のみ） */
   function clickShowOriginalButtons(root) {
     const buttons = root.querySelectorAll('button');
     for (const btn of buttons) {
-      if (btn.textContent.trim() === '原文を表示' && !btn.hasAttribute(PROCESSED_ATTR)) {
-        if (btn.closest('[data-testid="cellInnerDiv"]')) {
-          btn.setAttribute(PROCESSED_ATTR, '1');
-          btn.click();
-        }
+      if (btn.textContent.trim() !== '原文を表示') continue;
+      if (btn.hasAttribute(PROCESSED_ATTR)) continue;
+
+      const cellDiv = btn.closest('[data-testid="cellInnerDiv"]');
+      if (!cellDiv) continue;
+
+      btn.setAttribute(PROCESSED_ATTR, '1');
+
+      const sourceLang = getSourceLanguage(cellDiv);
+      if (sourceLang !== null && SHOW_ORIGINAL_LANGS.includes(sourceLang)) {
+        btn.click();
       }
     }
   }
