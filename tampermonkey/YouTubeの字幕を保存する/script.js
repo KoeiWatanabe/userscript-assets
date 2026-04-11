@@ -415,7 +415,7 @@
         if (title) entries.push({ type: "chapter", title });
       } else {
         const tsNode = el.querySelector(".ytwTranscriptSegmentViewModelTimestamp");
-        const textNode = el.querySelector("span.yt-core-attributed-string");
+        const textNode = el.querySelector("span.ytAttributedStringHost") || el.querySelector("span.yt-core-attributed-string");
         const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
         const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
         if (!lineText) return;
@@ -439,7 +439,7 @@
     if (!segments.length) return { ok: false, reason: "transcript-segment-view-model not found" };
     const lines = [];
     segments.forEach((seg) => {
-      const textNode = seg.querySelector("span.yt-core-attributed-string");
+      const textNode = seg.querySelector("span.ytAttributedStringHost") || seg.querySelector("span.yt-core-attributed-string");
       const t = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
       if (t) lines.push(t);
     });
@@ -453,7 +453,7 @@
     const segs = [];
     items.forEach((item) => {
       const tsNode = item.querySelector(".ytwTranscriptSegmentViewModelTimestamp");
-      const textNode = item.querySelector("span.yt-core-attributed-string");
+      const textNode = item.querySelector("span.ytAttributedStringHost") || item.querySelector("span.yt-core-attributed-string");
       const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
       const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
       if (!lineText) return;
