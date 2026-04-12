@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ライブチャットをストライプにする (YouTube / Twitch)
 // @namespace    lcs
-// @version      1.0.0
+// @version      7.0.0
 // @description  YouTube・Twitchのライブチャットをストライプで読みやすく
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
