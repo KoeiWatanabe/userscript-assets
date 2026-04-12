@@ -1,10 +1,11 @@
 // ==UserScript==
-// @name         YouTubeのライブチャットをストライプにする
-// @namespace    ytcs
-// @version      6.3.3
-// @description  YouTubeライブチャットを“到着順しましま”で読みやすく
+// @name         ライブチャットをストライプにする (YouTube / Twitch)
+// @namespace    lcs
+// @version      1.0.0
+// @description  YouTube・Twitchのライブチャットをストライプで読みやすく
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
+// @match        https://www.twitch.tv/*
 // @run-at       document-idle
 // @grant        GM_addStyle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YTチャットをストライプにする/script.js
@@ -21,8 +22,12 @@
   const LIGHT_STRIPE = "rgba(0, 0, 0, 0.05)";
   const DARK_STRIPE  = "rgba(255, 255, 255, 0.1)";
   const RADIUS_PX    = "6px";
+  const PFX          = "lcs"; // CSS変数・data属性のプレフィックス
 
-  const TARGET_TAGS = new Set([
+  /**********************
+   * Platform Configs
+   **********************/
+  const YT_TARGET_TAGS = new Set([
     "YT-LIVE-CHAT-TEXT-MESSAGE-RENDERER",
     "YT-LIVE-CHAT-PAID-MESSAGE-RENDERER",
     "YT-LIVE-CHAT-PAID-STICKER-RENDERER",
@@ -37,20 +42,88 @@
     "YTD-SPONSORSHIPS-LIVE-CHAT-GIFT-PURCHASE-ANNOUNCEMENT-RENDERER"
   ]);
 
+  const PLATFORMS = {
+    youtube: {
+      isDarkTheme() {
+        const html = document.documentElement;
+        if (html.hasAttribute("dark")) return true;
+        const app = document.querySelector("yt-live-chat-app");
+        return !!(app && (app.hasAttribute("dark-theme") || app.hasAttribute("dark")));
+      },
+      isTarget(node) {
+        return node.nodeType === 1 && YT_TARGET_TAGS.has(node.tagName);
+      },
+      findContainer() {
+        return document.querySelector("#items.yt-live-chat-item-list-renderer");
+      },
+      setupThemeObserver(cb) {
+        const obs = new MutationObserver(cb);
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ["dark", "data-theme", "class"] });
+      },
+      onReady(cb) { cb(); }
+    },
+
+    twitch: {
+      isDarkTheme() {
+        const html = document.documentElement;
+        const body = document.body;
+        if (html.classList.contains("tw-root--theme-dark") || body.classList.contains("tw-root--theme-dark")) return true;
+        if (html.getAttribute("data-color-mode") === "dark") return true;
+        const bg = getComputedStyle(body).backgroundColor;
+        if (bg) {
+          const m = bg.match(/\d+/g);
+          if (m && m.length >= 3) {
+            const brightness = (parseInt(m[0]) + parseInt(m[1]) + parseInt(m[2])) / 3;
+            if (brightness < 128) return true;
+          }
+        }
+        return false;
+      },
+      isTarget(node) {
+        if (node.nodeType !== 1) return false;
+        return !!(node.querySelector(".chat-line__message") ||
+                  node.querySelector(".chat-line__status") ||
+                  node.querySelector(".vod-message"));
+      },
+      findContainer() {
+        return document.querySelector(".chat-scrollable-area__message-container") ||
+               document.querySelector(".video-chat__message-list-wrapper ul");
+      },
+      setupThemeObserver(cb) {
+        const obs = new MutationObserver(cb);
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-color-mode"] });
+        obs.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+      },
+      onReady(cb) {
+        if (this.findContainer()) {
+          cb();
+        } else {
+          const waitInterval = setInterval(() => {
+            if (this.findContainer()) {
+              clearInterval(waitInterval);
+              cb();
+            }
+          }, 1000);
+        }
+      }
+    }
+  };
+
+  const host = location.hostname;
+  const platform = host.includes("youtube.com") ? PLATFORMS.youtube
+                 : host.includes("twitch.tv")   ? PLATFORMS.twitch
+                 : null;
+
+  if (!platform) return;
+
   /**********************
    * Theme Logic
    **********************/
   function prefersDarkOS() {
     return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
   }
-  function isYouTubeDarkTheme() {
-    const html = document.documentElement;
-    if (html.hasAttribute("dark")) return true;
-    const app = document.querySelector("yt-live-chat-app");
-    return app && (app.hasAttribute("dark-theme") || app.hasAttribute("dark"));
-  }
   function isDark() {
-    return prefersDarkOS() || isYouTubeDarkTheme();
+    return prefersDarkOS() || platform.isDarkTheme();
   }
   function isDarkReaderPresent() {
     if (document.documentElement.classList.contains("darkreader")) return true;
@@ -59,29 +132,24 @@
   }
 
   /**********************
-   * CSS Management (GM_addStyle版)
+   * CSS Management
    **********************/
-  // スタイル要素を自作せず、変数CSSの定義だけを行う
   function updateCss() {
-    const color = isDark() ? DARK_STRIPE : LIGHT_STRIPE;
-
     const root = document.documentElement;
-    root.style.setProperty("--ytcs-stripe-color", color);
-
+    root.style.setProperty(`--${PFX}-stripe-color`, isDark() ? DARK_STRIPE : LIGHT_STRIPE);
     if (isDarkReaderPresent()) {
-      root.setAttribute("data-ytcs-darkreader", "1");
+      root.setAttribute(`data-${PFX}-darkreader`, "1");
     } else {
-      root.removeAttribute("data-ytcs-darkreader");
+      root.removeAttribute(`data-${PFX}-darkreader`);
     }
   }
 
-  // 初回に一度だけスタイルを登録（GM_addStyleは強力なので消えにくい）
   GM_addStyle(`
-    :root:not([data-ytcs-darkreader]) [data-ytcs-s="1"] {
-      background-color: var(--ytcs-stripe-color) !important;
+    :root:not([data-${PFX}-darkreader]) [data-${PFX}-s="1"] {
+      background-color: var(--${PFX}-stripe-color) !important;
       border-radius: ${RADIUS_PX} !important;
     }
-    :root[data-ytcs-darkreader] [data-ytcs-s="1"] {
+    :root[data-${PFX}-darkreader] [data-${PFX}-s="1"] {
       background-color: transparent !important;
       box-shadow: inset 0 0 0 9999px rgba(127,127,127,0.08) !important;
       border-radius: ${RADIUS_PX} !important;
@@ -89,58 +157,41 @@
   `);
 
   /**********************
-   * Optimized Marking Logic
+   * Stripe Logic
    **********************/
   let isStripeTurn = false;
-  let currentObservedItem = null; // ★現在監視している要素を記憶する変数
+  let currentObservedItem = null;
 
-  const observerCallback = (mutations) => {
+  const DONE_ATTR   = `data-${PFX}-done`;
+  const STRIPE_ATTR = `data-${PFX}-s`;
+
+  function markNode(node) {
+    if (!platform.isTarget(node)) return;
+    if (node.hasAttribute(DONE_ATTR)) return;
+    node.setAttribute(DONE_ATTR, "1");
+    if (isStripeTurn) node.setAttribute(STRIPE_ATTR, "1");
+    isStripeTurn = !isStripeTurn;
+  }
+
+  const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       if (mutation.addedNodes.length === 0) continue;
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType === 1 && TARGET_TAGS.has(node.tagName)) {
-          if (node.hasAttribute("data-ytcs-done")) continue;
-          node.setAttribute("data-ytcs-done", "1");
-          if (isStripeTurn) {
-            node.setAttribute("data-ytcs-s", "1");
-          }
-          isStripeTurn = !isStripeTurn;
-        }
-      }
+      for (const node of mutation.addedNodes) markNode(node);
     }
-  };
+  });
 
-  const observer = new MutationObserver(observerCallback);
-
-  // ★監視を開始・再開する関数（ロジックを修正）
   function startObserving() {
-    const newItems = document.querySelector("#items.yt-live-chat-item-list-renderer");
+    const container = platform.findContainer();
+    if (!container || container === currentObservedItem) return;
 
-    // 要素が存在し、かつ「前回監視していたものと違う」場合に付け替える
-    if (newItems && newItems !== currentObservedItem) {
-      console.log("[YTCS] Chat container detected/changed. Attaching observer...");
+    console.log("[LCS] Chat container detected/changed. Attaching observer...");
+    observer.disconnect();
+    currentObservedItem = container;
 
-      // 古い監視を解除
-      observer.disconnect();
+    isStripeTurn = false;
+    for (const child of container.children) markNode(child);
 
-      // 新しい要素を記憶
-      currentObservedItem = newItems;
-
-      // 既存ログの一括処理（チャット欄切り替え直後にあるログを処理）
-      isStripeTurn = false; // ★切り替え時に縞々順序をリセット（お好みで削除可）
-      for (const child of newItems.children) {
-        if (child.nodeType === 1 && TARGET_TAGS.has(child.tagName)) {
-             if (!child.hasAttribute("data-ytcs-done")) {
-                 child.setAttribute("data-ytcs-done", "1");
-                 if (isStripeTurn) child.setAttribute("data-ytcs-s", "1");
-                 isStripeTurn = !isStripeTurn;
-             }
-        }
-      }
-
-      // 新しい要素を監視開始
-      observer.observe(newItems, { childList: true, subtree: false });
-    }
+    observer.observe(container, { childList: true, subtree: false });
   }
 
   /**********************
@@ -148,20 +199,13 @@
    **********************/
   function init() {
     updateCss();
-
-    // 初回実行
     startObserving();
 
-    const themeObs = new MutationObserver(updateCss);
-    themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ["dark", "data-theme", "class"] });
+    platform.setupThemeObserver(updateCss);
     window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener("change", updateCss);
 
-    // ★監視要素がすり替わった時用（ここが重要）
-    setInterval(() => {
-        // 定期的に関数を呼び出し、要素が変わっているかチェックさせる
-        startObserving();
-    }, 2000);
+    setInterval(startObserving, 2000);
   }
 
-  init();
+  platform.onReady(init);
 })();
