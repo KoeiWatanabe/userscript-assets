@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ライブチャットをストライプにする＋
 // @namespace    lcs
-// @version      7.0.0
+// @version      7.1.0
 // @description  YouTube・Twitchのライブチャットをストライプで読みやすく
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -60,7 +60,6 @@
         const obs = new MutationObserver(cb);
         obs.observe(document.documentElement, { attributes: true, attributeFilter: ["dark", "data-theme", "class"] });
       },
-      onReady(cb) { cb(); }
     },
 
     twitch: {
@@ -93,18 +92,6 @@
         const obs = new MutationObserver(cb);
         obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-color-mode"] });
         obs.observe(document.body, { attributes: true, attributeFilter: ["class"] });
-      },
-      onReady(cb) {
-        if (this.findContainer()) {
-          cb();
-        } else {
-          const waitInterval = setInterval(() => {
-            if (this.findContainer()) {
-              clearInterval(waitInterval);
-              cb();
-            }
-          }, 1000);
-        }
       }
     }
   };
@@ -134,10 +121,18 @@
   /**********************
    * CSS Management
    **********************/
+  let lastStripeColor = null;
+  let lastDarkReader  = null;
+
   function updateCss() {
+    const color = isDark() ? DARK_STRIPE : LIGHT_STRIPE;
+    const dr    = isDarkReaderPresent();
+    if (color === lastStripeColor && dr === lastDarkReader) return;
+    lastStripeColor = color;
+    lastDarkReader  = dr;
     const root = document.documentElement;
-    root.style.setProperty(`--${PFX}-stripe-color`, isDark() ? DARK_STRIPE : LIGHT_STRIPE);
-    if (isDarkReaderPresent()) {
+    root.style.setProperty(`--${PFX}-stripe-color`, color);
+    if (dr) {
       root.setAttribute(`data-${PFX}-darkreader`, "1");
     } else {
       root.removeAttribute(`data-${PFX}-darkreader`);
@@ -160,7 +155,7 @@
    * Stripe Logic
    **********************/
   let isStripeTurn = false;
-  let currentObservedItem = null;
+  let currentContainer = null;
 
   const DONE_ATTR   = `data-${PFX}-done`;
   const STRIPE_ATTR = `data-${PFX}-s`;
@@ -182,11 +177,9 @@
 
   function startObserving() {
     const container = platform.findContainer();
-    if (!container || container === currentObservedItem) return;
-
-    console.log("[LCS] Chat container detected/changed. Attaching observer...");
+    if (!container || container === currentContainer) return;
     observer.disconnect();
-    currentObservedItem = container;
+    currentContainer = container;
 
     isStripeTurn = false;
     for (const child of container.children) markNode(child);
@@ -207,5 +200,5 @@
     setInterval(startObserving, 2000);
   }
 
-  platform.onReady(init);
+  init();
 })();
