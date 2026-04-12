@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.7.0
+// @version      1.7.1
 // @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -318,13 +318,6 @@
 
   // ── Chapter detection ───────────────────────────────────────────────────
 
-  function hasDomChapters() {
-    return !!(
-      document.querySelector("timeline-chapter-view-model") ||
-      document.querySelector("#segments-container ytd-transcript-section-header-renderer")
-    );
-  }
-
   /**
    * YouTube の内部プレイヤーデータからチャプター情報を取得する。
    * トランスクリプトパネルにチャプターヘッダーが表示されないケースに対応。
@@ -463,6 +456,12 @@
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
 
+  function findShowTranscriptButton() {
+    return Array.from(document.querySelectorAll("button")).find((b) =>
+      /transcript/i.test(b.textContent.trim())
+    ) || null;
+  }
+
   // Ctrl+Alt+T: トランスクリプトパネルを開閉する
   function toggleTranscriptPanel() {
     const panel = document.querySelector('[target-id="PAmodern_transcript_view"]');
@@ -472,9 +471,7 @@
       if (closeBtn) closeBtn.click();
     } else {
       // 閉じている → "Show transcript" ボタンを探してクリック
-      const showBtn = Array.from(document.querySelectorAll("button")).find((b) =>
-        /transcript/i.test(b.textContent.trim())
-      );
+      const showBtn = findShowTranscriptButton();
       if (showBtn) showBtn.click();
     }
   }
@@ -493,9 +490,7 @@
     if (getDomConfig()) return true;
 
     // "show transcript" / "トランスクリプトを表示" 等のボタンを探す
-    const btn = Array.from(document.querySelectorAll("button")).find((b) =>
-      /transcript/i.test(b.textContent.trim())
-    );
+    const btn = findShowTranscriptButton();
     if (!btn) return false;
 
     btn.click();
@@ -529,35 +524,6 @@
   }
 
   /**
-   * チャプター付きエントリを取得する統合関数。
-   * 1) DOM にチャプターヘッダーがあればそれを使う
-   * 2) なければページデータからチャプター情報を取得し、字幕セグメントとマージする
-   * チャプターが見つからなければ null を返す。
-   */
-  function extractChapteredEntries() {
-    // 1) DOM ベースのチャプター検出
-    if (hasDomChapters()) {
-      const res = extractAllEntries();
-      return res.ok && res.hasAnyChapter ? res : null;
-    }
-
-    // 2) ページデータからチャプターを取得
-    const pageChapters = getChaptersFromPageData();
-    if (!pageChapters) return null;
-
-    // 字幕セグメントを取得してマージ
-    const allRes = extractAllEntries();
-    if (!allRes.ok) return allRes; // { ok: false, reason: ... }
-
-    const segments = allRes.entries.filter((e) => e.type === "segment");
-    const entries = mergeChaptersWithSegments(pageChapters, segments);
-    const hasAnyChapter = entries.some((e) => e.type === "chapter");
-    if (!hasAnyChapter) return null;
-
-    return { ok: true, entries, hasAnyChapter, hasAnyTs: allRes.hasAnyTs };
-  }
-
-  /**
    * 字幕をダウンロードする統合関数。
    * チャプターがあれば .md、なければ .txt で保存する。
    * @param {boolean} withTs - タイムスタンプを含めるかどうか
@@ -565,33 +531,41 @@
   function saveTranscript(withTs) {
     const title = sanitizeFilename(getVideoTitle());
 
-    // チャプターがある場合は .md 形式で保存
-    const chapterRes = extractChapteredEntries();
-    if (chapterRes) {
-      if (!chapterRes.ok) {
-        alert(`${MSG_EXTRACT_FAIL}：${chapterRes.reason}\n${MSG_EXTRACT_HINT}`);
-        return;
-      }
-      if (withTs && !chapterRes.hasAnyTs) { alert(MSG_NO_TS); return; }
-      const md = buildMarkdownWithChapters(chapterRes.entries, withTs);
-      const suffix = withTs ? " - transcript (with timestamps).md" : " - transcript.md";
-      const filename = `${title}${suffix}`;
-      downloadText(md, filename);
-      showNotify(`字幕を ${filename} として保存しました`);
-      return;
-    }
-
-    // チャプターなし → .txt 形式で保存
+    // 1. 抽出（1回のみ）
     const allRes = extractAllEntries();
     if (!allRes.ok) {
       alert(`${MSG_EXTRACT_FAIL}：${allRes.reason}\n${MSG_EXTRACT_HINT}`);
       return;
     }
+
+    // 2. チャプター解決: DOM → page-data fallback
+    let entries = allRes.entries;
+    let hasChapters = allRes.hasAnyChapter;
+    if (!hasChapters) {
+      const pageChapters = getChaptersFromPageData();
+      if (pageChapters) {
+        const segments = entries.filter((e) => e.type === "segment");
+        entries = mergeChaptersWithSegments(pageChapters, segments);
+        hasChapters = entries.some((e) => e.type === "chapter");
+      }
+    }
+
+    // 3. タイムスタンプ検証
     if (withTs && !allRes.hasAnyTs) { alert(MSG_NO_TS); return; }
-    const segments = allRes.entries.filter((e) => e.type === "segment");
-    const suffix = withTs ? " - transcript (with timestamps).txt" : " - transcript.txt";
+
+    // 4. 出力生成
+    let content, suffix;
+    if (hasChapters) {
+      content = buildMarkdownWithChapters(entries, withTs);
+      suffix = withTs ? " - transcript (with timestamps).md" : " - transcript.md";
+    } else {
+      const segments = entries.filter((e) => e.type === "segment");
+      content = withTs ? buildTimestampedTxt(segments) : segments.map((e) => e.text).join("\n");
+      suffix = withTs ? " - transcript (with timestamps).txt" : " - transcript.txt";
+    }
+
+    // 5. ダウンロード + 通知
     const filename = `${title}${suffix}`;
-    const content = withTs ? buildTimestampedTxt(segments) : segments.map((e) => e.text).join("\n");
     downloadText(content, filename);
     showNotify(`字幕を ${filename} として保存しました`);
   }
@@ -794,25 +768,21 @@
   }
 
   function start() {
+    let injectTimer = 0;
+    const scheduleInject = () => {
+      if (injectTimer) return;
+      injectTimer = setTimeout(() => { injectTimer = 0; inject(); }, 150);
+    };
+
     const mo = new MutationObserver((mutations) => {
       for (const m of mutations) {
-        // セグメントがDOMに追加された（初回レンダリング）
-        if (m.type === "childList") {
-          if (
-            document.querySelector("#segments-container") ||
-            document.querySelector("transcript-segment-view-model")
-          ) {
-            inject();
-            return;
-          }
-        }
-        // パネルのvisibilityが変化した（セグメントが既にDOMにある場合）
+        if (m.type === "childList") { scheduleInject(); return; }
         if (
           m.type === "attributes" &&
           m.attributeName === "visibility" &&
           m.target.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"
         ) {
-          inject();
+          scheduleInject();
           return;
         }
       }
