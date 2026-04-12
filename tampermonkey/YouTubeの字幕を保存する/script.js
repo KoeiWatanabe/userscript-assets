@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.6.3
+// @version      1.7.0
 // @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -27,6 +27,31 @@
     'M173-293q-77-77-77-187t77-187q77-77 187-77t187 77q77 77 77 187t-77 187q-77 77-187 77t-187-77Zm594 101L648-311l50-52 33 34v-438h72v437l33-33 51 51-120 120ZM496-343.79q56-55.8 56-136Q552-560 496.21-616q-55.8-56-136-56Q280-672 224-616.21q-56 55.8-56 136Q168-400 223.79-344q55.8 56 136 56Q440-288 496-343.79ZM420-372l51-51-75-75v-126h-72v156l96 96Zm-60-108Z';
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+  const MSG_EXTRACT_FAIL = "トランスクリプトを取得できませんでした";
+  const MSG_EXTRACT_HINT = "（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）";
+  const MSG_NO_TS = "タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。";
+
+  const DOM_CONFIG = {
+    new: {
+      segmentSel: "transcript-segment-view-model",
+      chapterTag: "timeline-chapter-view-model",
+      combinedSel: "timeline-chapter-view-model, transcript-segment-view-model",
+      tsSels: [".ytwTranscriptSegmentViewModelTimestamp"],
+      textSels: ["span.ytAttributedStringHost", "span.yt-core-attributed-string"],
+      chapterTitleSels: [".ytwTimelineChapterViewModelTitle"],
+    },
+    old: {
+      container: "#segments-container",
+      segmentSel: "ytd-transcript-segment-renderer",
+      chapterTag: "ytd-transcript-section-header-renderer",
+      combinedSel: "ytd-transcript-section-header-renderer, ytd-transcript-segment-renderer",
+      tsSels: [".segment-timestamp", "yt-formatted-string.segment-timestamp", "#timestamp", "span"],
+      textSels: ["yt-formatted-string.segment-text"],
+      chapterTitleSels: ["h2", "span.yt-core-attributed-string"],
+    },
+  };
 
   let _lastCheckedVideoId = "";
 
@@ -247,16 +272,6 @@
     return new URLSearchParams(location.search).get("v") || "";
   }
 
-  function isCurrentlyLive() {
-    try {
-      const player = document.getElementById("movie_player");
-      const resp = player?.getPlayerResponse?.();
-      return resp?.videoDetails?.isLive === true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   async function checkSubtitleAvailability() {
     if (!location.pathname.startsWith("/watch")) return;
 
@@ -386,38 +401,40 @@
     return entries;
   }
 
-  function hasChapters() {
-    return hasDomChapters() || !!getChaptersFromPageData();
+  // ── Transcript extraction helpers ────────────────────────────────────────
+
+  function queryFirst(el, sels) {
+    for (const s of sels) { const r = el.querySelector(s); if (r) return r; }
+    return null;
   }
 
-  // ── New DOM helpers (transcript-segment-view-model) ──────────────────────
-
-  function hasNewTranscript() {
-    return !!document.querySelector("transcript-segment-view-model");
+  function getDomConfig() {
+    if (document.querySelector(DOM_CONFIG.new.segmentSel)) return DOM_CONFIG.new;
+    if (document.querySelector(DOM_CONFIG.old.container)) return DOM_CONFIG.old;
+    return null;
   }
 
   /**
-   * チャプター + 字幕セグメントを DOM 順に取得する（新DOM専用）。
+   * 新旧 DOM 統合の字幕抽出関数。
+   * チャプター + 字幕セグメントを DOM 順に取得する。
    * 返り値の entries 配列は { type: "chapter"|"segment", ... } の混在リスト。
    */
-  function extractTranscriptWithChaptersNew() {
-    const items = document.querySelectorAll(
-      "timeline-chapter-view-model, transcript-segment-view-model"
-    );
+  function extractAllEntries() {
+    const cfg = getDomConfig();
+    if (!cfg) return { ok: false, reason: "transcript elements not found" };
+    const root = cfg.container ? document.querySelector(cfg.container) : document;
+    if (!root) return { ok: false, reason: "segments-container not found" };
+    const items = root.querySelectorAll(cfg.combinedSel);
     if (!items.length) return { ok: false, reason: "transcript elements not found" };
 
     const entries = [];
     items.forEach((el) => {
-      const tag = el.tagName.toLowerCase();
-      if (tag === "timeline-chapter-view-model") {
-        const titleEl = el.querySelector(".ytwTimelineChapterViewModelTitle");
-        const title = (titleEl?.textContent || "").trim();
+      if (el.tagName.toLowerCase() === cfg.chapterTag) {
+        const title = norm(queryFirst(el, cfg.chapterTitleSels)?.textContent);
         if (title) entries.push({ type: "chapter", title });
       } else {
-        const tsNode = el.querySelector(".ytwTranscriptSegmentViewModelTimestamp");
-        const textNode = el.querySelector("span.ytAttributedStringHost") || el.querySelector("span.yt-core-attributed-string");
-        const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
-        const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
+        const tsText = norm(queryFirst(el, cfg.tsSels)?.textContent);
+        const lineText = norm(queryFirst(el, cfg.textSels)?.textContent);
         if (!lineText) return;
         const seconds = parseTimestampToSeconds(tsText);
         entries.push({ type: "segment", tsText: seconds == null ? "" : tsText, seconds, text: lineText });
@@ -426,110 +443,11 @@
 
     const hasAnySegment = entries.some((e) => e.type === "segment");
     if (!hasAnySegment) return { ok: false, reason: "no transcript segments found" };
-
-    const hasAnyChapter = entries.some((e) => e.type === "chapter");
-    const hasAnyTs = entries.some(
-      (e) => e.type === "segment" && typeof e.seconds === "number" && !Number.isNaN(e.seconds)
-    );
-    return { ok: true, entries, hasAnyChapter, hasAnyTs };
-  }
-
-  function extractTranscriptTextNew() {
-    const segments = document.querySelectorAll("transcript-segment-view-model");
-    if (!segments.length) return { ok: false, reason: "transcript-segment-view-model not found" };
-    const lines = [];
-    segments.forEach((seg) => {
-      const textNode = seg.querySelector("span.ytAttributedStringHost") || seg.querySelector("span.yt-core-attributed-string");
-      const t = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
-      if (t) lines.push(t);
-    });
-    if (!lines.length) return { ok: false, reason: "no transcript lines found" };
-    return { ok: true, text: lines.join("\n") };
-  }
-
-  function extractTranscriptSegmentsNew() {
-    const items = document.querySelectorAll("transcript-segment-view-model");
-    if (!items.length) return { ok: false, reason: "transcript-segment-view-model not found" };
-    const segs = [];
-    items.forEach((item) => {
-      const tsNode = item.querySelector(".ytwTranscriptSegmentViewModelTimestamp");
-      const textNode = item.querySelector("span.ytAttributedStringHost") || item.querySelector("span.yt-core-attributed-string");
-      const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
-      const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
-      if (!lineText) return;
-      const seconds = parseTimestampToSeconds(tsText);
-      segs.push({ tsText: seconds == null ? "" : tsText, seconds, text: lineText });
-    });
-    if (!segs.length) return { ok: false, reason: "no transcript segments found" };
-    const hasAnyTs = segs.some((s) => typeof s.seconds === "number" && !Number.isNaN(s.seconds));
-    return { ok: true, segments: segs, hasAnyTs };
-  }
-
-  // ── Old DOM helpers (#segments-container) ────────────────────────────────
-
-  /**
-   * チャプター + 字幕セグメントを DOM 順に取得する（旧DOM専用）。
-   * ytd-transcript-section-header-renderer をチャプター区切りとして認識する。
-   */
-  function extractTranscriptWithChaptersOld() {
-    const container = document.querySelector("#segments-container");
-    if (!container) return { ok: false, reason: "segments-container not found" };
-
-    const items = container.querySelectorAll(
-      "ytd-transcript-section-header-renderer, ytd-transcript-segment-renderer"
-    );
-    if (!items.length) return { ok: false, reason: "transcript elements not found" };
-
-    const entries = [];
-    items.forEach((el) => {
-      const tag = el.tagName.toLowerCase();
-      if (tag === "ytd-transcript-section-header-renderer") {
-        const titleEl = el.querySelector("h2") || el.querySelector("span.yt-core-attributed-string");
-        const title = (titleEl?.textContent || "").trim();
-        if (title) entries.push({ type: "chapter", title });
-      } else {
-        const tsNode =
-          el.querySelector(".segment-timestamp") ||
-          el.querySelector("yt-formatted-string.segment-timestamp") ||
-          el.querySelector("#timestamp") ||
-          el.querySelector("span");
-        const textNode = el.querySelector("yt-formatted-string.segment-text");
-        const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
-        const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
-        if (!lineText) return;
-        const seconds = parseTimestampToSeconds(tsText);
-        entries.push({ type: "segment", tsText: seconds == null ? "" : tsText, seconds, text: lineText });
-      }
-    });
-
-    const hasAnySegment = entries.some((e) => e.type === "segment");
-    if (!hasAnySegment) return { ok: false, reason: "no transcript segments found" };
-
-    const hasAnyChapter = entries.some((e) => e.type === "chapter");
-    const hasAnyTs = entries.some(
-      (e) => e.type === "segment" && typeof e.seconds === "number" && !Number.isNaN(e.seconds)
-    );
-    return { ok: true, entries, hasAnyChapter, hasAnyTs };
-  }
-
-  function extractTranscriptText() {
-    if (hasNewTranscript()) return extractTranscriptTextNew();
-
-    const container = document.querySelector("#segments-container");
-    if (!container) return { ok: false, reason: "segments-container not found" };
-
-    const nodes = container.querySelectorAll(
-      "ytd-transcript-segment-renderer yt-formatted-string.segment-text"
-    );
-
-    const lines = [];
-    nodes.forEach((n) => {
-      const t = (n.textContent || "").replace(/\s+/g, " ").trim();
-      if (t) lines.push(t);
-    });
-
-    if (!lines.length) return { ok: false, reason: "no transcript lines found" };
-    return { ok: true, text: lines.join("\n") };
+    return {
+      ok: true, entries,
+      hasAnyChapter: entries.some((e) => e.type === "chapter"),
+      hasAnyTs: entries.some((e) => e.type === "segment" && typeof e.seconds === "number" && !Number.isNaN(e.seconds)),
+    };
   }
 
   function parseTimestampToSeconds(ts) {
@@ -541,36 +459,6 @@
     if (parts.length === 2) return Number(parts[0]) * 60 + Number(parts[1]);
     if (parts.length === 3) return Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
     return null;
-  }
-
-  function extractTranscriptSegments() {
-    if (hasNewTranscript()) return extractTranscriptSegmentsNew();
-
-    const container = document.querySelector("#segments-container");
-    if (!container) return { ok: false, reason: "segments-container not found" };
-
-    const segs = [];
-    const items = container.querySelectorAll("ytd-transcript-segment-renderer");
-    items.forEach((item) => {
-      const tsNode =
-        item.querySelector(".segment-timestamp") ||
-        item.querySelector("yt-formatted-string.segment-timestamp") ||
-        item.querySelector("#timestamp") ||
-        item.querySelector("span");
-      const textNode = item.querySelector("yt-formatted-string.segment-text");
-
-      const tsText = (tsNode?.textContent || "").replace(/\s+/g, " ").trim();
-      const lineText = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
-      if (!lineText) return;
-
-      const seconds = parseTimestampToSeconds(tsText);
-      segs.push({ tsText: seconds == null ? "" : tsText, seconds, text: lineText });
-    });
-
-    if (!segs.length) return { ok: false, reason: "no transcript segments found" };
-
-    const hasAnyTs = segs.some((s) => typeof s.seconds === "number" && !Number.isNaN(s.seconds));
-    return { ok: true, segments: segs, hasAnyTs };
   }
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
@@ -602,7 +490,7 @@
   // セグメント未ロード時に "Show transcript" ボタンを自動クリックして待機する
   async function openTranscriptPanel(timeoutMs = 15000) {
     // すでにセグメントが DOM にある場合はそのまま返す
-    if (hasNewTranscript() || document.querySelector("#segments-container")) return true;
+    if (getDomConfig()) return true;
 
     // "show transcript" / "トランスクリプトを表示" 等のボタンを探す
     const btn = Array.from(document.querySelectorAll("button")).find((b) =>
@@ -649,9 +537,8 @@
   function extractChapteredEntries() {
     // 1) DOM ベースのチャプター検出
     if (hasDomChapters()) {
-      return hasNewTranscript()
-        ? extractTranscriptWithChaptersNew()
-        : extractTranscriptWithChaptersOld();
+      const res = extractAllEntries();
+      return res.ok && res.hasAnyChapter ? res : null;
     }
 
     // 2) ページデータからチャプターを取得
@@ -659,19 +546,59 @@
     if (!pageChapters) return null;
 
     // 字幕セグメントを取得してマージ
-    const segRes = extractTranscriptSegments();
-    if (!segRes.ok) return segRes; // { ok: false, reason: ... }
+    const allRes = extractAllEntries();
+    if (!allRes.ok) return allRes; // { ok: false, reason: ... }
 
-    const entries = mergeChaptersWithSegments(pageChapters, segRes.segments);
+    const segments = allRes.entries.filter((e) => e.type === "segment");
+    const entries = mergeChaptersWithSegments(pageChapters, segments);
     const hasAnyChapter = entries.some((e) => e.type === "chapter");
     if (!hasAnyChapter) return null;
 
-    return { ok: true, entries, hasAnyChapter, hasAnyTs: segRes.hasAnyTs };
+    return { ok: true, entries, hasAnyChapter, hasAnyTs: allRes.hasAnyTs };
+  }
+
+  /**
+   * 字幕をダウンロードする統合関数。
+   * チャプターがあれば .md、なければ .txt で保存する。
+   * @param {boolean} withTs - タイムスタンプを含めるかどうか
+   */
+  function saveTranscript(withTs) {
+    const title = sanitizeFilename(getVideoTitle());
+
+    // チャプターがある場合は .md 形式で保存
+    const chapterRes = extractChapteredEntries();
+    if (chapterRes) {
+      if (!chapterRes.ok) {
+        alert(`${MSG_EXTRACT_FAIL}：${chapterRes.reason}\n${MSG_EXTRACT_HINT}`);
+        return;
+      }
+      if (withTs && !chapterRes.hasAnyTs) { alert(MSG_NO_TS); return; }
+      const md = buildMarkdownWithChapters(chapterRes.entries, withTs);
+      const suffix = withTs ? " - transcript (with timestamps).md" : " - transcript.md";
+      const filename = `${title}${suffix}`;
+      downloadText(md, filename);
+      showNotify(`字幕を ${filename} として保存しました`);
+      return;
+    }
+
+    // チャプターなし → .txt 形式で保存
+    const allRes = extractAllEntries();
+    if (!allRes.ok) {
+      alert(`${MSG_EXTRACT_FAIL}：${allRes.reason}\n${MSG_EXTRACT_HINT}`);
+      return;
+    }
+    if (withTs && !allRes.hasAnyTs) { alert(MSG_NO_TS); return; }
+    const segments = allRes.entries.filter((e) => e.type === "segment");
+    const suffix = withTs ? " - transcript (with timestamps).txt" : " - transcript.txt";
+    const filename = `${title}${suffix}`;
+    const content = withTs ? buildTimestampedTxt(segments) : segments.map((e) => e.text).join("\n");
+    downloadText(content, filename);
+    showNotify(`字幕を ${filename} として保存しました`);
   }
 
   async function downloadViaShortcut(withTs) {
     // トランスクリプトが未ロードなら「読み込み中」通知を表示
-    const needsLoad = !hasNewTranscript() && !document.querySelector("#segments-container");
+    const needsLoad = !getDomConfig();
     let dismissLoading = null;
     if (needsLoad) {
       dismissLoading = showNotify("読み込み中…", "stay");
@@ -687,36 +614,7 @@
       return;
     }
 
-    const title = sanitizeFilename(getVideoTitle());
-
-    // チャプターがある場合は .md 形式で保存
-    const chapterRes = extractChapteredEntries();
-    if (chapterRes) {
-      if (!chapterRes.ok) { alert(`取得失敗: ${chapterRes.reason}`); return; }
-      if (withTs && !chapterRes.hasAnyTs) { alert("タイムスタンプを取得できませんでした。"); return; }
-      const md = buildMarkdownWithChapters(chapterRes.entries, withTs);
-      const suffix = withTs ? " - transcript (with timestamps).md" : " - transcript.md";
-      const filename = `${title}${suffix}`;
-      downloadText(md, filename);
-      showNotify(`字幕を ${filename} として保存しました`);
-      return;
-    }
-
-    // チャプターなし → 従来通り .txt 形式
-    if (withTs) {
-      const res = extractTranscriptSegments();
-      if (!res.ok) { alert(`取得失敗: ${res.reason}`); return; }
-      if (!res.hasAnyTs) { alert("タイムスタンプを取得できませんでした。"); return; }
-      const filename = `${title} - transcript (with timestamps).txt`;
-      downloadText(buildTimestampedTxt(res.segments), filename);
-      showNotify(`字幕を ${filename} として保存しました`);
-    } else {
-      const res = extractTranscriptText();
-      if (!res.ok) { alert(`取得失敗: ${res.reason}`); return; }
-      const filename = `${title} - transcript.txt`;
-      downloadText(res.text, filename);
-      showNotify(`字幕を ${filename} として保存しました`);
-    }
+    saveTranscript(withTs);
   }
 
   function registerShortcuts() {
@@ -854,30 +752,7 @@
         title: "タイムスタンプありで字幕を保存",
         ariaLabel: "タイムスタンプありで字幕を保存（TXT）",
         pathD: TS_ICON_PATH,
-        onClick: async () => {
-          const title = sanitizeFilename(getVideoTitle());
-          const chapterRes = extractChapteredEntries();
-          if (chapterRes) {
-            if (!chapterRes.ok) { alert(`トランスクリプトを取得できませんでした：${chapterRes.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`); return; }
-            if (!chapterRes.hasAnyTs) { alert("タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。"); return; }
-            const mdFilename = `${title} - transcript (with timestamps).md`;
-            downloadText(buildMarkdownWithChapters(chapterRes.entries, true), mdFilename);
-            showNotify(`字幕を ${mdFilename} として保存しました`);
-            return;
-          }
-          const res = extractTranscriptSegments();
-          if (!res.ok) {
-            alert(`トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`);
-            return;
-          }
-          if (!res.hasAnyTs) {
-            alert("タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。");
-            return;
-          }
-          const tsFilename = `${title} - transcript (with timestamps).txt`;
-          downloadText(buildTimestampedTxt(res.segments), tsFilename);
-          showNotify(`字幕を ${tsFilename} として保存しました`);
-        },
+        onClick: () => saveTranscript(true),
       });
 
       const btnNoTs = makeIconButton({
@@ -885,25 +760,7 @@
         title: "タイムスタンプなしで字幕を保存",
         ariaLabel: "タイムスタンプなしで字幕を保存（TXT）",
         pathD: SAVE_ICON_PATH,
-        onClick: async () => {
-          const title = sanitizeFilename(getVideoTitle());
-          const chapterRes = extractChapteredEntries();
-          if (chapterRes) {
-            if (!chapterRes.ok) { alert(`トランスクリプトを取得できませんでした：${chapterRes.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`); return; }
-            const mdFilenameNoTs = `${title} - transcript.md`;
-            downloadText(buildMarkdownWithChapters(chapterRes.entries, false), mdFilenameNoTs);
-            showNotify(`字幕を ${mdFilenameNoTs} として保存しました`);
-            return;
-          }
-          const res = extractTranscriptText();
-          if (!res.ok) {
-            alert(`トランスクリプトを取得できませんでした：${res.reason}\n（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）`);
-            return;
-          }
-          const txtFilename = `${title} - transcript.txt`;
-          downloadText(res.text, txtFilename);
-          showNotify(`字幕を ${txtFilename} として保存しました`);
-        },
+        onClick: () => saveTranscript(false),
       });
 
       const buttons = [btnWithTs, btnNoTs];
