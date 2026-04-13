@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      6.18
+// @version      8.0
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -28,7 +28,7 @@
         if (input === null) return;
         if (input.trim().startsWith('https://script.google.com/')) {
             GM_setValue('GAS_URL', input.trim());
-            alert('GAS URLを更新しました。ページを再読込すると反映されます。');
+            alert('GAS URLを更新しました。');
         } else if (input.trim() === '') {
             GM_setValue('GAS_URL', '');
             alert('GAS URLをクリアしました。');
@@ -58,6 +58,10 @@
     const container = document.createElement('div');
     container.id = 'custom-yt-note-container';
 
+    // =====================================================
+    //  CSS（カスタムプロパティでテーマ管理）
+    // =====================================================
+
     const style = document.createElement('style');
     style.textContent = `
         #custom-yt-note-container {
@@ -67,6 +71,33 @@
             z-index: 9999;
             font-family: 'Roboto', 'Segoe UI', Arial, sans-serif;
             pointer-events: none;
+
+            --panel-bg: rgba(30, 30, 30, 0.95);
+            --panel-border: #444;
+            --panel-text: #fff;
+            --btn-bg: #444;
+            --btn-hover: #555;
+            --btn-text: white;
+            --trim-bg: #555;
+            --trim-hover: #666;
+            --input-bg: #000;
+            --input-text: #ccc;
+            --input-border: #555;
+            --view-bg: #111;
+            --h1-color: #fff;
+            --h2-color: #eee;
+            --h3-color: #ddd;
+            --del-color: #888;
+            --bq-border: #555;
+            --bq-text: #aaa;
+            --bq-bg: rgba(255, 255, 255, 0.05);
+            --code-bg: #333;
+            --code-color: #ffb74d;
+            --pre-bg: #000;
+            --pre-border: #333;
+            --pre-code-color: #a5d6ff;
+            --th-bg: #222;
+            --hr-border: #555;
         }
 
         #custom-yt-note-container * {
@@ -74,6 +105,34 @@
         }
 
         @media (prefers-color-scheme: light) {
+            #custom-yt-note-container {
+                --panel-bg: rgba(255, 255, 255, 0.98);
+                --panel-border: #ddd;
+                --panel-text: #111;
+                --btn-bg: #eee;
+                --btn-hover: #e0e0e0;
+                --btn-text: #111;
+                --trim-bg: #eee;
+                --trim-hover: #e0e0e0;
+                --input-bg: #fff;
+                --input-text: #111;
+                --input-border: #ccc;
+                --view-bg: #fff;
+                --h1-color: #111;
+                --h2-color: #222;
+                --h3-color: #333;
+                --del-color: #777;
+                --bq-border: #ddd;
+                --bq-text: #555;
+                --bq-bg: #f6f6f6;
+                --code-bg: #f0f0f0;
+                --code-color: #b45309;
+                --pre-bg: #f6f8fa;
+                --pre-border: #ddd;
+                --pre-code-color: #0550ae;
+                --th-bg: #f0f0f0;
+                --hr-border: #ddd;
+            }
             #custom-yt-note-container * {
                 color-scheme: only light;
             }
@@ -127,12 +186,12 @@
             display: none;
             position: fixed;
             pointer-events: auto;
-            background: rgba(30, 30, 30, 0.95);
-            border: 1px solid #444;
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
             border-radius: 8px;
             padding: 15px;
             box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
-            color: #fff;
+            color: var(--panel-text);
             box-sizing: border-box;
             flex-direction: column;
             left: 0;
@@ -156,81 +215,17 @@
             background: rgba(255, 255, 255, 0.10);
         }
 
-        #yt-rz-n {
-            top: 0;
-            left: 18px;
-            right: 18px;
-            height: 8px;
-            cursor: ns-resize;
-            border-radius: 8px 8px 0 0;
-        }
-
-        #yt-rz-s {
-            bottom: 0;
-            left: 18px;
-            right: 18px;
-            height: 8px;
-            cursor: ns-resize;
-            border-radius: 0 0 8px 8px;
-        }
-
-        #yt-rz-w {
-            left: 0;
-            top: 18px;
-            bottom: 18px;
-            width: 8px;
-            cursor: ew-resize;
-            border-radius: 8px 0 0 8px;
-        }
-
-        #yt-rz-e {
-            right: 0;
-            top: 18px;
-            bottom: 18px;
-            width: 8px;
-            cursor: ew-resize;
-            border-radius: 0 8px 8px 0;
-        }
-
-        #yt-rz-nw {
-            top: 0;
-            left: 0;
-            width: 18px;
-            height: 18px;
-            cursor: nwse-resize;
-            border-radius: 8px 0 0 0;
-            z-index: 11;
-        }
-
-        #yt-rz-ne {
-            top: 0;
-            right: 0;
-            width: 18px;
-            height: 18px;
-            cursor: nesw-resize;
-            border-radius: 0 8px 0 0;
-            z-index: 11;
-        }
-
-        #yt-rz-sw {
-            bottom: 0;
-            left: 0;
-            width: 18px;
-            height: 18px;
-            cursor: nesw-resize;
-            border-radius: 0 0 0 8px;
-            z-index: 11;
-        }
-
-        #yt-rz-se {
-            bottom: 0;
-            right: 0;
-            width: 18px;
-            height: 18px;
-            cursor: nwse-resize;
-            border-radius: 0 0 8px 0;
-            z-index: 11;
-        }
+        #yt-rz-n, #yt-rz-s { left: 18px; right: 18px; height: 8px; cursor: ns-resize; }
+        #yt-rz-w, #yt-rz-e { top: 18px; bottom: 18px; width: 8px; cursor: ew-resize; }
+        #yt-rz-nw, #yt-rz-ne, #yt-rz-sw, #yt-rz-se { width: 18px; height: 18px; z-index: 11; }
+        #yt-rz-n  { top: 0;    border-radius: 8px 8px 0 0; }
+        #yt-rz-s  { bottom: 0; border-radius: 0 0 8px 8px; }
+        #yt-rz-w  { left: 0;   border-radius: 8px 0 0 8px; }
+        #yt-rz-e  { right: 0;  border-radius: 0 8px 8px 0; }
+        #yt-rz-nw { top: 0; left: 0;     cursor: nwse-resize; border-radius: 8px 0 0 0; }
+        #yt-rz-ne { top: 0; right: 0;    cursor: nesw-resize; border-radius: 0 8px 0 0; }
+        #yt-rz-sw { bottom: 0; left: 0;  cursor: nesw-resize; border-radius: 0 0 0 8px; }
+        #yt-rz-se { bottom: 0; right: 0; cursor: nwse-resize; border-radius: 0 0 8px 0; }
 
         #yt-note-panel.is-dragging #yt-note-textarea,
         #yt-note-panel.is-dragging #yt-note-view {
@@ -299,13 +294,25 @@
             opacity: 1;
         }
 
+        #yt-note-mode-btn,
+        #yt-note-trim-btn {
+            color: var(--btn-text);
+        }
+
         #yt-note-mode-btn {
-            background: #444;
-            color: white;
+            background: var(--btn-bg);
         }
 
         #yt-note-mode-btn:hover {
-            background: #555;
+            background: var(--btn-hover);
+        }
+
+        #yt-note-trim-btn {
+            background: var(--trim-bg);
+        }
+
+        #yt-note-trim-btn:hover {
+            background: var(--trim-hover);
         }
 
         #yt-note-gemini-wrap {
@@ -336,7 +343,8 @@
             flex-shrink: 0;
         }
 
-        #yt-note-gemini-btn:hover {
+        #yt-note-gemini-btn:hover,
+        #yt-note-gemini-mode-btn:hover {
             background: rgba(0, 0, 0, 0.18);
         }
 
@@ -344,26 +352,13 @@
             padding: 0 5px;
         }
 
-        #yt-note-gemini-mode-btn:hover {
-            background: rgba(0, 0, 0, 0.18);
-        }
-
-        #yt-note-trim-btn {
-            background: #555;
-            color: white;
-        }
-
-        #yt-note-trim-btn:hover {
-            background: #666;
-        }
-
         #yt-note-textarea {
             width: 100%;
             flex: 1;
             min-height: 0;
-            background: #000;
-            color: #ccc;
-            border: 1px solid #555;
+            background: var(--input-bg);
+            color: var(--input-text);
+            border: 1px solid var(--input-border);
             border-radius: 4px;
             padding: 10px;
             box-sizing: border-box;
@@ -378,8 +373,8 @@
             width: 100%;
             flex: 1;
             min-height: 0;
-            background: #111;
-            border: 1px solid #555;
+            background: var(--view-bg);
+            border: 1px solid var(--input-border);
             border-radius: 4px;
             padding: 10px;
             box-sizing: border-box;
@@ -392,22 +387,22 @@
 
         #yt-note-view h1 {
             font-size: 18px;
-            border-bottom: 1px solid #555;
+            border-bottom: 1px solid var(--hr-border);
             padding-bottom: 5px;
             margin: 10px 0;
-            color: #fff;
+            color: var(--h1-color);
         }
 
         #yt-note-view h2 {
             font-size: 16px;
             margin: 10px 0;
-            color: #eee;
+            color: var(--h2-color);
         }
 
         #yt-note-view h3 {
             font-size: 14px;
             margin: 8px 0;
-            color: #ddd;
+            color: var(--h3-color);
         }
 
         #yt-note-view p {
@@ -434,38 +429,38 @@
         }
 
         #yt-note-view del {
-            color: #888;
+            color: var(--del-color);
         }
 
         #yt-note-view blockquote {
-            border-left: 4px solid #555;
+            border-left: 4px solid var(--bq-border);
             padding-left: 10px;
-            color: #aaa;
+            color: var(--bq-text);
             margin: 5px 0 10px 0;
-            background: rgba(255, 255, 255, 0.05);
+            background: var(--bq-bg);
         }
 
         #yt-note-view code {
-            background: #333;
+            background: var(--code-bg);
             padding: 2px 4px;
             border-radius: 3px;
             font-family: monospace;
-            color: #ffb74d;
+            color: var(--code-color);
         }
 
         #yt-note-view pre {
-            background: #000;
+            background: var(--pre-bg);
             padding: 10px;
             border-radius: 5px;
             overflow-x: auto;
-            border: 1px solid #333;
+            border: 1px solid var(--pre-border);
             margin: 0 0 10px 0;
         }
 
         #yt-note-view pre code {
             background: none;
             padding: 0;
-            color: #a5d6ff;
+            color: var(--pre-code-color);
             border: none;
         }
 
@@ -478,13 +473,13 @@
 
         #yt-note-view th,
         #yt-note-view td {
-            border: 1px solid #555;
+            border: 1px solid var(--panel-border);
             padding: 6px;
             text-align: left;
         }
 
         #yt-note-view th {
-            background: #222;
+            background: var(--th-bg);
         }
 
         #yt-note-view img {
@@ -504,7 +499,7 @@
 
         #yt-note-view hr {
             border: none;
-            border-top: 1px solid #555;
+            border-top: 1px solid var(--hr-border);
             margin: 12px 0;
         }
 
@@ -518,108 +513,12 @@
         .yt-timestamp-link:hover {
             text-decoration: underline;
         }
-
-        @media (prefers-color-scheme: light) {
-            #yt-note-panel {
-                background: rgba(255, 255, 255, 0.98);
-                border: 1px solid #ddd;
-                color: #111;
-            }
-
-            #yt-note-mode-btn {
-                background: #eee;
-                color: #111;
-            }
-
-            #yt-note-mode-btn:hover {
-                background: #e0e0e0;
-            }
-
-            #yt-note-trim-btn {
-                background: #eee;
-                color: #111;
-            }
-
-            #yt-note-trim-btn:hover {
-                background: #e0e0e0;
-            }
-
-            #yt-note-textarea {
-                background: #fff;
-                color: #111;
-                border: 1px solid #ccc;
-            }
-
-            #yt-note-view {
-                background: #fff;
-                border: 1px solid #ccc;
-                color: #111;
-            }
-
-            #yt-note-view h1 {
-                border-bottom: 1px solid #ddd;
-                color: #111;
-            }
-
-            #yt-note-view h2 {
-                color: #222;
-            }
-
-            #yt-note-view h3 {
-                color: #333;
-            }
-
-            #yt-note-view del {
-                color: #777;
-            }
-
-            #yt-note-view blockquote {
-                border-left: 4px solid #ddd;
-                color: #555;
-                background: #f6f6f6;
-            }
-
-            #yt-note-view code {
-                background: #f0f0f0;
-                color: #b45309;
-            }
-
-            #yt-note-view pre {
-                background: #f6f8fa;
-                border: 1px solid #ddd;
-            }
-
-            #yt-note-view pre code {
-                color: #0550ae;
-            }
-
-            #yt-note-view th,
-            #yt-note-view td {
-                border: 1px solid #ddd;
-            }
-
-            #yt-note-view th {
-                background: #f0f0f0;
-            }
-
-            #yt-note-view a {
-                color: #065fd4;
-            }
-
-            #yt-note-view strong {
-                color: #648c50;
-            }
-
-            .yt-timestamp-link {
-                color: #065fd4 !important;
-            }
-
-            #yt-note-view hr {
-                border-top: 1px solid #ddd;
-            }
-        }
     `;
     document.head.appendChild(style);
+
+    // =====================================================
+    //  HTML テンプレート
+    // =====================================================
 
     container.innerHTML = _html.createHTML(`
         <div id="yt-note-panel" data-darkreader-ignore>
@@ -634,126 +533,45 @@
             <div id="yt-note-header">
                 <div id="yt-note-move-handle">
                     <span>📝 メモ帳</span>
-                    <button
-                        id="yt-note-size-toggle-btn"
-                        class="yt-icon-btn-plain"
-                        title="拡大"
-                    >
-                        <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            viewBox="0 -960 960 960"
-                            width="18"
-                            height="18"
-                            fill="white"
-                        >
-                            <path
-                                d="M240-240v-240h72v168h168v72H240Zm408-240v-168H480v-72h240v240h-72Z"
-                            />
-                        </svg>
-                    </button>
+                    <button id="yt-note-size-toggle-btn" class="yt-icon-btn-plain" title="拡大"></button>
                 </div>
                 <div id="yt-note-header-btns">
                     <div id="yt-note-gemini-wrap">
-                        <button
-                            id="yt-note-gemini-btn"
-                            title="タイムスタンプを作成（見出しあり）"
-                        >
-                            <img
-                                id="yt-gemini-icon"
-                                src="https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg"
-                                width="16"
-                                height="16"
-                                alt="Gemini"
-                            >
-                        </button>
-                        <svg
-                            id="yt-gemini-divider"
-                            width="1"
-                            height="16"
-                            viewBox="0 0 1 16"
-                            style="align-self:center;flex-shrink:0;"
-                        >
-                            <rect
-                                width="1"
-                                height="16"
-                                fill="rgba(255,255,255,0.35)"
-                            />
+                        <button id="yt-note-gemini-btn" title="タイムスタンプを作成（見出しあり）"></button>
+                        <svg id="yt-gemini-divider" width="1" height="16" viewBox="0 0 1 16" style="align-self:center;flex-shrink:0;">
+                            <rect width="1" height="16" fill="rgba(255,255,255,0.35)"/>
                         </svg>
-                        <button
-                            id="yt-note-gemini-mode-btn"
-                            title="見出しなしに切り替え"
-                        >
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                viewBox="0 -960 960 960"
-                                width="12"
-                                height="12"
-                                fill="currentColor"
-                            >
-                                <path d="M480-360 280-560h400L480-360Z" />
+                        <button id="yt-note-gemini-mode-btn" title="見出しなしに切り替え">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="12" height="12" fill="currentColor">
+                                <path d="M480-360 280-560h400L480-360Z"/>
                             </svg>
                         </button>
                     </div>
-                    <button
-                        id="yt-note-trim-btn"
-                        class="yt-icon-btn"
-                        title="不要な部分をカット"
-                    >
-                        <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            viewBox="0 -960 960 960"
-                            width="18"
-                            height="18"
-                            fill="currentColor"
-                        >
-                            <path
-                                d="M744-144 480-407l-87 88q8 16 11.5 33t3.5 34q0 65-45 110.5T252-96q-64 0-110-45.5T96-252q0-65 45.5-110.5T252-408q17 0 34 4t33 12l88-87-88-88q-16 8-33 11.5t-34 3.5q-65 0-110.5-45.5T96-708q0-65 45.5-110.5T252-864q65 0 110.5 45.5T408-708q0 17-3.5 34T393-641l471 469v28H744ZM595-520l-74-74 223-222h120v28L595-520ZM311.5-648.5Q336-673 336-708t-24.5-59.5Q287-792 252-792t-59.5 24.5Q168-743 168-708t24.5 59.5Q217-624 252-624t59.5-24.5ZM497-463q7-7 7-17t-7-17q-7-7-17-7t-17 7q-7 7-7 17t7 17q7 7 17 7t17-7ZM311.5-192.5Q336-217 336-252t-24.5-59.5Q287-336 252-336t-59.5 24.5Q168-287 168-252t24.5 59.5Q217-168 252-168t59.5-24.5Z"
-                            />
+                    <button id="yt-note-trim-btn" class="yt-icon-btn" title="不要な部分をカット">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="18" height="18" fill="currentColor">
+                            <path d="M744-144 480-407l-87 88q8 16 11.5 33t3.5 34q0 65-45 110.5T252-96q-64 0-110-45.5T96-252q0-65 45.5-110.5T252-408q17 0 34 4t33 12l88-87-88-88q-16 8-33 11.5t-34 3.5q-65 0-110.5-45.5T96-708q0-65 45.5-110.5T252-864q65 0 110.5 45.5T408-708q0 17-3.5 34T393-641l471 469v28H744ZM595-520l-74-74 223-222h120v28L595-520ZM311.5-648.5Q336-673 336-708t-24.5-59.5Q287-792 252-792t-59.5 24.5Q168-743 168-708t24.5 59.5Q217-624 252-624t59.5-24.5ZM497-463q7-7 7-17t-7-17q-7-7-17-7t-17 7q-7 7-7 17t7 17q7 7 17 7t17-7ZM311.5-192.5Q336-217 336-252t-24.5-59.5Q287-336 252-336t-59.5 24.5Q168-287 168-252t24.5 59.5Q217-168 252-168t59.5-24.5Z"/>
                         </svg>
                     </button>
-                    <button
-                        id="yt-note-mode-btn"
-                        class="yt-icon-btn"
-                        title="Viewモードに切り替え"
-                    >
-                        <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            viewBox="0 -960 960 960"
-                            width="18"
-                            height="18"
-                            fill="currentColor"
-                        >
-                            <path
-                                d="M264-288q47.35 0 92.17 12Q401-264 444-246v-454q-42-22-87-33t-93.22-11q-36.94 0-73.36 6.5T120-716v452q35-13 70.81-18.5Q226.63-288 264-288Zm252 42q43-20 87.83-31 44.82-11 92.17-11 37 0 73.5 4.5T840-264v-452q-35-13-71.19-20.5t-72.89-7.5Q648-744 603-733t-87 33v454Zm-36 102q-49-32-103-52t-113-20q-38 0-76 7.5T115-186q-24 10-45.5-3.53T48-229v-503q0-14 7.5-26T76-776q45-20 92.04-30 47.04-10 95.96-10 56.95 0 111.44 13.5Q429.93-789 480-762q51-26 105.19-40 54.18-14 110.81-14 48.92 0 95.96 10Q839-796 884-776q13 6 21 18t8 26v503q0 25-15.5 40t-32.5 7q-40-18-82.48-26-42.47-8-86.52-8-59 0-113 20t-103 52ZM283-495Z"
-                            />
-                        </svg>
-                    </button>
+                    <button id="yt-note-mode-btn" class="yt-icon-btn" title="Viewモードに切り替え"></button>
                 </div>
             </div>
-            <textarea
-                id="yt-note-textarea"
-                placeholder="# 見出し&#10;- 箇条書き&#10;1:23 タイムスタンプ"
-            ></textarea>
+            <textarea id="yt-note-textarea" placeholder="# 見出し&#10;- 箇条書き&#10;1:23 タイムスタンプ"></textarea>
             <div id="yt-note-view"></div>
         </div>
         <div id="yt-note-tab-wrap">
             <button id="yt-note-toggle" title="メモ帳を開く">
-                <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 -960 960 960"
-                    width="22"
-                    height="22"
-                    fill="currentColor"
-                >
-                    <path
-                        d="M160-400v-80h280v80H160Zm0-160v-80h440v80H160Zm0-160v-80h440v80H160Zm360 560v-123l221-220q9-9 20-13t22-4q12 0 23 4.5t20 13.5l37 37q8 9 12.5 20t4.5 22q0 11-4 22.5T863-380L643-160H520Zm300-263-37-37 37 37ZM580-220h38l121-122-18-19-19-18-122 121v38Zm141-141-19-18 37 37-18-19Z"
-                    />
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="22" height="22" fill="currentColor">
+                    <path d="M160-400v-80h280v80H160Zm0-160v-80h440v80H160Zm0-160v-80h440v80H160Zm360 560v-123l221-220q9-9 20-13t22-4q12 0 23 4.5t20 13.5l37 37q8 9 12.5 20t4.5 22q0 11-4 22.5T863-380L643-160H520Zm300-263-37-37 37 37ZM580-220h38l121-122-18-19-19-18-122 121v38Zm141-141-19-18 37 37-18-19Z"/>
                 </svg>
             </button>
         </div>
     `);
 
     document.body.appendChild(container);
+
+    // =====================================================
+    //  DOM参照
+    // =====================================================
 
     const toggleBtn = document.getElementById('yt-note-toggle');
     const tabWrap = document.getElementById('yt-note-tab-wrap');
@@ -764,62 +582,90 @@
     const geminiBtn = document.getElementById('yt-note-gemini-btn');
     const geminiModeBtn = document.getElementById('yt-note-gemini-mode-btn');
     const trimBtn = document.getElementById('yt-note-trim-btn');
+    const sizeToggleBtn = document.getElementById('yt-note-size-toggle-btn');
 
-    let GAS_URL = GM_getValue('GAS_URL', '');
-    if (!GAS_URL) {
+    // =====================================================
+    //  State + ユーティリティ
+    // =====================================================
+
+    const state = {
+        videoId: '',
+        isOpen: false,
+        isEditMode: true,
+        panelSizeInitialized: false,
+        sizeIsMax: true,
+        geminiStructured: true,
+        panelRect: { left: 0, top: 0, width: 0, height: 0 },
+    };
+
+    function debounce(fn, ms) {
+        let timer;
+        return (...args) => {
+            clearTimeout(timer);
+            timer = setTimeout(() => fn(...args), ms);
+        };
+    }
+
+    function getGasUrl() {
+        return GM_getValue('GAS_URL', '');
+    }
+
+    function ensureGasUrl() {
+        if (getGasUrl()) return;
         const input = prompt(
             '【初回設定】Google Apps Script のデプロイURLを入力してください:\n' +
             '（例: https://script.google.com/macros/s/xxxxx/exec）'
         );
         if (input && input.trim().startsWith('https://script.google.com/')) {
-            GAS_URL = input.trim();
-            GM_setValue('GAS_URL', GAS_URL);
+            GM_setValue('GAS_URL', input.trim());
         } else {
             alert('有効なGAS URLが入力されませんでした。メモの保存・読込機能は無効です。\nページを再読込すると再入力できます。');
         }
     }
 
-    const ICON_VIEW = `
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 -960 960 960"
-            width="18"
-            height="18"
-            fill="currentColor"
-        >
-            <path
-                d="M264-288q47.35 0 92.17 12Q401-264 444-246v-454q-42-22-87-33t-93.22-11q-36.94 0-73.36 6.5T120-716v452q35-13 70.81-18.5Q226.63-288 264-288Zm252 42q43-20 87.83-31 44.82-11 92.17-11 37 0 73.5 4.5T840-264v-452q-35-13-71.19-20.5t-72.89-7.5Q648-744 603-733t-87 33v454Zm-36 102q-49-32-103-52t-113-20q-38 0-76 7.5T115-186q-24 10-45.5-3.53T48-229v-503q0-14 7.5-26T76-776q45-20 92.04-30 47.04-10 95.96-10 56.95 0 111.44 13.5Q429.93-789 480-762q51-26 105.19-40 54.18-14 110.81-14 48.92 0 95.96 10Q839-796 884-776q13 6 21 18t8 26v503q0 25-15.5 40t-32.5 7q-40-18-82.48-26-42.47-8-86.52-8-59 0-113 20t-103 52ZM283-495Z"
-            />
-        </svg>
-    `;
-
-    const ICON_EDIT = `
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 -960 960 960"
-            width="18"
-            height="18"
-            fill="currentColor"
-        >
-            <path
-                d="M96 0v-192h768V0H96Zm168-360h51l279-279-26-27-25-24-279 279v51Zm-72 72v-152.92L594-843q11-11 23.84-16 12.83-5 27-5 14.16 0 27.16 5t24.1 15.94L747-792q11 11 16 24t5 27.4q0 13.49-4.95 26.54-4.95 13.05-15.75 23.85L345-288H192Zm503-455-51-49 51 49ZM594-639l-26-27-25-24 51 51Z"
-            />
-        </svg>
-    `;
-
-    function setModeIcon(toViewMode) {
-        if (toViewMode) {
-            modeBtn.innerHTML = _html.createHTML(ICON_VIEW);
-            modeBtn.title = 'Viewモードに切り替え';
-        } else {
-            modeBtn.innerHTML = _html.createHTML(ICON_EDIT);
-            modeBtn.title = 'Editモードに切り替え';
-        }
+    function setPanelOpen(open) {
+        state.isOpen = open;
+        panel.style.display = open ? 'flex' : 'none';
+        toggleBtn.classList.toggle('is-open', open);
+        tabWrap.classList.toggle('is-open', open);
+        toggleBtn.title = open ? 'メモ帳を閉じる' : 'メモ帳を開く';
     }
 
-    let currentVideoId = '';
-    let isEditMode = true;
-    let panelSizeInitialized = false;
+    // =====================================================
+    //  SVGアイコン ヘルパー
+    // =====================================================
+
+    const svgIcon = (d, size = 18) =>
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" ` +
+        `width="${size}" height="${size}" fill="currentColor"><path d="${d}"/></svg>`;
+
+    const ICON_VIEW = svgIcon('M264-288q47.35 0 92.17 12Q401-264 444-246v-454q-42-22-87-33t-93.22-11q-36.94 0-73.36 6.5T120-716v452q35-13 70.81-18.5Q226.63-288 264-288Zm252 42q43-20 87.83-31 44.82-11 92.17-11 37 0 73.5 4.5T840-264v-452q-35-13-71.19-20.5t-72.89-7.5Q648-744 603-733t-87 33v454Zm-36 102q-49-32-103-52t-113-20q-38 0-76 7.5T115-186q-24 10-45.5-3.53T48-229v-503q0-14 7.5-26T76-776q45-20 92.04-30 47.04-10 95.96-10 56.95 0 111.44 13.5Q429.93-789 480-762q51-26 105.19-40 54.18-14 110.81-14 48.92 0 95.96 10Q839-796 884-776q13 6 21 18t8 26v503q0 25-15.5 40t-32.5 7q-40-18-82.48-26-42.47-8-86.52-8-59 0-113 20t-103 52ZM283-495Z');
+    const ICON_EDIT = svgIcon('M96 0v-192h768V0H96Zm168-360h51l279-279-26-27-25-24-279 279v51Zm-72 72v-152.92L594-843q11-11 23.84-16 12.83-5 27-5 14.16 0 27.16 5t24.1 15.94L747-792q11 11 16 24t5 27.4q0 13.49-4.95 26.54-4.95 13.05-15.75 23.85L345-288H192Zm503-455-51-49 51 49ZM594-639l-26-27-25-24 51 51Z');
+    const ICON_SIZE_MAX = svgIcon('M240-240v-240h72v168h168v72H240Zm408-240v-168H480v-72h240v240h-72Z');
+    const ICON_SIZE_MIN = svgIcon('M432-432v240h-72v-168H192v-72h240Zm168-336v168h168v72H528v-240h72Z');
+    const ICON_GEMINI_SIMPLE = svgIcon('M480-80q0-83-31.5-156T363-363q-54-54-127-85.5T80-480q83 0 156-31.5T363-597q54-54 85.5-127T480-880q0 83 31.5 156T597-597q54 54 127 85.5T880-480q-83 0-156 31.5T597-363q-54 54-85.5 127T480-80Z', 22);
+    const ICON_GEMINI_STRUCTURED = '<img id="yt-gemini-icon" src="https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg" width="16" height="16" alt="Gemini">';
+
+    // =====================================================
+    //  モード管理
+    // =====================================================
+
+    function setModeIcon(toViewMode) {
+        modeBtn.innerHTML = _html.createHTML(toViewMode ? ICON_VIEW : ICON_EDIT);
+        modeBtn.title = toViewMode ? 'Viewモードに切り替え' : 'Editモードに切り替え';
+    }
+
+    function setMode(edit) {
+        state.isEditMode = edit;
+        textarea.style.display = edit ? 'block' : 'none';
+        viewArea.style.display = edit ? 'none' : 'block';
+        setModeIcon(edit);
+        if (!edit) renderView();
+    }
+
+    // =====================================================
+    //  イベントリスナー
+    // =====================================================
 
     tabWrap.addEventListener('mouseenter', () => {
         toggleBtn.classList.add('hovered');
@@ -834,17 +680,13 @@
     toggleBtn.addEventListener('click', e => {
         e.stopPropagation();
 
-        const isOpen = panel.style.display === 'flex';
-        if (!isOpen && !panelSizeInitialized) {
+        if (!state.isOpen && !state.panelSizeInitialized) {
             applyPresetSize(PRESET_MAX);
             initPanelPos();
-            panelSizeInitialized = true;
+            state.panelSizeInitialized = true;
         }
 
-        panel.style.display = isOpen ? 'none' : 'flex';
-        toggleBtn.classList.toggle('is-open', !isOpen);
-        tabWrap.classList.toggle('is-open', !isOpen);
-        toggleBtn.title = isOpen ? 'メモ帳を開く' : 'メモ帳を閉じる';
+        setPanelOpen(!state.isOpen);
     });
 
     document.addEventListener('keydown', e => {
@@ -859,12 +701,7 @@
     });
 
     document.addEventListener('click', () => {
-        if (panel.style.display === 'flex') {
-            panel.style.display = 'none';
-            toggleBtn.classList.remove('is-open');
-            tabWrap.classList.remove('is-open');
-            toggleBtn.title = 'メモ帳を開く';
-        }
+        if (state.isOpen) setPanelOpen(false);
     });
 
     panel.addEventListener(
@@ -882,22 +719,23 @@
     );
 
     modeBtn.addEventListener('click', () => {
-        isEditMode = !isEditMode;
+        if (state.isEditMode) saveNote();
+        setMode(!state.isEditMode);
+    });
 
-        if (isEditMode) {
-            textarea.style.display = 'block';
-            viewArea.style.display = 'none';
-            setModeIcon(true);
-        } else {
-            saveNote();
-            renderView();
-            textarea.style.display = 'none';
-            viewArea.style.display = 'block';
-            setModeIcon(false);
+    textarea.addEventListener('input', onTextInput);
+
+    viewArea.addEventListener('click', e => {
+        const tsLink = e.target.closest('.yt-timestamp-link');
+        if (tsLink) {
+            e.preventDefault();
+            seekVideo(tsLink.dataset.time);
         }
     });
 
-    textarea.addEventListener('input', saveNote);
+    // =====================================================
+    //  レンダリング・シーク
+    // =====================================================
 
     function renderView() {
         const text = textarea.value;
@@ -909,12 +747,6 @@
         });
 
         viewArea.innerHTML = _html.createHTML(html);
-
-        viewArea.querySelectorAll('.yt-timestamp-link').forEach(link => {
-            link.addEventListener('click', e => {
-                seekVideo(e.target.getAttribute('data-time'));
-            });
-        });
 
         viewArea.querySelectorAll('a[href]').forEach(link => {
             link.setAttribute('target', '_blank');
@@ -942,78 +774,104 @@
         return urlParams.get('v');
     }
 
-    function saveNote() {
-        if (!currentVideoId) return;
+    // =====================================================
+    //  永続化
+    // =====================================================
 
+    let lastSavedContent = '';
+
+    function saveToLocal() {
+        if (!state.videoId) return;
+        localStorage.setItem(`yt_note_${state.videoId}`, textarea.value);
+    }
+
+    function saveToRemote() {
+        if (!state.videoId) return;
+        const gasUrl = getGasUrl();
+        if (!gasUrl) return;
         const content = textarea.value;
-        localStorage.setItem(`yt_note_${currentVideoId}`, content);
+        if (content === lastSavedContent) return;
+        lastSavedContent = content;
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: gasUrl,
+            data: JSON.stringify({
+                videoId: state.videoId,
+                content: content
+            }),
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
 
-        if (GAS_URL) {
-            GM_xmlhttpRequest({
-                method: 'POST',
-                url: GAS_URL,
-                data: JSON.stringify({
-                    videoId: currentVideoId,
-                    content: content
-                }),
-                headers: { 'Content-Type': 'application/json' }
-            });
+    const debouncedLocalSave = debounce(saveToLocal, 300);
+    const debouncedRemoteSave = debounce(saveToRemote, 3000);
+
+    function saveNote() {
+        saveToLocal();
+        saveToRemote();
+    }
+
+    function onTextInput() {
+        debouncedLocalSave();
+        debouncedRemoteSave();
+    }
+
+    function ensureContainer() {
+        if (!document.body.contains(container)) {
+            document.body.appendChild(container);
         }
     }
 
     function loadNote() {
-        if (!document.body.contains(container)) {
-            document.body.appendChild(container);
-        }
+        ensureContainer();
 
-        currentVideoId = getVideoId();
+        const newVideoId = getVideoId();
 
-        if (!currentVideoId) {
-            panel.style.display = 'none';
+        if (!newVideoId) {
+            setPanelOpen(false);
             toggleBtn.style.display = 'none';
+            state.videoId = '';
             return;
         }
 
+        if (newVideoId === state.videoId) return;
+
+        state.videoId = newVideoId;
+        lastSavedContent = '';
         toggleBtn.style.display = 'block';
 
-        const localNote = localStorage.getItem(`yt_note_${currentVideoId}`) || '';
-        textarea.value = localNote;
-        applyInitialMode(localNote);
-
-        if (!GAS_URL) return;
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `${GAS_URL}?videoId=${currentVideoId}`,
-            onload: function(response) {
-                if (response.responseText) {
-                    textarea.value = response.responseText;
-                    localStorage.setItem(
-                        `yt_note_${currentVideoId}`,
-                        response.responseText
-                    );
-                    isEditMode = false;
-                    renderView();
-                    textarea.style.display = 'none';
-                    viewArea.style.display = 'block';
-                    setModeIcon(false);
-                }
-            }
-        });
+        loadLocalNote();
+        loadRemoteNote();
     }
 
-    function applyInitialMode(note) {
-        if (note && note.trim() !== '') {
-            isEditMode = false;
-            renderView();
-            textarea.style.display = 'none';
-            viewArea.style.display = 'block';
-            setModeIcon(false);
-        } else {
-            isEditMode = true;
-            textarea.style.display = 'block';
-            viewArea.style.display = 'none';
-            setModeIcon(true);
-        }
+    function loadLocalNote() {
+        const localNote = localStorage.getItem(`yt_note_${state.videoId}`) || '';
+        textarea.value = localNote;
+        setMode(!localNote.trim());
+    }
+
+    function loadRemoteNote() {
+        const gasUrl = getGasUrl();
+        if (!gasUrl) return;
+
+        const videoIdAtRequest = state.videoId;
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: `${gasUrl}?videoId=${state.videoId}`,
+            onload(response) {
+                if (!response.responseText) return;
+                if (state.videoId !== videoIdAtRequest) return;
+
+                textarea.value = response.responseText;
+                localStorage.setItem(
+                    `yt_note_${state.videoId}`,
+                    response.responseText
+                );
+                lastSavedContent = response.responseText;
+                setMode(false);
+            }
+        });
     }
 
     // =====================================================
@@ -1072,33 +930,23 @@
 
         textarea.value = trimmed;
         saveNote();
-
-        isEditMode = false;
-        renderView();
-        textarea.style.display = 'none';
-        viewArea.style.display = 'block';
-        setModeIcon(false);
+        setMode(false);
     });
 
     // =====================================================
     //  Gemini タイムスタンプ生成
     // =====================================================
 
-    const PROMPT_STRUCTURED = url => `${url}
+    const PROMPT_BASE = url =>
+        `${url}\n\n動画を見返す時に展開と構造がわかりやすいように、タイムスタンプを作ってほしい。トピックを一覧にしてまとめて、マークダウン形式で見やすく整えて。形式は以下の通り。\n\n# 🕒 タイムスタンプ`;
 
-動画を見返す時に展開と構造がわかりやすいように、タイムスタンプを作ってほしい。トピックを一覧にしてまとめて、マークダウン形式で見やすく整えて。形式は以下の通り。
-
-# 🕒 タイムスタンプ
+    const PROMPT_FORMAT_STRUCTURED = `
 ### 絵文字付き見出し
 | タイムスタンプ | トピック |
 | --- | --- |
 | MM:SS | トピック |`;
 
-    const PROMPT_SIMPLE = (url) => `${url}
-
-動画を見返す時に展開と構造がわかりやすいように、タイムスタンプを作ってほしい。トピックを一覧にしてまとめて、マークダウン形式で見やすく整えて。形式は以下の通り。
-
-# 🕒 タイムスタンプ
+    const PROMPT_FORMAT_SIMPLE = `
 ### 1. 見出し
 | タイムスタンプ | トピック |
 | --- | --- |
@@ -1109,35 +957,8 @@
 | --- | --- |
 | MM:SS | 一言まとめ： 詳細 |`;
 
-    let geminiStructured = true;
-
-    const ICON_GEMINI_STRUCTURED = `
-        <img
-            id="yt-gemini-icon"
-            src="https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg"
-            width="16"
-            height="16"
-            alt="Gemini"
-        >
-    `;
-
-    const ICON_GEMINI_SIMPLE = `
-        <svg
-            id="yt-gemini-icon"
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 -960 960 960"
-            width="22"
-            height="22"
-            fill="currentColor"
-        >
-            <path
-                d="M480-80q0-83-31.5-156T363-363q-54-54-127-85.5T80-480q83 0 156-31.5T363-597q54-54 85.5-127T480-880q0 83 31.5 156T597-597q54 54 127 85.5T880-480q-83 0-156 31.5T597-363q-54 54-85.5 127T480-80Z"
-            />
-        </svg>
-    `;
-
     function updateGeminiModeAppearance() {
-        if (geminiStructured) {
+        if (state.geminiStructured) {
             geminiBtn.innerHTML = _html.createHTML(ICON_GEMINI_STRUCTURED);
             geminiBtn.title = 'タイムスタンプを作成（見出しあり）';
             geminiModeBtn.title = '見出しなしに切り替え';
@@ -1149,22 +970,21 @@
     }
 
     geminiModeBtn.addEventListener('click', () => {
-        geminiStructured = !geminiStructured;
+        state.geminiStructured = !state.geminiStructured;
         updateGeminiModeAppearance();
     });
 
     geminiBtn.addEventListener('click', () => {
-        if (!currentVideoId) {
+        if (!state.videoId) {
             alert(
                 '動画が検出できませんでした。YouTube動画のページで実行してください。'
             );
             return;
         }
 
-        const videoUrl = `https://www.youtube.com/watch?v=${currentVideoId}`;
-        const prompt = geminiStructured
-            ? PROMPT_STRUCTURED(videoUrl)
-            : PROMPT_SIMPLE(videoUrl);
+        const videoUrl = `https://www.youtube.com/watch?v=${state.videoId}`;
+        const prompt = PROMPT_BASE(videoUrl) +
+            (state.geminiStructured ? PROMPT_FORMAT_STRUCTURED : PROMPT_FORMAT_SIMPLE);
 
         window.open(
             `https://gemini.google.com/app?q=${encodeURIComponent(prompt)}`,
@@ -1175,8 +995,7 @@
     updateGeminiModeAppearance();
 
     // =====================================================
-    //  パネル移動・リサイズ
-    //  改良版:
+    //  パネル配置・ドラッグ/リサイズ
     //   - pointermove / pointerrawupdate では座標記録のみ
     //   - 実描画は requestAnimationFrame で1フレーム1回
     // =====================================================
@@ -1184,11 +1003,6 @@
     const MIN_PANEL_WIDTH = 250;
     const MIN_CONTENT_HEIGHT = 150;
     const PANEL_MARGIN = 20;
-
-    let currentPanelWidth = 0;
-    let currentPanelHeight = 0;
-    let panelLeft = 0;
-    let panelTop = 0;
 
     const clampW = (w, vw) =>
         Math.min(
@@ -1203,35 +1017,38 @@
         );
 
     function commitPanelPos() {
-        panel.style.transform = `translate3d(${panelLeft}px, ${panelTop}px, 0)`;
+        const r = state.panelRect;
+        panel.style.transform = `translate3d(${r.left}px, ${r.top}px, 0)`;
     }
 
     function constrainPanelPos() {
-        panelLeft = Math.min(
-            Math.max(panelLeft, PANEL_MARGIN),
-            window.innerWidth - currentPanelWidth - PANEL_MARGIN
+        const r = state.panelRect;
+        r.left = Math.min(
+            Math.max(r.left, PANEL_MARGIN),
+            window.innerWidth - r.width - PANEL_MARGIN
         );
-        panelTop = Math.min(
-            Math.max(panelTop, PANEL_MARGIN),
-            window.innerHeight - currentPanelHeight - PANEL_MARGIN
+        r.top = Math.min(
+            Math.max(r.top, PANEL_MARGIN),
+            window.innerHeight - r.height - PANEL_MARGIN
         );
         commitPanelPos();
     }
 
     function applyPanelRect(left, top, w, h) {
+        const r = state.panelRect;
         w = clampW(w);
         h = clampH(h);
 
-        panelLeft = left;
-        panelTop = top;
+        r.left = left;
+        r.top = top;
 
-        if (w !== currentPanelWidth) {
-            currentPanelWidth = w;
+        if (w !== r.width) {
+            r.width = w;
             panel.style.width = `${w}px`;
         }
 
-        if (h !== currentPanelHeight) {
-            currentPanelHeight = h;
+        if (h !== r.height) {
+            r.height = h;
             panel.style.height = `${h}px`;
         }
 
@@ -1239,15 +1056,9 @@
     }
 
     function initPanelPos() {
-        const w =
-            currentPanelWidth ||
-            Math.round(window.innerWidth * PRESET_MAX.w);
-        const h =
-            currentPanelHeight ||
-            Math.round(window.innerHeight * PRESET_MAX.h);
-
-        panelLeft = window.innerWidth - w - 54;
-        panelTop = window.innerHeight - h - 30;
+        const r = state.panelRect;
+        r.left = window.innerWidth - r.width - 54;
+        r.top = window.innerHeight - r.height - 30;
         commitPanelPos();
     }
 
@@ -1263,6 +1074,7 @@
         dragRafId = 0;
         if (!dragState) return;
 
+        const r = state.panelRect;
         const dx = dragState.lastX - dragState.startX;
         const dy = dragState.lastY - dragState.startY;
 
@@ -1281,9 +1093,9 @@
                 dragState.vh - dragState.startH - PANEL_MARGIN
             );
 
-            if (l !== panelLeft || t !== panelTop) {
-                panelLeft = l;
-                panelTop = t;
+            if (l !== r.left || t !== r.top) {
+                r.left = l;
+                r.top = t;
                 commitPanelPos();
             }
             return;
@@ -1375,6 +1187,7 @@
             e.preventDefault();
             e.stopPropagation();
 
+            const r = state.panelRect;
             dragState = {
                 type,
                 pointerId: e.pointerId,
@@ -1382,10 +1195,10 @@
                 startY: e.clientY,
                 lastX: e.clientX,
                 lastY: e.clientY,
-                startLeft: panelLeft,
-                startTop: panelTop,
-                startW: currentPanelWidth,
-                startH: currentPanelHeight,
+                startLeft: r.left,
+                startTop: r.top,
+                startW: r.width,
+                startH: r.height,
                 vw: window.innerWidth,
                 vh: window.innerHeight
             };
@@ -1422,18 +1235,19 @@
     // =====================================================
 
     window.addEventListener('resize', () => {
-        if (panel.style.display !== 'flex') return;
+        if (!state.isOpen) return;
         // ドラッグ中はドラッグロジック側で制御するので何もしない
         if (dragState) return;
 
-        const maxW = clampW(currentPanelWidth);
-        const maxH = clampH(currentPanelHeight);
-        if (maxW !== currentPanelWidth) {
-            currentPanelWidth = maxW;
+        const r = state.panelRect;
+        const maxW = clampW(r.width);
+        const maxH = clampH(r.height);
+        if (maxW !== r.width) {
+            r.width = maxW;
             panel.style.width = `${maxW}px`;
         }
-        if (maxH !== currentPanelHeight) {
-            currentPanelHeight = maxH;
+        if (maxH !== r.height) {
+            r.height = maxH;
             panel.style.height = `${maxH}px`;
         }
         constrainPanelPos();
@@ -1443,101 +1257,80 @@
     //  プリセットサイズボタン
     // =====================================================
 
-    const sizeToggleBtn = document.getElementById('yt-note-size-toggle-btn');
-
-    const ICON_SIZE_MAX = `
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 -960 960 960"
-            width="18"
-            height="18"
-            fill="currentColor"
-        >
-            <path
-                d="M240-240v-240h72v168h168v72H240Zm408-240v-168H480v-72h240v240h-72Z"
-            />
-        </svg>
-    `;
-
-    const ICON_SIZE_MIN = `
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 -960 960 960"
-            width="18"
-            height="18"
-            fill="currentColor"
-        >
-            <path
-                d="M432-432v240h-72v-168H192v-72h240Zm168-336v168h168v72H528v-240h72Z"
-            />
-        </svg>
-    `;
-
-    let sizeIsMax = true;
-
     function applyPresetSize(preset) {
+        const r = state.panelRect;
         const newW = Math.round(clampW(window.innerWidth * preset.w));
         const newH = Math.round(clampH(window.innerHeight * preset.h));
-        const dw = newW - currentPanelWidth;
-        const dh = newH - currentPanelHeight;
+        const dw = newW - r.width;
+        const dh = newH - r.height;
 
-        const cx = panelLeft + currentPanelWidth / 2;
-        const cy = panelTop + currentPanelHeight / 2;
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
         const anchorRight = cx > window.innerWidth / 2;
         const anchorBottom = cy > window.innerHeight / 2;
 
-        let newLeft = panelLeft;
-        let newTop = panelTop;
+        let newLeft = r.left;
+        let newTop = r.top;
 
-        if (anchorRight) newLeft = panelLeft - dw;
-        if (anchorBottom) newTop = panelTop - dh;
+        if (anchorRight) newLeft = r.left - dw;
+        if (anchorBottom) newTop = r.top - dh;
 
-        currentPanelWidth = newW;
-        currentPanelHeight = newH;
+        r.width = newW;
+        r.height = newH;
         panel.style.width = `${newW}px`;
         panel.style.height = `${newH}px`;
-        panelLeft = newLeft;
-        panelTop = newTop;
+        r.left = newLeft;
+        r.top = newTop;
 
         constrainPanelPos();
     }
 
     function updateSizeToggleIcon() {
         sizeToggleBtn.innerHTML = _html.createHTML(
-            sizeIsMax ? ICON_SIZE_MIN : ICON_SIZE_MAX
+            state.sizeIsMax ? ICON_SIZE_MIN : ICON_SIZE_MAX
         );
-        sizeToggleBtn.title = sizeIsMax ? '縮小' : '拡大';
+        sizeToggleBtn.title = state.sizeIsMax ? '縮小' : '拡大';
     }
 
     sizeToggleBtn.addEventListener('click', e => {
         e.stopPropagation();
-        sizeIsMax = !sizeIsMax;
-        applyPresetSize(sizeIsMax ? PRESET_MAX : PRESET_MIN);
+        state.sizeIsMax = !state.sizeIsMax;
+        applyPresetSize(state.sizeIsMax ? PRESET_MAX : PRESET_MIN);
         updateSizeToggleIcon();
     });
 
     updateSizeToggleIcon();
 
     // =====================================================
-    //  フルスクリーン時に非表示
+    //  復活・ライフサイクル
     // =====================================================
 
     document.addEventListener('fullscreenchange', () => {
         container.style.display = document.fullscreenElement ? 'none' : '';
     });
 
-    // =====================================================
-    //  強力な復活処理
-    // =====================================================
-
     window.addEventListener('yt-navigate-finish', loadNote);
+    window.addEventListener('yt-page-data-updated', loadNote);
+
+    const bodyObserver = new MutationObserver(mutations => {
+        for (const m of mutations) {
+            for (const node of m.removedNodes) {
+                if (node === container || node.contains?.(container)) {
+                    document.body.appendChild(container);
+                    return;
+                }
+            }
+        }
+    });
+    bodyObserver.observe(document.body, { childList: true });
 
     setInterval(() => {
         if (!document.getElementById('custom-yt-note-container')) {
             document.body.appendChild(container);
             loadNote();
         }
-    }, 1000);
+    }, 10000);
 
+    ensureGasUrl();
     loadNote();
 })();
