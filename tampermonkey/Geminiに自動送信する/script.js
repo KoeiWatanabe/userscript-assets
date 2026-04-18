@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Geminiに自動送信する
 // @namespace    http://tampermonkey.net/
-// @version      1.3.4
+// @version      1.3.5
 // @description  URLクエリパラメータ ?q= の内容をGeminiのチャットに自動入力して送信する
 // @author       You
 // @match        https://gemini.google.com/*
@@ -21,18 +21,20 @@
     const INPUT_DELAY_MS = 1000;     // 入力後、送信ボタンを押すまでの待機時間(ms)
     const MAX_WAIT_MS = 15000;    // 要素を待つ最大時間(ms)
 
-    // モード名とメニュー内テキストのマッピング（日本語UI・英語UI両対応 実機確認済み 2026-04-19）
-    // 英語UI（無料会員で確認）: Fast / Thinking / Pro、日本語UI: 高速モード / 思考モード / Pro
-    const MODE_TEXT_MAP = {
-        think: ['思考モード', 'Thinking'],  // ?mode=think
-        fast: ['高速モード', 'Fast'],        // ?mode=fast
-        pro: ['Pro'],                        // ?mode=pro
+    // モード名とメニュー内テキストのマッピング（実機確認済み 2026-04-19）
+    // 一次: 日本語UI / 英語UI のテキスト照合
+    // フォールバック: data-test-id（言語非依存・Google側のテスト識別子）
+    const MODE_MAP = {
+        think: { texts: ['思考モード', 'Thinking'], testId: 'bard-mode-option-thinking' },
+        fast:  { texts: ['高速モード', 'Fast'],     testId: 'bard-mode-option-fast' },
+        pro:   { texts: ['Pro'],                    testId: 'bard-mode-option-pro' },
     };
 
-    // モード切替ボタンのセレクタ（日本語UI・英語UI両対応）
+    // モード切替ボタンのセレクタ（一次: UI言語別 aria-label、フォールバック: data-test-id）
     const MODE_BUTTON_SELECTORS = [
-        'button[aria-label="モード選択ツールを開く"]', // 日本語UI
-        'button[aria-label="Open mode picker"]',      // 英語UI（無料会員で確認 2026-04-19）
+        'button[aria-label="モード選択ツールを開く"]',   // 日本語UI
+        'button[aria-label="Open mode picker"]',        // 英語UI
+        'button[data-test-id="bard-mode-menu-button"]', // 言語非依存フォールバック
     ];
 
     // --- メイン処理 ---
@@ -128,18 +130,19 @@
 
     /**
      * モード切替ボタンを開き、指定モードのメニュー項目をクリックする
-     * @param {string[]} targetTexts  候補テキスト配列（日本語・英語UIの両方を含む）
+     * @param {{texts: string[], testId: string}} modeDef  モード定義（テキスト候補 + data-test-id）
      */
-    async function selectMode(targetTexts) {
-        console.log(`[Gemini Auto Submit] モードを選択します: ${targetTexts.join(' / ')}`);
+    async function selectMode(modeDef) {
+        const { texts, testId } = modeDef;
+        console.log(`[Gemini Auto Submit] モードを選択します: ${texts.join(' / ')} (testId=${testId})`);
 
         // モード切替ボタンを探す（短めのタイムアウトでフェイルソフト）
         // 無料会員など一部UIではモードボタンが存在しない／UI言語でaria-labelが異なるため、
         // 見つからなければスキップしてテキスト挿入に進む
         const modeBtn = await waitForElement(MODE_BUTTON_SELECTORS, 3000);
 
-        // 既に選択済みなら何もしない
-        if (targetTexts.some(t => modeBtn.textContent.includes(t))) {
+        // 既に選択済みなら何もしない（ボタン表示テキストに現在モード名が含まれるか判定）
+        if (texts.some(t => modeBtn.textContent.includes(t))) {
             console.log('[Gemini Auto Submit] 既に選択中のモードです。スキップします。');
             return;
         }
@@ -150,11 +153,18 @@
         await waitForElement(['.mat-mdc-menu-item'], 3000);
         await new Promise(r => setTimeout(r, 200)); // Angular アニメーション待ち
 
-        const items = document.querySelectorAll('.mat-mdc-menu-item');
-        const target = [...items].find(el => targetTexts.some(t => el.textContent.includes(t)));
+        // 1) テキスト照合（日本語/英語） → 2) data-test-id（言語非依存フォールバック）
+        const items = [...document.querySelectorAll('.mat-mdc-menu-item')];
+        let target = items.find(el => texts.some(t => el.textContent.includes(t)));
+        if (!target && testId) {
+            target = document.querySelector(`[data-test-id="${testId}"]`);
+            if (target) {
+                console.log(`[Gemini Auto Submit] data-test-id フォールバックで特定: ${testId}`);
+            }
+        }
 
         if (!target) {
-            throw new Error(`モード項目が見つかりませんでした: ${targetTexts.join(' / ')}`);
+            throw new Error(`モード項目が見つかりませんでした: ${texts.join(' / ')} / ${testId}`);
         }
 
         target.click();
@@ -171,9 +181,9 @@
             // モード指定があれば先に切り替える
             // モード選択はベストエフォート: 失敗してもテキスト挿入・送信は続行する
             // （無料会員や一部UI言語ではモードボタンが存在しない・セレクタが一致しないケースがある）
-            if (modeKey && MODE_TEXT_MAP[modeKey]) {
+            if (modeKey && MODE_MAP[modeKey]) {
                 try {
-                    await selectMode(MODE_TEXT_MAP[modeKey]);
+                    await selectMode(MODE_MAP[modeKey]);
                 } catch (modeErr) {
                     console.warn('[Gemini Auto Submit] モード選択をスキップします:', modeErr.message);
                 }
