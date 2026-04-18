@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTubeチャンネルのホームをスキップ
+// @name         YouTubeチャンネルのホームをスキップ (shorts対応版・お試し)
 // @namespace    http://tampermonkey.net/
-// @version      3.3
-// @description  YouTubeチャンネルページを自動的に/videosへリダイレクト。動画視聴中の投稿主/コラボレーター遷移は動画タイプに合わせ、その他は件数比較で決定。
+// @version      3.4
+// @description  YouTubeチャンネルページを自動的に/videos・/streams・/shortsのいずれかへリダイレクト。動画視聴中の投稿主/コラボレーター遷移は動画タイプに合わせ、その他は件数比較で決定。
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-start
@@ -86,46 +86,67 @@
     }
 
     // ---- 競争方式の件数比較 ----
+    // videos / streams / shorts の3候補で件数競争を行う。
+    // 各ラウンドで「まだ継続トークンを持っている候補 = 今後もさらに増える候補」とみなし、
+    // トークンを持つ候補が1つだけになったらそれを優勝とする。全員トークンが尽きたら最大件数で決定。
+
+    function pickMaxCount(candidates) {
+        // 同数の場合は candidates の順序（videos > streams > shorts）を優先。
+        return candidates.reduce((a, b) => b.count > a.count ? b : a).suffix;
+    }
 
     async function decideSuffix(channelBase) {
         const base = location.origin + channelBase;
 
-        const [videosPage, streamsPage] = await Promise.all([
+        const [videosPage, streamsPage, shortsPage] = await Promise.all([
             fetchTabFirstPage(base + '/videos'),
             fetchTabFirstPage(base + '/streams'),
+            fetchTabFirstPage(base + '/shorts'),
         ]);
 
-        if (!streamsPage || (streamsPage.count === 0 && !streamsPage.token)) return '/videos';
-        if (!videosPage || (videosPage.count === 0 && !videosPage.token)) return '/streams';
+        const rawCandidates = [
+            { suffix: '/videos',  page: videosPage  },
+            { suffix: '/streams', page: streamsPage },
+            { suffix: '/shorts',  page: shortsPage  },
+        ];
 
-        let vCount = videosPage.count;
-        let sCount = streamsPage.count;
-        let vToken = videosPage.token;
-        let sToken = streamsPage.token;
+        // 空 or 失敗した候補は除外（件数0かつ継続トークンなし = 実質的に存在しない／空タブ）
+        const candidates = rawCandidates
+            .filter(({ page }) => page && (page.count > 0 || page.token))
+            .map(({ suffix, page }) => ({
+                suffix,
+                count: page.count,
+                token: page.token,
+                apiInfo: page.apiInfo,
+            }));
 
-        const { apiKey, clientVersion } = videosPage.apiInfo;
+        if (candidates.length === 0) return '/videos';
+        if (candidates.length === 1) return candidates[0].suffix;
 
-        if (!vToken && !sToken) return sCount > vCount ? '/streams' : '/videos';
-        if (!vToken) return '/streams';
-        if (!sToken) return '/videos';
+        const { apiKey, clientVersion } = candidates[0].apiInfo;
+
+        // 1回目のレース前の早期判定
+        const activeInit = candidates.filter(c => c.token);
+        if (activeInit.length === 0) return pickMaxCount(candidates);
+        if (activeInit.length === 1) return activeInit[0].suffix;
 
         for (let round = 0; round < MAX_RACE_ROUNDS; round++) {
-            const [vNext, sNext] = await Promise.all([
-                fetchContinuation(vToken, apiKey, clientVersion),
-                fetchContinuation(sToken, apiKey, clientVersion),
-            ]);
+            const active = candidates.filter(c => c.token);
+            const results = await Promise.all(
+                active.map(c => fetchContinuation(c.token, apiKey, clientVersion))
+            );
+            active.forEach((c, i) => {
+                c.count += results[i].count;
+                c.token = results[i].token;
+            });
 
-            vCount += vNext.count;
-            sCount += sNext.count;
-            vToken = vNext.token;
-            sToken = sNext.token;
-
-            if (!vToken && !sToken) return sCount > vCount ? '/streams' : '/videos';
-            if (!vToken) return '/streams';
-            if (!sToken) return '/videos';
+            const stillActive = candidates.filter(c => c.token);
+            if (stillActive.length === 0) return pickMaxCount(candidates);
+            if (stillActive.length === 1) return stillActive[0].suffix;
         }
 
-        return '/videos';
+        // 最大ラウンドに到達した場合は現時点の件数で決定
+        return pickMaxCount(candidates);
     }
 
     // ---- 重複フェッチ防止 ----
@@ -238,7 +259,7 @@
     document.addEventListener('click', async (e) => {
         // 1. 動画ページ（/watch）限定の処理
         if (location.pathname.startsWith('/watch')) {
-            
+
             // A. ポップアップ内アイテムの検知（ユーザー提案のロジックを改良）
             // ターゲット: チャンネルアイコンクリック時に出るポップアップリスト
             const popupItem = e.target.closest('yt-list-item-view-model');
@@ -250,7 +271,7 @@
                 const hiddenLink = popupItem.querySelector('a[href^="/@"], a[href^="/channel/"], a[href^="/c/"]');
                 if (hiddenLink) {
                     channelBase = getChannelBase(hiddenLink.getAttribute('href'));
-                } 
+                }
                 // 方法2: <a>タグがない場合、字幕テキストから@ハンドルを抽出（ユーザー提案のフォールバック）
                 else {
                     const subtitle = popupItem.querySelector('.yt-list-item-view-model__subtitle');
@@ -269,7 +290,7 @@
 
                     // 【重要】投稿主・コラボレーターなので「動画判定ロジック」を使う
                     const suffix = isWatchingStream() ? '/streams' : '/videos';
-                    
+
                     const newUrl = location.origin + channelBase + suffix;
                     if (e.ctrlKey || e.metaKey || e.button === 1) {
                         window.open(newUrl, '_blank');
@@ -314,7 +335,7 @@
 
                     // C. /watchページ内だが、関係ないチャンネルリンク（コメント欄、サイドバーなど）
                     // -> 処理がここに来た = isOwnerAreaではない
-                    
+
                     // 【重要】関係ないチャンネルなので「競争ロジック」を使う
                     e.preventDefault();
                     e.stopPropagation();
