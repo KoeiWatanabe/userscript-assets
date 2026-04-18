@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風にする
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.0.4
+// @version      2.1.0
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
@@ -32,8 +32,39 @@
     ownerColor: '#FFD600',  // チャンネル主の文字色
     modColor: '#5E84F1',    // モデレーターの文字色
     bgOpacity: 0.35,        // 特殊コメント背景の不透明度 (0.0〜1.0)
-    notifyIcon: "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeをニコニコ風に/icon_128.png",       // 通知アイコンURL（null ならデフォルトアイコン）
+    notifyIcon: "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeをニコニコ風に/icon_128.png",
   };
+
+  // ─── バッチ処理設定 ───
+  const PERF = {
+    batchDelay: 80,      // バッチ処理の間隔 (ms)
+    batchSize: 10,       // 1回に処理する最大件数
+    maxQueueSize: 60,    // キューの最大サイズ（超過分は古いものを捨てる）
+    skipWhenHidden: true, // タブ非表示時はスキップ
+  };
+
+  // ─── スーパーチャット / スティッカーのCSS変数マップ ───
+  const PAID_TAGS = {
+    'yt-live-chat-paid-message-renderer': '--yt-live-chat-paid-message-primary-color',
+    'yt-live-chat-paid-sticker-renderer': '--yt-live-chat-paid-sticker-background-color',
+  };
+
+  // ─── DOM生成ヘルパー ───
+  // h('div', { className: 'foo', style: 'color:red' }, [child1, 'text'])
+  function h(tag, attrs, children) {
+    const el = document.createElement(tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'style') el.style.cssText = v;
+      else el[k] = v;
+    }
+    if (children != null) {
+      const list = Array.isArray(children) ? children : [children];
+      for (const c of list) {
+        if (c != null) el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+      }
+    }
+    return el;
+  }
 
   // ─── 動的フォントサイズ（画面サイズから自動計算）───
   let fontSize = 32; // 初期値（overlay作成後に上書き）
@@ -41,9 +72,7 @@
   function updateFontSize() {
     if (!overlayHeight) return;
     fontSize = Math.floor(overlayHeight * CONFIG.displayArea / (CONFIG.maxLines * CONFIG.lineHeightRatio));
-    if (overlay) {
-      overlay.style.setProperty('--yt-danmaku-fs', fontSize + 'px');
-    }
+    if (overlay) overlay.style.setProperty('--yt-danmaku-fs', fontSize + 'px');
   }
 
   // ─── 映像領域に合わせてオーバーレイの位置・サイズを更新 ───
@@ -90,21 +119,11 @@
     overlay.style.left = offsetX + 'px';
     overlay.style.width = renderW + 'px';
     overlay.style.height = renderH + 'px';
-
-    // オーバーレイの実サイズを更新
     overlayWidth = renderW;
     overlayHeight = renderH;
     overlay.style.setProperty('--yt-danmaku-w', overlayWidth + 'px');
     updateFontSize();
   }
-
-  // ─── バッチ処理設定 ───
-  const PERF = {
-    batchDelay: 80,      // バッチ処理の間隔 (ms)
-    batchSize: 10,       // 1回に処理する最大件数
-    maxQueueSize: 60,    // キューの最大サイズ（超過分は古いものを捨てる）
-    skipWhenHidden: true, // タブ非表示時はスキップ
-  };
 
   // ─── 共通スタイルの注入 ───
   function injectStyles() {
@@ -114,10 +133,7 @@
     style.textContent = `
       #yt-danmaku-overlay {
         position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
+        top: 0; left: 0; width: 100%; height: 100%;
         pointer-events: none;
         overflow: hidden;
         z-index: 2021;
@@ -157,8 +173,7 @@
       }
       .yt-danmaku-notify {
         position: absolute;
-        top: 12px;
-        left: 50%;
+        top: 12px; left: 50%;
         transform: translateX(-50%);
         backdrop-filter: blur(20px);
         -webkit-backdrop-filter: blur(20px);
@@ -166,21 +181,20 @@
         padding: 10px 14px;
         pointer-events: none;
         z-index: 2022;
-        min-width: 260px;
-        max-width: 340px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
+        min-width: 260px; max-width: 340px;
+        display: flex; align-items: center; gap: 10px;
         font-family: -apple-system, BlinkMacSystemFont, "Noto Sans JP", "Helvetica Neue", sans-serif;
         animation: yt-danmaku-notify-in 3s cubic-bezier(0.32, 0.72, 0, 1) forwards;
       }
       .yt-danmaku-notify.--dark {
         background: rgba(30, 30, 30, 0.88);
         box-shadow: 0 4px 24px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(255,255,255,0.1) inset;
+        --nt-title: rgba(255,255,255,0.95); --nt-msg: rgba(255,255,255,0.6); --nt-time: rgba(255,255,255,0.35);
       }
       .yt-danmaku-notify.--light {
         background: rgba(255, 255, 255, 0.92);
         box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06);
+        --nt-title: rgba(0,0,0,0.88); --nt-msg: rgba(0,0,0,0.5); --nt-time: rgba(0,0,0,0.3);
       }
       .yt-danmaku-notify__icon-fallback {
         width: 36px; height: 36px;
@@ -196,16 +210,10 @@
         object-fit: cover;
         flex-shrink: 0;
       }
-      .yt-danmaku-notify__body { display: flex; flex-direction: column; gap: 1px; }
-      .yt-danmaku-notify__title { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; }
-      .yt-danmaku-notify__msg   { font-size: 12px; font-weight: 400; }
-      .yt-danmaku-notify__time  { font-size: 11px; margin-left: auto; align-self: flex-start; flex-shrink: 0; }
-      .yt-danmaku-notify.--dark .yt-danmaku-notify__title { color: rgba(255,255,255,0.95); }
-      .yt-danmaku-notify.--dark .yt-danmaku-notify__msg   { color: rgba(255,255,255,0.6); }
-      .yt-danmaku-notify.--dark .yt-danmaku-notify__time  { color: rgba(255,255,255,0.35); }
-      .yt-danmaku-notify.--light .yt-danmaku-notify__title { color: rgba(0,0,0,0.88); }
-      .yt-danmaku-notify.--light .yt-danmaku-notify__msg   { color: rgba(0,0,0,0.5); }
-      .yt-danmaku-notify.--light .yt-danmaku-notify__time  { color: rgba(0,0,0,0.3); }
+      .yt-danmaku-notify__body  { display: flex; flex-direction: column; gap: 1px; }
+      .yt-danmaku-notify__title { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; color: var(--nt-title); }
+      .yt-danmaku-notify__msg   { font-size: 12px; font-weight: 400; color: var(--nt-msg); }
+      .yt-danmaku-notify__time  { font-size: 11px; margin-left: auto; align-self: flex-start; flex-shrink: 0; color: var(--nt-time); }
     `;
     document.head.appendChild(style);
   }
@@ -216,56 +224,31 @@
     const player = document.querySelector('#movie_player');
     if (!player) return;
 
-    // 既存の通知を除去
     const existing = player.querySelector('.yt-danmaku-notify');
     if (existing) existing.remove();
     if (notifyTimer) { clearTimeout(notifyTimer); notifyTimer = 0; }
 
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const banner = document.createElement('div');
-    banner.className = 'yt-danmaku-notify ' + (isDark ? '--dark' : '--light');
+    const fallbackIcon = () => h('div', { className: 'yt-danmaku-notify__icon-fallback' }, '\u5F3E');
 
-    // アイコン
-    if (CONFIG.notifyIcon) {
-      const img = document.createElement('img');
-      img.className = 'yt-danmaku-notify__icon-img';
-      img.src = CONFIG.notifyIcon;
-      img.onerror = () => {
-        // 読み込み失敗時はデフォルトアイコンにフォールバック
-        const fallback = document.createElement('div');
-        fallback.className = 'yt-danmaku-notify__icon-fallback';
-        fallback.textContent = '\u5F3E';
-        img.replaceWith(fallback);
-      };
-      banner.appendChild(img);
-    } else {
-      const icon = document.createElement('div');
-      icon.className = 'yt-danmaku-notify__icon-fallback';
-      icon.textContent = '\u5F3E'; // 「弾」
-      banner.appendChild(icon);
-    }
+    const iconEl = CONFIG.notifyIcon
+      ? h('img', {
+          className: 'yt-danmaku-notify__icon-img',
+          src: CONFIG.notifyIcon,
+          onerror() { this.replaceWith(fallbackIcon()); },
+        })
+      : fallbackIcon();
 
-    // テキスト
-    const body = document.createElement('div');
-    body.className = 'yt-danmaku-notify__body';
-    const title = document.createElement('div');
-    title.className = 'yt-danmaku-notify__title';
-    title.textContent = 'YouTubeをニコニコ風にする';
-    const msg = document.createElement('div');
-    msg.className = 'yt-danmaku-notify__msg';
-    msg.textContent = isEnabled ? '弾幕をオンにしました' : '弾幕をオフにしました';
-    body.appendChild(title);
-    body.appendChild(msg);
+    const banner = h('div', { className: 'yt-danmaku-notify ' + (isDark ? '--dark' : '--light') }, [
+      iconEl,
+      h('div', { className: 'yt-danmaku-notify__body' }, [
+        h('div', { className: 'yt-danmaku-notify__title' }, 'YouTubeをニコニコ風にする'),
+        h('div', { className: 'yt-danmaku-notify__msg' }, isEnabled ? '弾幕をオンにしました' : '弾幕をオフにしました'),
+      ]),
+      h('div', { className: 'yt-danmaku-notify__time' }, '今'),
+    ]);
 
-    // 時刻ラベル
-    const time = document.createElement('div');
-    time.className = 'yt-danmaku-notify__time';
-    time.textContent = '今';
-
-    banner.appendChild(body);
-    banner.appendChild(time);
     player.appendChild(banner);
-
     notifyTimer = setTimeout(() => { banner.remove(); notifyTimer = 0; }, 3500);
   }
 
@@ -280,20 +263,13 @@
         if (child.nodeType === 3) { // TEXT_NODE
           const text = child.textContent || '';
           if (text.trim()) hasContent = true;
-          if (text) {
-            parentFragment.appendChild(document.createTextNode(text));
-          }
+          if (text) parentFragment.appendChild(document.createTextNode(text));
         } else if (child.nodeType === 1) { // ELEMENT_NODE
-          const tag = child.tagName.toLowerCase();
-          if (tag === 'img') {
+          if (child.tagName.toLowerCase() === 'img') {
             const src = child.getAttribute('src');
             if (src) {
               hasContent = true;
-              const img = document.createElement('img');
-              img.src = src;
-              img.alt = child.getAttribute('alt') || '';
-              img.className = 'yt-danmaku-emoji';
-              parentFragment.appendChild(img);
+              parentFragment.appendChild(h('img', { src, alt: child.getAttribute('alt') || '', className: 'yt-danmaku-emoji' }));
             }
           } else {
             walk(child, parentFragment);
@@ -311,39 +287,29 @@
     const tagName = node.tagName.toLowerCase();
     const authorType = node.getAttribute('author-type');
     const authorNameEl = node.querySelector('#author-name');
-    const authorName = authorNameEl ? (authorNameEl.textContent || '').trim() : '';
     const photoEl = node.querySelector('#author-photo img');
-    const photoSrc = photoEl ? photoEl.getAttribute('src') : null;
+    const badgeEl = node.querySelector('#chat-badges yt-live-chat-author-badge-renderer img');
 
     const info = {
       tagName,
       authorType,
-      authorName,
-      photoSrc,
+      authorName: authorNameEl ? (authorNameEl.textContent || '').trim() : '',
+      photoSrc: photoEl ? photoEl.getAttribute('src') : null,
+      badgeSrc: badgeEl ? badgeEl.getAttribute('src') : null,
       amount: null,
       bgColor: null,
       textColor: CONFIG.color,
       isSpecial: false,
     };
 
-    // スーパーチャット
+    // スーパーチャット / スティッカースパチャ（テーブル駆動で統合）
     // ※ YouTube は低額帯(緑・水色)で header-color を黒に設定するが、
     //   弾幕は動画上に表示するため文字色は常に白を使う
-    if (tagName === 'yt-live-chat-paid-message-renderer') {
+    const colorProp = PAID_TAGS[tagName];
+    if (colorProp) {
       const amountEl = node.querySelector('#purchase-amount, #purchase-amount-chip');
       info.amount = amountEl ? (amountEl.textContent || '').trim() : null;
-      const cs = getComputedStyle(node);
-      info.bgColor = cs.getPropertyValue('--yt-live-chat-paid-message-primary-color').trim() || 'rgba(230,33,23,0.8)';
-      info.textColor = '#FFFFFF';
-      info.isSpecial = true;
-    }
-
-    // スティッカースパチャ
-    if (tagName === 'yt-live-chat-paid-sticker-renderer') {
-      const amountEl = node.querySelector('#purchase-amount, #purchase-amount-chip');
-      info.amount = amountEl ? (amountEl.textContent || '').trim() : null;
-      const cs = getComputedStyle(node);
-      info.bgColor = cs.getPropertyValue('--yt-live-chat-paid-sticker-background-color').trim() || 'rgba(230,33,23,0.8)';
+      info.bgColor = getComputedStyle(node).getPropertyValue(colorProp).trim() || 'rgba(230,33,23,0.8)';
       info.textColor = '#FFFFFF';
       info.isSpecial = true;
     }
@@ -354,24 +320,14 @@
       info.isSpecial = true;
     }
 
-    // チャンネル主
-    if (authorType === 'owner') {
-      info.textColor = CONFIG.ownerColor;
-      info.isSpecial = true;
-    }
-
-    // モデレーター
-    if (authorType === 'moderator') {
-      info.textColor = CONFIG.modColor;
-      info.isSpecial = true;
-    }
+    // チャンネル主 / モデレーター
+    if (authorType === 'owner') { info.textColor = CONFIG.ownerColor; info.isSpecial = true; }
+    if (authorType === 'moderator') { info.textColor = CONFIG.modColor; info.isSpecial = true; }
 
     // 背景色の不透明度をCONFIG.bgOpacityで上書き
     if (info.bgColor) {
-      const rgbaMatch = info.bgColor.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/);
-      if (rgbaMatch) {
-        info.bgColor = `rgba(${rgbaMatch[1]},${rgbaMatch[2]},${rgbaMatch[3]},${CONFIG.bgOpacity})`;
-      }
+      const m = info.bgColor.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/);
+      if (m) info.bgColor = `rgba(${m[1]},${m[2]},${m[3]},${CONFIG.bgOpacity})`;
     }
 
     return info;
@@ -409,26 +365,19 @@
     if (pendingNodes.length > PERF.maxQueueSize) {
       pendingNodes.splice(0, pendingNodes.length - PERF.maxQueueSize);
     }
-    if (!flushTimer) {
-      flushTimer = setTimeout(flushPendingNodes, PERF.batchDelay);
-    }
+    if (!flushTimer) flushTimer = setTimeout(flushPendingNodes, PERF.batchDelay);
   }
 
   function flushPendingNodes() {
     flushTimer = 0;
-    // タブ非表示時はスキップ
     if (PERF.skipWhenHidden && document.hidden) {
       pendingNodes.length = 0;
       return;
     }
     const batch = pendingNodes.splice(0, PERF.batchSize);
-    for (const node of batch) {
-      processNode(node);
-    }
+    for (const node of batch) processNode(node);
     // まだキューに残っていれば次のバッチをスケジュール
-    if (pendingNodes.length) {
-      flushTimer = setTimeout(flushPendingNodes, PERF.batchDelay);
-    }
+    if (pendingNodes.length) flushTimer = setTimeout(flushPendingNodes, PERF.batchDelay);
   }
 
   // ── オーバーレイ作成 ──
@@ -441,27 +390,20 @@
 
     injectStyles();
 
-    const el = document.createElement('div');
-    el.id = 'yt-danmaku-overlay';
+    const el = h('div', { id: 'yt-danmaku-overlay' });
     player.style.position = 'relative';
     player.appendChild(el);
 
     // ResizeObserverでプレイヤーサイズ変更を監視 → 映像領域を再計算
     if (resizeObserver) resizeObserver.disconnect();
-    resizeObserver = new ResizeObserver(() => {
-      updateOverlayBounds();
-    });
+    resizeObserver = new ResizeObserver(() => updateOverlayBounds());
     resizeObserver.observe(player);
 
     // video のメタデータ読み込み時にも再計算（アスペクト比が確定するタイミング）
     const video = player.querySelector('video');
-    if (video) {
-      video.addEventListener('loadedmetadata', () => updateOverlayBounds(), { once: true });
-    }
+    if (video) video.addEventListener('loadedmetadata', () => updateOverlayBounds(), { once: true });
 
-    // 初期値
     updateOverlayBounds();
-
     return el;
   }
 
@@ -482,23 +424,16 @@
     const rightEdge = overlayWidth + prev.width - prev.speed * elapsed;
     if (rightEdge <= 0) return true; // 既に画面外
 
-    // 新コメント左端(overlayWidth) と前コメント右端の現在の間隔
-    const gap = overlayWidth - rightEdge;
-
     // 追いつくまでの時間 vs 前コメントが画面外に出るまでの時間
-    const catchTime = gap / (newSpeed - prev.speed);
-    const exitTime = rightEdge / prev.speed;
-
-    return catchTime > exitTime;
+    const gap = overlayWidth - rightEdge;
+    return gap / (newSpeed - prev.speed) > rightEdge / prev.speed;
   }
 
   // ── 行割り当て（衝突検知付き・特殊コメントは2行分確保）──
   function getAvailableLine(tall, newSpeed, newWidth) {
     const now = Date.now();
     const maxLines = CONFIG.maxLines;
-    if (laneTracker.length !== maxLines) {
-      laneTracker = new Array(maxLines).fill(null);
-    }
+    if (laneTracker.length !== maxLines) laneTracker = new Array(maxLines).fill(null);
     const needed = tall ? 2 : 1;
     const info = { startTime: now, speed: newSpeed, width: newWidth };
 
@@ -521,16 +456,11 @@
   // ── 弾幕生成 ──
   function spawnDanmaku(messageFragment, chatInfo) {
     if (!enabled) return;
-    if (!overlay || !overlay.isConnected) {
-      overlay = createOverlay();
-    }
+    if (!overlay || !overlay.isConnected) overlay = createOverlay();
     if (!overlay) return;
 
     const isSpecial = chatInfo.isSpecial;
-
-    // 外枠（共通スタイルはCSSクラスで適用、差分のみインラインで設定）
-    const el = document.createElement('div');
-    el.className = 'yt-danmaku-item';
+    const el = h('div', { className: 'yt-danmaku-item' });
     el.style.color = chatInfo.textColor;
 
     if (isSpecial && chatInfo.bgColor) {
@@ -540,69 +470,37 @@
     }
 
     if (isSpecial) {
-      // ── 1行目: アイコン + 名前 + 金額 ──
-      const headerRow = document.createElement('div');
-      headerRow.style.cssText = `
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        margin-bottom: 2px;
-      `;
+      const smallFs = Math.round(fontSize * 0.55) + 'px';
+      const iconSize = Math.round(fontSize * 0.875) + 'px';
 
-      // アイコン
+      // ── 1行目: アイコン + 名前 + バッジ + 金額 ──
+      const headerChildren = [];
       if (chatInfo.photoSrc) {
-        const icon = document.createElement('img');
-        icon.src = chatInfo.photoSrc;
-        icon.style.cssText = `
-          width: ${Math.round(fontSize * 0.875)}px;
-          height: ${Math.round(fontSize * 0.875)}px;
-          border-radius: 50%;
-          object-fit: cover;
-          flex-shrink: 0;
-        `;
-        headerRow.appendChild(icon);
+        headerChildren.push(h('img', {
+          src: chatInfo.photoSrc,
+          style: `width:${iconSize};height:${iconSize};border-radius:50%;object-fit:cover;flex-shrink:0`,
+        }));
       }
-
-      // 名前
       if (chatInfo.authorName) {
-        const nameSpan = document.createElement('span');
-        nameSpan.textContent = chatInfo.authorName;
-        nameSpan.style.cssText = `
-          font-size: ${Math.round(fontSize * 0.55)}px;
-          opacity: 0.9;
-        `;
-        headerRow.appendChild(nameSpan);
+        headerChildren.push(h('span', { style: `font-size:${smallFs};opacity:0.9` }, chatInfo.authorName));
       }
-
-      // 金額（スパチャ）
+      if (chatInfo.badgeSrc) {
+        headerChildren.push(h('img', {
+          src: chatInfo.badgeSrc,
+          style: `width:${smallFs};height:${smallFs};object-fit:contain;flex-shrink:0`,
+        }));
+      }
       if (chatInfo.amount) {
-        const sep = document.createElement('span');
-        sep.textContent = ' - ';
-        sep.style.cssText = `font-size: ${Math.round(fontSize * 0.55)}px; opacity: 0.7;`;
-        headerRow.appendChild(sep);
-
-        const amountSpan = document.createElement('span');
-        amountSpan.textContent = chatInfo.amount;
-        amountSpan.style.cssText = `
-          font-size: ${Math.round(fontSize * 0.55)}px;
-          opacity: 0.9;
-        `;
-        headerRow.appendChild(amountSpan);
+        headerChildren.push(h('span', { style: `font-size:${smallFs};opacity:0.7` }, ' - '));
+        headerChildren.push(h('span', { style: `font-size:${smallFs};opacity:0.9` }, chatInfo.amount));
       }
 
-      el.appendChild(headerRow);
-
+      el.appendChild(h('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:2px' }, headerChildren));
       // ── 2行目: メッセージ本文 ──
-      const msgRow = document.createElement('div');
-      msgRow.style.fontSize = fontSize + 'px';
-      msgRow.appendChild(messageFragment);
-      el.appendChild(msgRow);
+      el.appendChild(h('div', { style: `font-size:${fontSize}px` }, messageFragment));
     } else {
       // 通常コメント: 1行表示
-      const msgSpan = document.createElement('span');
-      msgSpan.style.fontSize = fontSize + 'px';
-      msgSpan.appendChild(messageFragment);
-      el.appendChild(msgSpan);
+      el.appendChild(h('span', { style: `font-size:${fontSize}px` }, messageFragment));
     }
 
     // DOM に追加して幅を測定（left:100% なので画面外、アニメーション未設定）
@@ -612,23 +510,16 @@
 
     // 衝突検知付きレーン割り当て
     const line = getAvailableLine(isSpecial, speed, elWidth);
-    const lineHeight = fontSize * CONFIG.lineHeightRatio;
-    const areaHeight = overlayHeight * CONFIG.displayArea;
-    const topPos = (line * lineHeight) % areaHeight;
+    const topPos = (line * fontSize * CONFIG.lineHeightRatio) % (overlayHeight * CONFIG.displayArea);
 
     // 位置とアニメーションを設定（ここからスクロール開始）
     el.style.top = topPos + 'px';
-    el.style.animation = 'yt-danmaku-scroll ' + CONFIG.duration + 's linear forwards';
+    el.style.animation = `yt-danmaku-scroll ${CONFIG.duration}s linear forwards`;
 
     // animationend でクリーンアップ（setTimeout のフォールバック付き）
-    const cleanup = () => {
-      if (el.parentNode) el.remove();
-    };
+    const cleanup = () => { if (el.parentNode) el.remove(); };
     const fallbackTimer = setTimeout(cleanup, CONFIG.duration * 1000 + 1000);
-    el.addEventListener('animationend', () => {
-      clearTimeout(fallbackTimer);
-      cleanup();
-    }, { once: true });
+    el.addEventListener('animationend', () => { clearTimeout(fallbackTimer); cleanup(); }, { once: true });
   }
 
   // ── チャットメッセージの処理 ──
@@ -642,14 +533,37 @@
       if (processedIds.has(msgId)) return;
       processedIds.add(msgId);
       processedIdQueue.push(msgId);
-      if (processedIdQueue.length > 500) {
-        const old = processedIdQueue.shift();
-        processedIds.delete(old);
-      }
+      if (processedIdQueue.length > 500) processedIds.delete(processedIdQueue.shift());
     }
 
     const chatInfo = extractChatInfo(node);
 
+    // special系（スパチャ・メンバー加入等）で名前が@ハンドルの場合、チャンネル名読み込みを待つ
+    if (chatInfo.isSpecial && chatInfo.authorName && chatInfo.authorName.startsWith('@')) {
+      waitForChannelName(node, chatInfo, 20); // 50ms間隔 × 最大20回 = 最大1秒
+      return;
+    }
+
+    spawnFromNode(node, chatInfo);
+  }
+
+  // special系コメントの@ハンドル → チャンネル名の読み込みを待つ
+  function waitForChannelName(node, chatInfo, remaining) {
+    if (remaining <= 0) { spawnFromNode(node, chatInfo); return; }
+    setTimeout(() => {
+      const el = node.querySelector('#author-name');
+      const name = el ? (el.textContent || '').trim() : '';
+      if (name.startsWith('@')) {
+        waitForChannelName(node, chatInfo, remaining - 1);
+      } else {
+        chatInfo.authorName = name;
+        spawnFromNode(node, chatInfo);
+      }
+    }, 50);
+  }
+
+  // ノードからメッセージを組み立てて弾幕を発射
+  function spawnFromNode(node, chatInfo) {
     // メッセージ本文を取得（スティッカーの場合は #sticker にフォールバック）
     const msgEl = node.querySelector('#message');
     const stickerEl = !msgEl ? node.querySelector('#sticker img, #sticker-container img') : null;
@@ -659,14 +573,14 @@
       fragment = buildMessageFragment(msgEl);
     } else if (stickerEl) {
       // スティッカー画像を弾幕用に生成
+      const size = (fontSize * 2) + 'px';
       fragment = document.createDocumentFragment();
-      const img = document.createElement('img');
-      img.src = stickerEl.getAttribute('src') || '';
-      img.alt = stickerEl.getAttribute('alt') || 'sticker';
-      img.className = 'yt-danmaku-emoji';
-      img.style.height = (fontSize * 2) + 'px';
-      img.style.width = (fontSize * 2) + 'px';
-      fragment.appendChild(img);
+      fragment.appendChild(h('img', {
+        src: stickerEl.getAttribute('src') || '',
+        alt: stickerEl.getAttribute('alt') || 'sticker',
+        className: 'yt-danmaku-emoji',
+        style: `height:${size};width:${size}`,
+      }));
     }
 
     // 本文なしでも special 系（スパチャ・メンバー加入）はヘッダーだけで表示する
@@ -674,13 +588,8 @@
       if (!chatInfo.isSpecial || !chatInfo.bgColor) return;
       // メンバー加入は #header-subtext にテキストがある場合がある
       const subtext = node.querySelector('#header-subtext');
-      if (subtext) {
-        fragment = buildMessageFragment(subtext);
-      }
-      if (!fragment) {
-        // 空の fragment を作成（ヘッダーのみ表示）
-        fragment = document.createDocumentFragment();
-      }
+      if (subtext) fragment = buildMessageFragment(subtext);
+      if (!fragment) fragment = document.createDocumentFragment(); // ヘッダーのみ表示
     }
 
     spawnDanmaku(fragment, chatInfo);
@@ -690,10 +599,7 @@
   function resetRuntimeState(clearProcessed) {
     laneTracker = [];
     pendingNodes.length = 0;
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = 0;
-    }
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0; }
     if (clearProcessed) {
       processedIds.clear();
       processedIdQueue.length = 0;
@@ -705,8 +611,7 @@
     if (!enabled) return; // OFF時は処理コストを払わない
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
-        if (node.nodeType !== 1) continue;
-        enqueueNode(node);
+        if (node.nodeType === 1) enqueueNode(node);
       }
     }
   }
@@ -717,21 +622,14 @@
     if (!chatFrame) return false;
 
     let chatDoc;
-    try {
-      chatDoc = chatFrame.contentDocument;
-    } catch (e) {
-      return false;
-    }
+    try { chatDoc = chatFrame.contentDocument; } catch (e) { return false; }
     if (!chatDoc || !chatDoc.body) return false;
 
     const itemList = chatDoc.querySelector('yt-live-chat-item-list-renderer #items');
     if (!itemList) return false;
-
     if (chatObservedItems === itemList) return true;
 
-    if (chatObserver) {
-      chatObserver.disconnect();
-    }
+    if (chatObserver) chatObserver.disconnect();
 
     chatObserver = new MutationObserver(handleChatMutation);
     chatObserver.observe(itemList, { childList: true });
@@ -746,9 +644,7 @@
           const cd = cf.contentDocument;
           if (!cd) return;
           const newItems = cd.querySelector('yt-live-chat-item-list-renderer #items');
-          if (newItems && newItems !== chatObservedItems) {
-            observeChat();
-          }
+          if (newItems && newItems !== chatObservedItems) observeChat();
         } catch (e) { /* ignore */ }
       }, 2000);
     }
@@ -761,19 +657,13 @@
     if (observeChat()) return;
 
     const chatFrame = document.querySelector('#chatframe');
-    if (chatFrame) {
-      chatFrame.addEventListener('load', () => {
-        retryObserveChat(0);
-      });
-    }
+    if (chatFrame) chatFrame.addEventListener('load', () => retryObserveChat(0));
 
     const pageObserver = new MutationObserver(() => {
       const cf = document.querySelector('#chatframe');
       if (cf) {
         pageObserver.disconnect();
-        cf.addEventListener('load', () => {
-          retryObserveChat(0);
-        });
+        cf.addEventListener('load', () => retryObserveChat(0));
         retryObserveChat(0);
       }
     });
@@ -786,19 +676,14 @@
     //   ポーリングが再起動されないため、停止すると切替検知が永久に失われる。
     //   ポーリングのリセットは yt-navigate-finish（ページ遷移）時のみ行う。
     if (observeChat()) return;
-    if (attempt < 15) {
-      setTimeout(() => retryObserveChat(attempt + 1), 1000);
-    }
+    if (attempt < 15) setTimeout(() => retryObserveChat(attempt + 1), 1000);
   }
 
   // ── タブ復帰時にキューをクリア ──
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       pendingNodes.length = 0;
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = 0;
-      }
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0; }
     }
   });
 
@@ -807,9 +692,7 @@
     if (e.altKey && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault();
       enabled = !enabled;
-      if (!enabled && overlay) {
-        overlay.textContent = '';
-      }
+      if (!enabled && overlay) overlay.textContent = '';
       resetRuntimeState(false);
       showToggleNotify(enabled);
     }
@@ -844,15 +727,8 @@
   // ── SPA ナビゲーション対応 ──
   document.addEventListener('yt-navigate-finish', () => {
     if (isWatchPage()) {
-      if (chatObserver) {
-        chatObserver.disconnect();
-        chatObserver = null;
-        chatObservedItems = null;
-      }
-      if (chatPollTimer) {
-        clearInterval(chatPollTimer);
-        chatPollTimer = 0;
-      }
+      if (chatObserver) { chatObserver.disconnect(); chatObserver = null; chatObservedItems = null; }
+      if (chatPollTimer) { clearInterval(chatPollTimer); chatPollTimer = 0; }
       resetRuntimeState(true);
       setTimeout(() => {
         overlay = createOverlay();
