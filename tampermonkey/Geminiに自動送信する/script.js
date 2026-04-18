@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Geminiに自動送信する
 // @namespace    http://tampermonkey.net/
-// @version      1.3.5
+// @version      2.0.0
 // @description  URLクエリパラメータ ?q= の内容をGeminiのチャットに自動入力して送信する
 // @author       You
 // @match        https://gemini.google.com/*
@@ -22,19 +22,19 @@
     const MAX_WAIT_MS = 15000;    // 要素を待つ最大時間(ms)
 
     // モード名とメニュー内テキストのマッピング（実機確認済み 2026-04-19）
-    // 一次: 日本語UI / 英語UI のテキスト照合
-    // フォールバック: data-test-id（言語非依存・Google側のテスト識別子）
+    // 一次: data-test-id（言語非依存・最も安定）
+    // フォールバック: 日本語UI / 英語UI のテキスト照合（data-test-id が変更された場合の保険）
     const MODE_MAP = {
-        think: { texts: ['思考モード', 'Thinking'], testId: 'bard-mode-option-thinking' },
-        fast:  { texts: ['高速モード', 'Fast'],     testId: 'bard-mode-option-fast' },
-        pro:   { texts: ['Pro'],                    testId: 'bard-mode-option-pro' },
+        think: { testId: 'bard-mode-option-thinking', texts: ['思考モード', 'Thinking'] },
+        fast:  { testId: 'bard-mode-option-fast',     texts: ['高速モード', 'Fast'] },
+        pro:   { testId: 'bard-mode-option-pro',      texts: ['Pro'] },
     };
 
-    // モード切替ボタンのセレクタ（一次: UI言語別 aria-label、フォールバック: data-test-id）
+    // モード切替ボタンのセレクタ（一次: data-test-id、フォールバック: UI言語別 aria-label）
     const MODE_BUTTON_SELECTORS = [
-        'button[aria-label="モード選択ツールを開く"]',   // 日本語UI
-        'button[aria-label="Open mode picker"]',        // 英語UI
-        'button[data-test-id="bard-mode-menu-button"]', // 言語非依存フォールバック
+        'button[data-test-id="bard-mode-menu-button"]', // 言語非依存・一次
+        'button[aria-label="モード選択ツールを開く"]',   // 日本語UIフォールバック
+        'button[aria-label="Open mode picker"]',        // 英語UIフォールバック
     ];
 
     // --- メイン処理 ---
@@ -130,18 +130,20 @@
 
     /**
      * モード切替ボタンを開き、指定モードのメニュー項目をクリックする
-     * @param {{texts: string[], testId: string}} modeDef  モード定義（テキスト候補 + data-test-id）
+     * @param {{testId: string, texts: string[]}} modeDef  モード定義（data-test-id + テキスト候補）
      */
     async function selectMode(modeDef) {
-        const { texts, testId } = modeDef;
-        console.log(`[Gemini Auto Submit] モードを選択します: ${texts.join(' / ')} (testId=${testId})`);
+        const { testId, texts } = modeDef;
+        console.log(`[Gemini Auto Submit] モードを選択します: testId=${testId} (texts=${texts.join(' / ')})`);
 
         // モード切替ボタンを探す（短めのタイムアウトでフェイルソフト）
         // 無料会員など一部UIではモードボタンが存在しない／UI言語でaria-labelが異なるため、
         // 見つからなければスキップしてテキスト挿入に進む
         const modeBtn = await waitForElement(MODE_BUTTON_SELECTORS, 3000);
 
-        // 既に選択済みなら何もしない（ボタン表示テキストに現在モード名が含まれるか判定）
+        // 既に選択済みなら何もしない
+        // 一次: メニュー項目の aria-current="true" 判定（言語非依存・要メニュー展開）はコスト高なので、
+        // 軽量判定としてボタン表示テキストに現在モード名が含まれるかを先に見る
         if (texts.some(t => modeBtn.textContent.includes(t))) {
             console.log('[Gemini Auto Submit] 既に選択中のモードです。スキップします。');
             return;
@@ -153,18 +155,26 @@
         await waitForElement(['.mat-mdc-menu-item'], 3000);
         await new Promise(r => setTimeout(r, 200)); // Angular アニメーション待ち
 
-        // 1) テキスト照合（日本語/英語） → 2) data-test-id（言語非依存フォールバック）
-        const items = [...document.querySelectorAll('.mat-mdc-menu-item')];
-        let target = items.find(el => texts.some(t => el.textContent.includes(t)));
-        if (!target && testId) {
-            target = document.querySelector(`[data-test-id="${testId}"]`);
+        // 1) data-test-id（言語非依存・一次） → 2) テキスト照合（日英フォールバック）
+        let target = testId ? document.querySelector(`[data-test-id="${testId}"]`) : null;
+        if (!target) {
+            const items = [...document.querySelectorAll('.mat-mdc-menu-item')];
+            target = items.find(el => texts.some(t => el.textContent.includes(t)));
             if (target) {
-                console.log(`[Gemini Auto Submit] data-test-id フォールバックで特定: ${testId}`);
+                console.log(`[Gemini Auto Submit] テキスト照合フォールバックで特定: ${target.textContent.trim()}`);
             }
         }
 
         if (!target) {
-            throw new Error(`モード項目が見つかりませんでした: ${texts.join(' / ')} / ${testId}`);
+            throw new Error(`モード項目が見つかりませんでした: ${testId} / ${texts.join(' / ')}`);
+        }
+
+        // data-test-id でヒットしたが既に選択中の場合（ボタンテキスト判定漏れ対策）
+        if (target.getAttribute('aria-current') === 'true') {
+            console.log('[Gemini Auto Submit] メニュー項目が既に選択中。メニューを閉じます。');
+            document.body.click();
+            await new Promise(r => setTimeout(r, 300));
+            return;
         }
 
         target.click();
