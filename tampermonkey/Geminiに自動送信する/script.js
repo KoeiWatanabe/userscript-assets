@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Geminiに自動送信する
 // @namespace    http://tampermonkey.net/
-// @version      1.3.3
+// @version      1.3.4
 // @description  URLクエリパラメータ ?q= の内容をGeminiのチャットに自動入力して送信する
 // @author       You
 // @match        https://gemini.google.com/*
@@ -21,12 +21,19 @@
     const INPUT_DELAY_MS = 1000;     // 入力後、送信ボタンを押すまでの待機時間(ms)
     const MAX_WAIT_MS = 15000;    // 要素を待つ最大時間(ms)
 
-    // モード名とメニュー内テキストのマッピング（実機確認済み 2026-03-07）
+    // モード名とメニュー内テキストのマッピング（日本語UI・英語UI両対応 実機確認済み 2026-04-19）
+    // 英語UI（無料会員で確認）: Fast / Thinking / Pro、日本語UI: 高速モード / 思考モード / Pro
     const MODE_TEXT_MAP = {
-        think: '思考モード',   // ?mode=think
-        fast: '高速モード',   // ?mode=fast
-        pro: 'Pro',          // ?mode=pro
+        think: ['思考モード', 'Thinking'],  // ?mode=think
+        fast: ['高速モード', 'Fast'],        // ?mode=fast
+        pro: ['Pro'],                        // ?mode=pro
     };
+
+    // モード切替ボタンのセレクタ（日本語UI・英語UI両対応）
+    const MODE_BUTTON_SELECTORS = [
+        'button[aria-label="モード選択ツールを開く"]', // 日本語UI
+        'button[aria-label="Open mode picker"]',      // 英語UI（無料会員で確認 2026-04-19）
+    ];
 
     // --- メイン処理 ---
 
@@ -121,16 +128,18 @@
 
     /**
      * モード切替ボタンを開き、指定モードのメニュー項目をクリックする
-     * @param {string} targetText  MODE_TEXT_MAP の値（例: '思考モード'）
+     * @param {string[]} targetTexts  候補テキスト配列（日本語・英語UIの両方を含む）
      */
-    async function selectMode(targetText) {
-        console.log(`[Gemini Auto Submit] モードを選択します: ${targetText}`);
+    async function selectMode(targetTexts) {
+        console.log(`[Gemini Auto Submit] モードを選択します: ${targetTexts.join(' / ')}`);
 
-        // モード切替ボタンをクリックしてメニューを開く（実機確認済み 2026-03-07）
-        const modeBtn = await waitForElement(['button[aria-label="モード選択ツールを開く"]']);
+        // モード切替ボタンを探す（短めのタイムアウトでフェイルソフト）
+        // 無料会員など一部UIではモードボタンが存在しない／UI言語でaria-labelが異なるため、
+        // 見つからなければスキップしてテキスト挿入に進む
+        const modeBtn = await waitForElement(MODE_BUTTON_SELECTORS, 3000);
 
         // 既に選択済みなら何もしない
-        if (modeBtn.textContent.includes(targetText)) {
+        if (targetTexts.some(t => modeBtn.textContent.includes(t))) {
             console.log('[Gemini Auto Submit] 既に選択中のモードです。スキップします。');
             return;
         }
@@ -142,14 +151,14 @@
         await new Promise(r => setTimeout(r, 200)); // Angular アニメーション待ち
 
         const items = document.querySelectorAll('.mat-mdc-menu-item');
-        const target = [...items].find(el => el.textContent.includes(targetText));
+        const target = [...items].find(el => targetTexts.some(t => el.textContent.includes(t)));
 
         if (!target) {
-            throw new Error(`モード項目が見つかりませんでした: ${targetText}`);
+            throw new Error(`モード項目が見つかりませんでした: ${targetTexts.join(' / ')}`);
         }
 
         target.click();
-        console.log(`[Gemini Auto Submit] モード選択完了: ${targetText}`);
+        console.log(`[Gemini Auto Submit] モード選択完了: ${target.textContent.trim()}`);
 
         // メニューが閉じるのを待つ
         await new Promise(r => setTimeout(r, 400));
@@ -160,8 +169,14 @@
     async function autoSubmit() {
         try {
             // モード指定があれば先に切り替える
+            // モード選択はベストエフォート: 失敗してもテキスト挿入・送信は続行する
+            // （無料会員や一部UI言語ではモードボタンが存在しない・セレクタが一致しないケースがある）
             if (modeKey && MODE_TEXT_MAP[modeKey]) {
-                await selectMode(MODE_TEXT_MAP[modeKey]);
+                try {
+                    await selectMode(MODE_TEXT_MAP[modeKey]);
+                } catch (modeErr) {
+                    console.warn('[Gemini Auto Submit] モード選択をスキップします:', modeErr.message);
+                }
             }
 
             // Geminiの入力欄セレクタ（実機確認済み 2026-03-02）
@@ -171,11 +186,12 @@
                 'div[contenteditable="true"][data-placeholder]',    // フォールバック
             ];
 
-            // 送信ボタンのセレクタ（実機確認済み 2026-03-02）
+            // 送信ボタンのセレクタ（日本語UI・英語UI両対応 実機確認済み）
             const sendSelectors = [
-                'button[aria-label="プロンプトを送信"]', // 日本語UI・実機で確認
-                'button.send-button',                    // クラス名・実機で確認
-                'button[aria-label="Send prompt"]',      // 英語UIロケール向けフォールバック
+                'button[aria-label="プロンプトを送信"]', // 日本語UI
+                'button[aria-label="Send prompt"]',      // 英語UI
+                'button[aria-label="Send message"]',     // 英語UI別バリアント
+                'button.send-button',                    // クラス名フォールバック（無料会員でも存在確認済み 2026-04-19）
             ];
 
             console.log('[Gemini Auto Submit] 入力欄を待機中...');
