@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      8.0
+// @version      8.1
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -650,16 +650,12 @@
     //  モード管理
     // =====================================================
 
-    function setModeIcon(toViewMode) {
-        modeBtn.innerHTML = _html.createHTML(toViewMode ? ICON_VIEW : ICON_EDIT);
-        modeBtn.title = toViewMode ? 'Viewモードに切り替え' : 'Editモードに切り替え';
-    }
-
     function setMode(edit) {
         state.isEditMode = edit;
         textarea.style.display = edit ? 'block' : 'none';
         viewArea.style.display = edit ? 'none' : 'block';
-        setModeIcon(edit);
+        modeBtn.innerHTML = _html.createHTML(edit ? ICON_VIEW : ICON_EDIT);
+        modeBtn.title = edit ? 'Viewモードに切り替え' : 'Editモードに切り替え';
         if (!edit) renderView();
     }
 
@@ -738,13 +734,10 @@
     // =====================================================
 
     function renderView() {
-        const text = textarea.value;
-        let html = marked.parse(text);
-        const timeRegex = /(?:([0-5]?[0-9]):)?([0-5]?[0-9]):([0-5][0-9])/g;
-
-        html = html.replace(timeRegex, match => {
-            return `<a class="yt-timestamp-link" data-time="${match}">${match}</a>`;
-        });
+        const html = marked.parse(textarea.value).replace(
+            /(?:[0-5]?[0-9]:)?[0-5]?[0-9]:[0-5][0-9]/g,
+            m => `<a class="yt-timestamp-link" data-time="${m}">${m}</a>`
+        );
 
         viewArea.innerHTML = _html.createHTML(html);
 
@@ -878,6 +871,12 @@
     //  整形機能
     // =====================================================
 
+    const TS_CORE = /\d{1,2}:\d{2}(?::\d{2})?/.source;
+    const RE_TS_NESTED_DROP   = new RegExp(`\\s*\\[\\[${TS_CORE}\\]\\([^)]*\\)\\]`, 'g');
+    const RE_TS_FLAT_DROP     = new RegExp(`\\s*\\[${TS_CORE}\\]\\([^)]*\\)`, 'g');
+    const RE_TS_NESTED_UNWRAP = new RegExp(`\\[\\[(${TS_CORE})\\]\\([^)]*\\)\\]`, 'g');
+    const RE_TS_FLAT_UNWRAP   = new RegExp(`\\[(${TS_CORE})\\]\\([^)]*\\)`, 'g');
+
     trimBtn.addEventListener('click', () => {
         const lines = textarea.value.split('\n');
 
@@ -903,22 +902,16 @@
                 const cells = line.split('|');
                 for (let i = 2; i < cells.length - 1; i++) {
                     cells[i] = cells[i]
-                        .replace(
-                            /\s*\[\[\d{1,2}:\d{2}(?::\d{2})?\]\([^)]*\)\]/g,
-                            ''
-                        )
-                        .replace(
-                            /\s*\[\d{1,2}:\d{2}(?::\d{2})?\]\([^)]*\)/g,
-                            ''
-                        );
+                        .replace(RE_TS_NESTED_DROP, '')
+                        .replace(RE_TS_FLAT_DROP, '');
                 }
                 return cells.join('|');
             })
             .join('\n');
 
         trimmed = trimmed
-            .replace(/\[\[(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\)\]/g, '$1')
-            .replace(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\)/g, '$1');
+            .replace(RE_TS_NESTED_UNWRAP, '$1')
+            .replace(RE_TS_FLAT_UNWRAP, '$1');
 
         trimmed = trimmed.replace(
             /\b00:(\d{2}:\d{2})\b/g,
@@ -1021,37 +1014,16 @@
         panel.style.transform = `translate3d(${r.left}px, ${r.top}px, 0)`;
     }
 
-    function constrainPanelPos() {
-        const r = state.panelRect;
-        r.left = Math.min(
-            Math.max(r.left, PANEL_MARGIN),
-            window.innerWidth - r.width - PANEL_MARGIN
-        );
-        r.top = Math.min(
-            Math.max(r.top, PANEL_MARGIN),
-            window.innerHeight - r.height - PANEL_MARGIN
-        );
-        commitPanelPos();
-    }
-
     function applyPanelRect(left, top, w, h) {
         const r = state.panelRect;
         w = clampW(w);
         h = clampH(h);
-
-        r.left = left;
-        r.top = top;
-
-        if (w !== r.width) {
-            r.width = w;
-            panel.style.width = `${w}px`;
-        }
-
-        if (h !== r.height) {
-            r.height = h;
-            panel.style.height = `${h}px`;
-        }
-
+        r.width = w;
+        r.height = h;
+        panel.style.width = `${w}px`;
+        panel.style.height = `${h}px`;
+        r.left = Math.min(Math.max(left, PANEL_MARGIN), window.innerWidth - w - PANEL_MARGIN);
+        r.top  = Math.min(Math.max(top,  PANEL_MARGIN), window.innerHeight - h - PANEL_MARGIN);
         commitPanelPos();
     }
 
@@ -1121,12 +1093,10 @@
             w = clampW(dragState.startW + dx, dragState.vw);
         }
 
-        // リサイズ後の位置が画面外に出ないようクランプ
-        l = Math.max(l, PANEL_MARGIN);
-        t = Math.max(t, PANEL_MARGIN);
-
         applyPanelRect(l, t, w, h);
     }
+
+    const MOVE_EVENT = 'onpointerrawupdate' in window ? 'pointerrawupdate' : 'pointermove';
 
     function attachDragHandler(el, type) {
         const moveHandler = e => {
@@ -1165,13 +1135,9 @@
             document.body.style.userSelect = '';
             document.body.style.cursor = '';
 
-            el.removeEventListener('pointermove', moveHandler);
+            el.removeEventListener(MOVE_EVENT, moveHandler);
             el.removeEventListener('pointerup', endHandler);
             el.removeEventListener('pointercancel', endHandler);
-
-            if ('onpointerrawupdate' in window) {
-                el.removeEventListener('pointerrawupdate', moveHandler);
-            }
         };
 
         el.addEventListener('pointerdown', e => {
@@ -1211,13 +1177,9 @@
             document.body.style.cursor =
                 type === 'move' ? 'move' : getComputedStyle(el).cursor;
 
-            el.addEventListener('pointermove', moveHandler);
+            el.addEventListener(MOVE_EVENT, moveHandler);
             el.addEventListener('pointerup', endHandler);
             el.addEventListener('pointercancel', endHandler);
-
-            if ('onpointerrawupdate' in window) {
-                el.addEventListener('pointerrawupdate', moveHandler);
-            }
         });
     }
 
@@ -1235,22 +1197,9 @@
     // =====================================================
 
     window.addEventListener('resize', () => {
-        if (!state.isOpen) return;
-        // ドラッグ中はドラッグロジック側で制御するので何もしない
-        if (dragState) return;
-
+        if (!state.isOpen || dragState) return;
         const r = state.panelRect;
-        const maxW = clampW(r.width);
-        const maxH = clampH(r.height);
-        if (maxW !== r.width) {
-            r.width = maxW;
-            panel.style.width = `${maxW}px`;
-        }
-        if (maxH !== r.height) {
-            r.height = maxH;
-            panel.style.height = `${maxH}px`;
-        }
-        constrainPanelPos();
+        applyPanelRect(r.left, r.top, r.width, r.height);
     });
 
     // =====================================================
@@ -1261,28 +1210,11 @@
         const r = state.panelRect;
         const newW = Math.round(clampW(window.innerWidth * preset.w));
         const newH = Math.round(clampH(window.innerHeight * preset.h));
-        const dw = newW - r.width;
-        const dh = newH - r.height;
-
-        const cx = r.left + r.width / 2;
-        const cy = r.top + r.height / 2;
-        const anchorRight = cx > window.innerWidth / 2;
-        const anchorBottom = cy > window.innerHeight / 2;
-
-        let newLeft = r.left;
-        let newTop = r.top;
-
-        if (anchorRight) newLeft = r.left - dw;
-        if (anchorBottom) newTop = r.top - dh;
-
-        r.width = newW;
-        r.height = newH;
-        panel.style.width = `${newW}px`;
-        panel.style.height = `${newH}px`;
-        r.left = newLeft;
-        r.top = newTop;
-
-        constrainPanelPos();
+        const anchorRight  = r.left + r.width  / 2 > window.innerWidth  / 2;
+        const anchorBottom = r.top  + r.height / 2 > window.innerHeight / 2;
+        const newLeft = anchorRight  ? r.left - (newW - r.width)  : r.left;
+        const newTop  = anchorBottom ? r.top  - (newH - r.height) : r.top;
+        applyPanelRect(newLeft, newTop, newW, newH);
     }
 
     function updateSizeToggleIcon() {
@@ -1323,13 +1255,6 @@
         }
     });
     bodyObserver.observe(document.body, { childList: true });
-
-    setInterval(() => {
-        if (!document.getElementById('custom-yt-note-container')) {
-            document.body.appendChild(container);
-            loadNote();
-        }
-    }, 10000);
 
     ensureGasUrl();
     loadNote();
