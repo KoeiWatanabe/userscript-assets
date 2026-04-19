@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.7.1
+// @version      1.7.2
 // @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -29,9 +29,9 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
 
-  const MSG_EXTRACT_FAIL = "トランスクリプトを取得できませんでした";
-  const MSG_EXTRACT_HINT = "（トランスクリプトが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）";
-  const MSG_NO_TS = "タイムスタンプを取得できませんでした。YouTubeのトランスクリプト表示が変わっている可能性があります。";
+  const MSG_EXTRACT_FAIL = "文字起こしを取得できませんでした";
+  const MSG_EXTRACT_HINT = "（文字起こしが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）";
+  const MSG_NO_TS = "タイムスタンプを取得できませんでした。YouTubeの文字起こし表示が変わっている可能性があります。";
 
   const DOM_CONFIG = {
     new: {
@@ -457,8 +457,16 @@
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
 
   function findShowTranscriptButton() {
+    // 1) 構造セレクタ（言語非依存・最も安定）
+    const primary = document.querySelector(
+      "ytd-video-description-transcript-section-renderer #primary-button button"
+    );
+    if (primary) return primary;
+
+    // 2) 最終フォールバック: テキスト検索（英・日 両対応）
+    const RE = /transcript|文字起こし|トランスクリプト/i;
     return Array.from(document.querySelectorAll("button")).find((b) =>
-      /transcript/i.test(b.textContent.trim())
+      RE.test((b.textContent || "") + "|" + (b.getAttribute("aria-label") || ""))
     ) || null;
   }
 
@@ -583,7 +591,7 @@
 
     if (!loaded) {
       alert(
-        "トランスクリプトを読み込めませんでした。\n動画の説明欄から「Show transcript」を先に開いてみてください。"
+        "文字起こしを読み込めませんでした。\n動画の説明欄から「文字起こしを表示」を先に開いてみてください。"
       );
       return;
     }
@@ -604,13 +612,14 @@
         document.activeElement?.isContentEditable
       ) return;
 
-      const key = e.key.toLowerCase();
+      // 物理キーで判定（macOS で Option+T が † を入力する問題を回避）
+      if (e.code !== "KeyT") return;
       // Ctrl+Alt+T: パネル開閉
-      const isCtrlAltT  = e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey && key === "t";
+      const isCtrlAltT  = e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey;
       // Alt+T: タイムスタンプ付きで保存
-      const isAltT      = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
+      const isAltT      = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey;
       // Alt+Shift+T: タイムスタンプなしで保存
-      const isAltShiftT = e.altKey &&  e.shiftKey && !e.ctrlKey && !e.metaKey && key === "t";
+      const isAltShiftT = e.altKey &&  e.shiftKey && !e.ctrlKey && !e.metaKey;
 
       if (!isCtrlAltT && !isAltT && !isAltShiftT) return;
 
