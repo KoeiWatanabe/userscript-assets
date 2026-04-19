@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         辞書に見出しを付ける
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.4.1
 // @description  OALD / Cambridge Dictionary に意味の目次をサイドバーとしてページ内に組み込む
 // @match        https://www.oxfordlearnersdictionaries.com/definition/english/*
 // @match        https://dictionary.cambridge.org/dictionary/*
@@ -114,13 +114,6 @@
     #dict-toc-sidebar .toc-collapsible:hover {
       background: #e4e4e4;
     }
-    #dict-toc-sidebar .toc-collapsible .toc-arrow {
-      font-size: 10px;
-      transition: transform 0.2s;
-    }
-    #dict-toc-sidebar .toc-collapsible.open .toc-arrow {
-      transform: rotate(90deg);
-    }
     #dict-toc-sidebar .toc-collapsible.toc-sub {
       padding-left: 28px;
       font-size: 12px;
@@ -130,12 +123,6 @@
     }
     #dict-toc-sidebar .toc-collapsible.toc-sub:hover {
       background: #efefef;
-    }
-    #dict-toc-sidebar .toc-collapse-body {
-      display: none;
-    }
-    #dict-toc-sidebar .toc-collapse-body.open {
-      display: block;
     }
 
     /* --- グループ見出し --- */
@@ -249,22 +236,6 @@
     el.classList.remove("dict-toc-highlight");
     void el.offsetWidth;
     el.classList.add("dict-toc-highlight");
-  }
-
-  function scrollToId(id, block = "center") {
-    scrollToEl(document.getElementById(id), block);
-  }
-
-  function cleanDef(text) {
-    return text.replace(/:$/, "");
-  }
-
-  let idCounter = 0;
-  function ensureId(el, prefix) {
-    if (!el.id) {
-      el.id = `${prefix}-${idCounter++}`;
-    }
-    return el.id;
   }
 
   // --- OALD データ収集 ---
@@ -423,24 +394,6 @@
     return data;
   }
 
-  // --- 折りたたみセクション ---
-  function createCollapsible(label, contentBuilder) {
-    const header = document.createElement("div");
-    header.className = "toc-collapsible";
-    header.innerHTML = `<span>${label}</span><span class="toc-arrow">\u25B6</span>`;
-
-    const content = document.createElement("div");
-    content.className = "toc-collapse-body";
-    contentBuilder(content);
-
-    header.addEventListener("click", () => {
-      header.classList.toggle("open");
-      content.classList.toggle("open");
-    });
-
-    return { header, content };
-  }
-
   // --- エントリの中身（グループ・定義）を描画 ---
   function renderEntryContent(container, entry) {
     entry.groups.forEach((group) => {
@@ -449,8 +402,7 @@
         h.className = "toc-group-heading";
         h.textContent = group.heading;
         if (group.el) {
-          const gid = ensureId(group.el, "dtoc-grp");
-          h.addEventListener("click", () => scrollToId(gid));
+          h.addEventListener("click", () => scrollToEl(group.el));
         }
         container.appendChild(h);
       }
@@ -462,47 +414,30 @@
           item.textContent = sense.phrase;
         } else {
           item.className = "toc-sense";
-          item.innerHTML = `<span class="toc-sense-num">${sense.num}.</span> ${cleanDef(sense.def)}`;
+          item.innerHTML = `<span class="toc-sense-num">${sense.num}.</span> ${sense.def.replace(/:$/, "")}`;
         }
         if (sense.el) {
-          const sid = ensureId(sense.el, "dtoc-sns");
-          item.addEventListener("click", () => scrollToId(sid));
+          item.addEventListener("click", () => scrollToEl(sense.el));
         }
         container.appendChild(item);
       });
     });
   }
 
-  // --- Idioms ---
-  function renderIdioms(container, idioms) {
-    idioms.forEach((idiom) => {
-      const item = document.createElement("div");
-      item.className = "toc-idiom-item";
-      item.textContent = idiom.text;
-      if (idiom.el) {
-        const iid = ensureId(idiom.el, "dtoc-idm");
-        item.addEventListener("click", () => scrollToId(iid));
-      } else if (idiom.href) {
-        item.addEventListener("click", () => {
-          window.location.href = idiom.href;
+  // --- Idiom / Phrasal Verb 項目リスト ---
+  function renderXrefList(container, items, className) {
+    items.forEach((item) => {
+      const div = document.createElement("div");
+      div.className = className;
+      div.textContent = item.text;
+      if (item.el) {
+        div.addEventListener("click", () => scrollToEl(item.el));
+      } else if (item.href) {
+        div.addEventListener("click", () => {
+          window.location.href = item.href;
         });
       }
-      container.appendChild(item);
-    });
-  }
-
-  // --- Phrasal Verbs ---
-  function renderPhrasalVerbs(container, pvs) {
-    pvs.forEach((pv) => {
-      const item = document.createElement("div");
-      item.className = "toc-pv-item";
-      item.textContent = pv.text;
-      if (pv.href) {
-        item.addEventListener("click", () => {
-          window.location.href = pv.href;
-        });
-      }
-      container.appendChild(item);
+      container.appendChild(div);
     });
   }
 
@@ -515,7 +450,7 @@
       title.className = "toc-section-title";
       title.textContent = `Idioms (${entry.idioms.length})`;
       body.appendChild(title);
-      renderIdioms(body, entry.idioms);
+      renderXrefList(body, entry.idioms, "toc-idiom-item");
     }
 
     if (entry.phrasalVerbs.length > 0) {
@@ -523,50 +458,8 @@
       title.className = "toc-section-title";
       title.textContent = `Phrasal Verbs (${entry.phrasalVerbs.length})`;
       body.appendChild(title);
-      renderPhrasalVerbs(body, entry.phrasalVerbs);
+      renderXrefList(body, entry.phrasalVerbs, "toc-pv-item");
     }
-  }
-
-  // --- 折りたたみ表示 (品詞複数) ---
-  function renderEntryCollapsible(body, entry) {
-    if (entry.groups.length > 0) {
-      const totalSenses = entry.groups.reduce(
-        (sum, g) => sum + g.senses.filter((s) => s.num !== null).length,
-        0
-      );
-      const label = `${entry.pos} (${totalSenses})`;
-      const { header, content } = createCollapsible(label, (c) => {
-        renderEntryContent(c, entry);
-      });
-      body.appendChild(header);
-      body.appendChild(content);
-    }
-
-    if (entry.idioms.length > 0) {
-      const label = `Idioms (${entry.idioms.length})`;
-      const { header, content } = createCollapsible(label, (c) => {
-        renderIdioms(c, entry.idioms);
-      });
-      header.classList.add("toc-sub");
-      body.appendChild(header);
-      body.appendChild(content);
-    }
-
-    if (entry.phrasalVerbs.length > 0) {
-      const label = `Phrasal Verbs (${entry.phrasalVerbs.length})`;
-      const { header, content } = createCollapsible(label, (c) => {
-        renderPhrasalVerbs(c, entry.phrasalVerbs);
-      });
-      header.classList.add("toc-sub");
-      body.appendChild(header);
-      body.appendChild(content);
-    }
-  }
-
-  // --- OALD TOC Body ---
-  function buildOALDBody(body, data) {
-    const entry = data.entries[0];
-    renderEntryFlat(body, entry);
   }
 
   // --- Cambridge: 品詞セクション（常に展開・クリックでジャンプ） ---
@@ -576,13 +469,11 @@
         (sum, g) => sum + g.senses.filter((s) => s.num !== null).length,
         0
       );
-      const label = `${entry.pos} (${totalSenses})`;
       const header = document.createElement("div");
       header.className = "toc-collapsible open";
-      header.innerHTML = `<span>${label}</span>`;
+      header.innerHTML = `<span>${entry.pos} (${totalSenses})</span>`;
       if (entry.el) {
-        const eid = ensureId(entry.el, "dtoc-entry");
-        header.addEventListener("click", () => scrollToId(eid, "start"));
+        header.addEventListener("click", () => scrollToEl(entry.el, "start"));
       }
       body.appendChild(header);
       renderEntryContent(body, entry);
@@ -593,7 +484,7 @@
       header.className = "toc-collapsible toc-sub open";
       header.innerHTML = `<span>Idioms (${entry.idioms.length})</span>`;
       body.appendChild(header);
-      renderIdioms(body, entry.idioms);
+      renderXrefList(body, entry.idioms, "toc-idiom-item");
     }
 
     if (entry.phrasalVerbs.length > 0) {
@@ -601,7 +492,7 @@
       header.className = "toc-collapsible toc-sub open";
       header.innerHTML = `<span>Phrasal Verbs (${entry.phrasalVerbs.length})</span>`;
       body.appendChild(header);
-      renderPhrasalVerbs(body, entry.phrasalVerbs);
+      renderXrefList(body, entry.phrasalVerbs, "toc-pv-item");
     }
   }
 
@@ -612,9 +503,8 @@
       dictTitle.className = "toc-dict-title";
       dictTitle.textContent = dict.label;
       if (dict.el) {
-        const did = ensureId(dict.el, "dtoc-dict");
         dictTitle.style.cursor = "pointer";
-        dictTitle.addEventListener("click", () => scrollToId(did, "start"));
+        dictTitle.addEventListener("click", () => scrollToEl(dict.el, "start"));
       }
       body.appendChild(dictTitle);
 
@@ -689,7 +579,7 @@
     if (SITE === "oald") {
       const data = collectOALD();
       if (data.entries.length === 0) return;
-      bodyBuilder = (body) => buildOALDBody(body, data);
+      bodyBuilder = (body) => renderEntryFlat(body, data.entries[0]);
     } else {
       const data = collectCambridge();
       if (data.dicts.length === 0) return;
