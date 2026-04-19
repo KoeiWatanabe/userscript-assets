@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      8.1
+// @version      8.2
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -146,7 +146,7 @@
             transition: filter 0.25s;
         }
 
-        #yt-note-tab-wrap.hovered,
+        #yt-note-tab-wrap:hover,
         #yt-note-tab-wrap.is-open {
             filter: drop-shadow(-5px 3px 14px rgba(0, 0, 0, 0.45));
         }
@@ -166,10 +166,9 @@
             transition:
                 transform 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94),
                 background-color 0.2s;
-            color-scheme: only dark;
         }
 
-        #yt-note-toggle.hovered {
+        #yt-note-tab-wrap:hover #yt-note-toggle {
             transform: translateX(0);
             background-color: #4e4e4e;
         }
@@ -663,22 +662,13 @@
     //  イベントリスナー
     // =====================================================
 
-    tabWrap.addEventListener('mouseenter', () => {
-        toggleBtn.classList.add('hovered');
-        tabWrap.classList.add('hovered');
-    });
-
-    tabWrap.addEventListener('mouseleave', () => {
-        toggleBtn.classList.remove('hovered');
-        tabWrap.classList.remove('hovered');
-    });
-
     toggleBtn.addEventListener('click', e => {
         e.stopPropagation();
 
         if (!state.isOpen && !state.panelSizeInitialized) {
             applyPresetSize(PRESET_MAX);
-            initPanelPos();
+            const r = state.panelRect;
+            applyPanelRect(window.innerWidth - r.width - 54, window.innerHeight - r.height - 30, r.width, r.height);
             state.panelSizeInitialized = true;
         }
 
@@ -715,7 +705,10 @@
     );
 
     modeBtn.addEventListener('click', () => {
-        if (state.isEditMode) saveNote();
+        if (state.isEditMode) {
+            saveToLocal();
+            saveToRemote();
+        }
         setMode(!state.isEditMode);
     });
 
@@ -750,22 +743,12 @@
     function seekVideo(timeStr) {
         const video = document.querySelector('video');
         if (!video) return;
-
-        const parts = timeStr.split(':').reverse();
-        let seconds = 0;
-
-        for (let i = 0; i < parts.length; i++) {
-            seconds += parseInt(parts[i], 10) * Math.pow(60, i);
-        }
-
-        video.currentTime = seconds;
+        video.currentTime = timeStr.split(':').reverse()
+            .reduce((s, p, i) => s + parseInt(p, 10) * 60 ** i, 0);
         video.play();
     }
 
-    function getVideoId() {
-        const urlParams = new URLSearchParams(window.location.search);
-        return urlParams.get('v');
-    }
+    const getVideoId = () => new URLSearchParams(location.search).get('v');
 
     // =====================================================
     //  永続化
@@ -799,24 +782,13 @@
     const debouncedLocalSave = debounce(saveToLocal, 300);
     const debouncedRemoteSave = debounce(saveToRemote, 3000);
 
-    function saveNote() {
-        saveToLocal();
-        saveToRemote();
-    }
-
     function onTextInput() {
         debouncedLocalSave();
         debouncedRemoteSave();
     }
 
-    function ensureContainer() {
-        if (!document.body.contains(container)) {
-            document.body.appendChild(container);
-        }
-    }
-
     function loadNote() {
-        ensureContainer();
+        if (!document.body.contains(container)) document.body.appendChild(container);
 
         const newVideoId = getVideoId();
 
@@ -833,14 +805,10 @@
         lastSavedContent = '';
         toggleBtn.style.display = 'block';
 
-        loadLocalNote();
-        loadRemoteNote();
-    }
-
-    function loadLocalNote() {
-        const localNote = localStorage.getItem(`yt_note_${state.videoId}`) || '';
+        const localNote = localStorage.getItem(`yt_note_${newVideoId}`) || '';
         textarea.value = localNote;
         setMode(!localNote.trim());
+        loadRemoteNote();
     }
 
     function loadRemoteNote() {
@@ -879,20 +847,15 @@
 
     trimBtn.addEventListener('click', () => {
         const lines = textarea.value.split('\n');
+        const isMd = l => /^[#|]/.test(l.trim());
+        const firstIdx = lines.findIndex(isMd);
 
-        const markdownLineIndices = lines.reduce((acc, line, i) => {
-            if (/^[#|]/.test(line.trim())) acc.push(i);
-            return acc;
-        }, []);
-
-        if (markdownLineIndices.length === 0) {
+        if (firstIdx === -1) {
             alert('整形できるMarkdown（見出しや表）が見つかりませんでした。');
             return;
         }
 
-        const firstIdx = markdownLineIndices[0];
-        const lastIdx = markdownLineIndices[markdownLineIndices.length - 1];
-        let trimmed = lines.slice(firstIdx, lastIdx + 1).join('\n').trim();
+        let trimmed = lines.slice(firstIdx, lines.findLastIndex(isMd) + 1).join('\n').trim();
 
         trimmed = trimmed
             .split('\n')
@@ -913,16 +876,11 @@
             .replace(RE_TS_NESTED_UNWRAP, '$1')
             .replace(RE_TS_FLAT_UNWRAP, '$1');
 
-        trimmed = trimmed.replace(
-            /\b00:(\d{2}:\d{2})\b/g,
-            (_, mmss) => {
-                const [mm, ss] = mmss.split(':');
-                return `${parseInt(mm, 10)}:${ss}`;
-            }
-        );
+        trimmed = trimmed.replace(/\b00:0?(\d{1,2}):(\d{2})\b/g, '$1:$2');
 
         textarea.value = trimmed;
-        saveNote();
+        saveToLocal();
+        saveToRemote();
         setMode(false);
     });
 
@@ -1024,13 +982,6 @@
         panel.style.height = `${h}px`;
         r.left = Math.min(Math.max(left, PANEL_MARGIN), window.innerWidth - w - PANEL_MARGIN);
         r.top  = Math.min(Math.max(top,  PANEL_MARGIN), window.innerHeight - h - PANEL_MARGIN);
-        commitPanelPos();
-    }
-
-    function initPanelPos() {
-        const r = state.panelRect;
-        r.left = window.innerWidth - r.width - 54;
-        r.top = window.innerHeight - r.height - 30;
         commitPanelPos();
     }
 
