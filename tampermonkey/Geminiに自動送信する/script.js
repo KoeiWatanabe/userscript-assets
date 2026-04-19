@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Geminiに自動送信する
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
+// @version      2.1.0
 // @description  URLクエリパラメータ ?q= の内容をGeminiのチャットに自動入力して送信する
 // @author       You
 // @match        https://gemini.google.com/*
@@ -14,230 +14,117 @@
 (function () {
     'use strict';
 
-    // --- 設定 ---
-    const PARAM_NAME = 'q';         // 使用するURLパラメータ名
-    const MODE_PARAM = 'mode';      // モード指定パラメータ名（think / fast / pro）
-    const DEFAULT_MODE = 'fast';    // デフォルトモード（URLに ?mode= がない場合に使用）
-    const INPUT_DELAY_MS = 1000;     // 入力後、送信ボタンを押すまでの待機時間(ms)
-    const MAX_WAIT_MS = 15000;    // 要素を待つ最大時間(ms)
+    const PARAM_NAME = 'q';
+    const MODE_PARAM = 'mode';
+    const DEFAULT_MODE = 'fast';
+    const INPUT_DELAY_MS = 1000;
+    const MAX_WAIT_MS = 15000;
 
-    // モード名とメニュー内テキストのマッピング（実機確認済み 2026-04-19）
-    // 一次: data-test-id（言語非依存・最も安定）
-    // フォールバック: 日本語UI / 英語UI のテキスト照合（data-test-id が変更された場合の保険）
+    // 一次=data-test-id（言語非依存） / フォールバック=UI言語別テキスト照合
     const MODE_MAP = {
         think: { testId: 'bard-mode-option-thinking', texts: ['思考モード', 'Thinking'] },
         fast:  { testId: 'bard-mode-option-fast',     texts: ['高速モード', 'Fast'] },
         pro:   { testId: 'bard-mode-option-pro',      texts: ['Pro'] },
     };
 
-    // モード切替ボタンのセレクタ（一次: data-test-id、フォールバック: UI言語別 aria-label）
+    // 一次=data-test-id / 二次=日本語UI / 三次=英語UI
     const MODE_BUTTON_SELECTORS = [
-        'button[data-test-id="bard-mode-menu-button"]', // 言語非依存・一次
-        'button[aria-label="モード選択ツールを開く"]',   // 日本語UIフォールバック
-        'button[aria-label="Open mode picker"]',        // 英語UIフォールバック
+        'button[data-test-id="bard-mode-menu-button"]',
+        'button[aria-label="モード選択ツールを開く"]',
+        'button[aria-label="Open mode picker"]',
     ];
-
-    // --- メイン処理 ---
 
     const params = new URLSearchParams(window.location.search);
     const query = params.get(PARAM_NAME);
     if (!query) return;
+    const modeKey = params.get(MODE_PARAM) ?? DEFAULT_MODE;
 
-    const modeKey = params.get(MODE_PARAM) ?? DEFAULT_MODE; // 'think' | 'fast' | 'pro'
-
-    // セッション内で同じクエリを二重送信しないためのガード
     const storageKey = 'gemini-auto-submit:' + btoa(encodeURIComponent(query)).slice(0, 32);
     if (sessionStorage.getItem(storageKey)) return;
 
-    // --- ユーティリティ ---
-
-    /**
-     * CSSセレクタのいずれかにマッチする要素が見つかるまで待機する
-     * @param {string[]} selectors
-     * @param {number} timeout
-     * @returns {Promise<Element>}
-     */
-    function waitForElement(selectors, timeout = MAX_WAIT_MS) {
+    function waitFor(selectors, { predicate = () => true, timeout = MAX_WAIT_MS, interval = 200 } = {}) {
         return new Promise((resolve, reject) => {
             const deadline = Date.now() + timeout;
-            const check = () => {
+            const tick = () => {
                 for (const sel of selectors) {
                     const el = document.querySelector(sel);
-                    if (el) { resolve(el); return; }
+                    if (el && predicate(el)) return resolve(el);
                 }
-                if (Date.now() >= deadline) {
-                    reject(new Error(`要素が見つかりませんでした: ${selectors.join(', ')}`));
-                    return;
-                }
-                setTimeout(check, 200);
+                if (Date.now() >= deadline) return reject(new Error(`要素なし: ${selectors.join(', ')}`));
+                setTimeout(tick, interval);
             };
-            check();
+            tick();
         });
     }
 
-    /**
-     * contenteditable要素にテキストを挿入する
-     * execCommand は非推奨だが現状のブラウザでは最も確実に動作する
-     * @param {Element} el
-     * @param {string} text
-     */
-    function insertTextIntoContentEditable(el, text) {
+    // execCommand は非推奨だが contenteditable への確実な挿入手段として現状最良
+    function insertText(el, text) {
         el.focus();
-
-        // 既存テキストをクリア
         document.execCommand('selectAll', false, null);
         document.execCommand('delete', false, null);
-
-        // テキストを挿入（inputイベントを伴う）
         document.execCommand('insertText', false, text);
-
-        // execCommand が効かない環境向けのフォールバック
         if (el.textContent.trim() !== text.trim()) {
             el.textContent = text;
             el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: text }));
         }
     }
 
-    /**
-     * 送信ボタンが有効になるまで待ってクリックする
-     * @param {string[]} selectors
-     * @param {number} timeout
-     * @returns {Promise<void>}
-     */
-    function waitAndClickSend(selectors, timeout = 5000) {
-        return new Promise((resolve, reject) => {
-            const deadline = Date.now() + timeout;
-            const check = () => {
-                for (const sel of selectors) {
-                    const btn = document.querySelector(sel);
-                    if (btn && !btn.disabled && !btn.hasAttribute('disabled')) {
-                        btn.click();
-                        resolve();
-                        return;
-                    }
-                }
-                if (Date.now() >= deadline) {
-                    reject(new Error('送信ボタンが見つからないか、無効状態です'));
-                    return;
-                }
-                setTimeout(check, 100);
-            };
-            check();
-        });
-    }
+    async function selectMode({ testId, texts }) {
+        // 無料会員など一部UIではモードボタンが存在しないため短めのタイムアウトで失敗させる
+        const modeBtn = await waitFor(MODE_BUTTON_SELECTORS, { timeout: 3000 });
 
-    // --- モード選択 ---
-
-    /**
-     * モード切替ボタンを開き、指定モードのメニュー項目をクリックする
-     * @param {{testId: string, texts: string[]}} modeDef  モード定義（data-test-id + テキスト候補）
-     */
-    async function selectMode(modeDef) {
-        const { testId, texts } = modeDef;
-        console.log(`[Gemini Auto Submit] モードを選択します: testId=${testId} (texts=${texts.join(' / ')})`);
-
-        // モード切替ボタンを探す（短めのタイムアウトでフェイルソフト）
-        // 無料会員など一部UIではモードボタンが存在しない／UI言語でaria-labelが異なるため、
-        // 見つからなければスキップしてテキスト挿入に進む
-        const modeBtn = await waitForElement(MODE_BUTTON_SELECTORS, 3000);
-
-        // 既に選択済みなら何もしない
-        // 一次: メニュー項目の aria-current="true" 判定（言語非依存・要メニュー展開）はコスト高なので、
-        // 軽量判定としてボタン表示テキストに現在モード名が含まれるかを先に見る
-        if (texts.some(t => modeBtn.textContent.includes(t))) {
-            console.log('[Gemini Auto Submit] 既に選択中のモードです。スキップします。');
-            return;
-        }
+        // 軽量判定: ボタン表示テキストに現在モード名が含まれていれば既選択
+        if (texts.some(t => modeBtn.textContent.includes(t))) return;
 
         modeBtn.click();
-
-        // メニュー項目が現れるまで待機（実機確認済み: .mat-mdc-menu-item 2026-03-07）
-        await waitForElement(['.mat-mdc-menu-item'], 3000);
+        await waitFor(['.mat-mdc-menu-item'], { timeout: 3000 });
         await new Promise(r => setTimeout(r, 200)); // Angular アニメーション待ち
 
-        // 1) data-test-id（言語非依存・一次） → 2) テキスト照合（日英フォールバック）
-        let target = testId ? document.querySelector(`[data-test-id="${testId}"]`) : null;
+        let target = document.querySelector(`[data-test-id="${testId}"]`);
         if (!target) {
-            const items = [...document.querySelectorAll('.mat-mdc-menu-item')];
-            target = items.find(el => texts.some(t => el.textContent.includes(t)));
-            if (target) {
-                console.log(`[Gemini Auto Submit] テキスト照合フォールバックで特定: ${target.textContent.trim()}`);
-            }
+            target = [...document.querySelectorAll('.mat-mdc-menu-item')]
+                .find(el => texts.some(t => el.textContent.includes(t)));
         }
+        if (!target) throw new Error(`モード項目なし: ${testId}`);
 
-        if (!target) {
-            throw new Error(`モード項目が見つかりませんでした: ${testId} / ${texts.join(' / ')}`);
-        }
-
-        // data-test-id でヒットしたが既に選択中の場合（ボタンテキスト判定漏れ対策）
+        // ボタンテキスト判定で漏れた既選択ケースの保険（data-test-id ヒット時）
         if (target.getAttribute('aria-current') === 'true') {
-            console.log('[Gemini Auto Submit] メニュー項目が既に選択中。メニューを閉じます。');
             document.body.click();
             await new Promise(r => setTimeout(r, 300));
             return;
         }
 
         target.click();
-        console.log(`[Gemini Auto Submit] モード選択完了: ${target.textContent.trim()}`);
-
-        // メニューが閉じるのを待つ
         await new Promise(r => setTimeout(r, 400));
     }
 
-    // --- 自動送信処理 ---
-
     async function autoSubmit() {
-        try {
-            // モード指定があれば先に切り替える
-            // モード選択はベストエフォート: 失敗してもテキスト挿入・送信は続行する
-            // （無料会員や一部UI言語ではモードボタンが存在しない・セレクタが一致しないケースがある）
-            if (modeKey && MODE_MAP[modeKey]) {
-                try {
-                    await selectMode(MODE_MAP[modeKey]);
-                } catch (modeErr) {
-                    console.warn('[Gemini Auto Submit] モード選択をスキップします:', modeErr.message);
-                }
-            }
-
-            // Geminiの入力欄セレクタ（実機確認済み 2026-03-02）
-            const inputSelectors = [
-                'rich-textarea .ql-editor[contenteditable="true"]', // 最優先・最も具体的
-                'div.ql-editor[contenteditable="true"]',            // フォールバック
-                'div[contenteditable="true"][data-placeholder]',    // フォールバック
-            ];
-
-            // 送信ボタンのセレクタ（日本語UI・英語UI両対応 実機確認済み）
-            const sendSelectors = [
-                'button[aria-label="プロンプトを送信"]', // 日本語UI
-                'button[aria-label="Send prompt"]',      // 英語UI
-                'button[aria-label="Send message"]',     // 英語UI別バリアント
-                'button.send-button',                    // クラス名フォールバック（無料会員でも存在確認済み 2026-04-19）
-            ];
-
-            console.log('[Gemini Auto Submit] 入力欄を待機中...');
-            const inputEl = await waitForElement(inputSelectors);
-
-            console.log('[Gemini Auto Submit] テキストを挿入します:', query);
-            insertTextIntoContentEditable(inputEl, query);
-
-            console.log(`[Gemini Auto Submit] ${INPUT_DELAY_MS}ms 待機後に送信します`);
-            await new Promise(r => setTimeout(r, INPUT_DELAY_MS));
-
-            await waitAndClickSend(sendSelectors);
-
-            console.log('[Gemini Auto Submit] 送信完了');
-            sessionStorage.setItem(storageKey, '1');
-
-        } catch (err) {
-            console.error('[Gemini Auto Submit] エラー:', err.message);
+        // モード選択は失敗しても送信は続行（UI未対応環境向けフェイルソフト）
+        if (MODE_MAP[modeKey]) {
+            await selectMode(MODE_MAP[modeKey]).catch(() => {});
         }
+
+        // 入力欄: 構造セレクタのみ（言語非依存）
+        const inputEl = await waitFor([
+            'rich-textarea .ql-editor[contenteditable="true"]',
+            'div.ql-editor[contenteditable="true"]',
+            'div[contenteditable="true"][data-placeholder]',
+        ]);
+        insertText(inputEl, query);
+
+        await new Promise(r => setTimeout(r, INPUT_DELAY_MS));
+
+        // 送信ボタン: 日本語UI / 英語UI / クラスフォールバック
+        const sendBtn = await waitFor([
+            'button[aria-label="プロンプトを送信"]',
+            'button[aria-label="Send prompt"]',
+            'button[aria-label="Send message"]',
+            'button.send-button',
+        ], { predicate: el => !el.disabled, timeout: 5000, interval: 100 });
+        sendBtn.click();
+
+        sessionStorage.setItem(storageKey, '1');
     }
 
-    // DOMContentLoaded を待つ（既に完了している場合は即実行）
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', autoSubmit);
-    } else {
-        autoSubmit();
-    }
-
+    autoSubmit();
 })();
