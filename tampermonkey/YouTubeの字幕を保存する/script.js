@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.7.2
+// @version      1.7.3
 // @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -268,24 +268,41 @@
 
   // ── ライブ配信判定 & 字幕有無チェック ─────────────────────────────────
 
+  // 動画ページ判定: /watch?v=<id>, /live/<id>
+  // （Shorts/Clip はトランスクリプトパネルが存在せず保存機能が動かないため除外）
+  const isVideoPage = () =>
+    location.pathname.startsWith("/watch") || location.pathname.startsWith("/live/");
+
+  // 動画ID取得。/watch?v= が最優先、なければ pathname、最後にプレーヤーデータ
   function getVideoId() {
-    return new URLSearchParams(location.search).get("v") || "";
+    const q = new URLSearchParams(location.search).get("v");
+    if (q) return q;
+    const m = location.pathname.match(/^\/(?:live|shorts|embed)\/([^/?#]+)/);
+    if (m) return m[1];
+    try {
+      const resp = document.getElementById("movie_player")?.getPlayerResponse?.();
+      if (resp?.videoDetails?.videoId) return resp.videoDetails.videoId;
+      if (window.ytInitialPlayerResponse?.videoDetails?.videoId) {
+        return window.ytInitialPlayerResponse.videoDetails.videoId;
+      }
+    } catch (_) {/* ignore */}
+    return "";
   }
 
   async function checkSubtitleAvailability() {
-    if (!location.pathname.startsWith("/watch")) return;
+    if (!isVideoPage()) return;
 
     const videoId = getVideoId();
     if (!videoId || videoId === _lastCheckedVideoId) return;
     _lastCheckedVideoId = videoId;
 
-    // プレーヤーデータが準備できるまで待機
+    // プレーヤーデータが準備できるまで待機（Shorts など getPlayerResponse が未定義な場合は ytInitialPlayerResponse を使う）
     const deadline = Date.now() + 10000;
     let resp = null;
     while (Date.now() < deadline) {
       try {
         const player = document.getElementById("movie_player");
-        resp = player?.getPlayerResponse?.();
+        resp = player?.getPlayerResponse?.() || window.ytInitialPlayerResponse;
         if (resp?.videoDetails?.videoId === videoId) break;
       } catch (_) {/* ignore */}
       await sleep(500);
@@ -601,8 +618,8 @@
 
   function registerShortcuts() {
     document.addEventListener("keydown", (e) => {
-      // /watch ページ以外は無視
-      if (!location.pathname.startsWith("/watch")) return;
+      // 動画ページ以外（/watch, /live/<id>）は無視
+      if (!isVideoPage()) return;
 
       // テキスト入力中は無視
       const tag = document.activeElement?.tagName?.toUpperCase();
