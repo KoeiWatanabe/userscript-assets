@@ -626,6 +626,9 @@
     }
     if (currentId !== pending.videoId) return;
 
+    // 遷移直後はトランスクリプトボタン等の DOM が未構築なので少し待つ
+    await sleep(500);
+
     if (pending.action === "toggle") {
       toggleTranscriptPanel();
     } else {
