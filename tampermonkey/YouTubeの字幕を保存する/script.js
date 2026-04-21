@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.7.3
-// @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps).
+// @version      1.8.0
+// @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
@@ -16,6 +16,8 @@
   const BTN_ID_NO_TS = "tm-transcript-save-btn";
   const BTN_ID_WITH_TS = "tm-transcript-save-btn-ts";
   const STYLE_ID = "tm-transcript-save-style";
+  const PENDING_KEY = "tm-transcript-pending-action";
+  const PENDING_TTL_MS = 15000;
   const NOTIFY_ICON = "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/icon_128.png"; // 通知アイコンURL（null ならデフォルトアイコン）
 
   // Default save icon (used for no-timestamp TXT)
@@ -272,6 +274,8 @@
   // （Shorts/Clip はトランスクリプトパネルが存在せず保存機能が動かないため除外）
   const isVideoPage = () =>
     location.pathname.startsWith("/watch") || location.pathname.startsWith("/live/");
+
+  const isShortsPage = () => location.pathname.startsWith("/shorts/");
 
   // 動画ID取得。/watch?v= が最優先、なければ pathname、最後にプレーヤーデータ
   function getVideoId() {
@@ -595,6 +599,40 @@
     showNotify(`字幕を ${filename} として保存しました`);
   }
 
+  // Shorts では文字起こしパネルが存在しないため /watch へ移し、遷移先で同じアクションを自動実行する
+  function redirectToWatchAndRun(action) {
+    const id = getVideoId();
+    if (!id) { alert("動画IDを取得できませんでした。"); return; }
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ action, videoId: id, ts: Date.now() }));
+    location.href = `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+  }
+
+  async function consumePendingActionIfAny() {
+    const raw = sessionStorage.getItem(PENDING_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(PENDING_KEY); // 競合防止のため即座に消費
+    let pending;
+    try { pending = JSON.parse(raw); } catch { return; }
+    if (!pending || Date.now() - pending.ts > PENDING_TTL_MS) return;
+    if (!isVideoPage()) return;
+
+    // 遷移先で正しい動画IDが準備されるまで待つ
+    const deadline = Date.now() + 5000;
+    let currentId = "";
+    while (Date.now() < deadline) {
+      currentId = getVideoId();
+      if (currentId && currentId === pending.videoId) break;
+      await sleep(200);
+    }
+    if (currentId !== pending.videoId) return;
+
+    if (pending.action === "toggle") {
+      toggleTranscriptPanel();
+    } else {
+      await downloadViaShortcut(pending.action === "save-with-ts");
+    }
+  }
+
   async function downloadViaShortcut(withTs) {
     // トランスクリプトが未ロードなら「読み込み中」通知を表示
     const needsLoad = !getDomConfig();
@@ -618,8 +656,8 @@
 
   function registerShortcuts() {
     document.addEventListener("keydown", (e) => {
-      // 動画ページ以外（/watch, /live/<id>）は無視
-      if (!isVideoPage()) return;
+      // 動画ページ・Shorts 以外は無視
+      if (!isVideoPage() && !isShortsPage()) return;
 
       // テキスト入力中は無視
       const tag = document.activeElement?.tagName?.toUpperCase();
@@ -642,6 +680,14 @@
 
       e.preventDefault();
       e.stopPropagation();
+
+      // Shorts ではトランスクリプトパネルが存在しないため /watch に遷移してから再実行
+      if (isShortsPage()) {
+        const action = isCtrlAltT ? "toggle" : (isAltT ? "save-with-ts" : "save-no-ts");
+        redirectToWatchAndRun(action);
+        return;
+      }
+
       if (isCtrlAltT) toggleTranscriptPanel();
       else downloadViaShortcut(isAltT); // isAltT=true → with timestamps
     });
@@ -823,11 +869,13 @@
     inject();
     registerShortcuts();
     checkSubtitleAvailability();
+    consumePendingActionIfAny();
 
     window.addEventListener("yt-navigate-finish", () => {
       _lastCheckedVideoId = ""; // ページ遷移時にリセット
       setTimeout(inject, 400);
       checkSubtitleAvailability();
+      consumePendingActionIfAny();
     });
   }
 
