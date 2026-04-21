@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.8.2
+// @version      1.8.3
 // @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -242,21 +242,31 @@
   /**
    * 原語（オリジナル言語）の動画タイトルを返す。
    * ブラウザの表示言語が英語でも、YouTubeの内部データから翻訳前のタイトルを取得する。
+   *
+   * 注意: window.ytInitialPlayerResponse は初回ロード時に HTML に埋め込まれた値で、
+   * SPA遷移（おすすめ欄クリックなど）では更新されない。movie_player.getPlayerResponse()
+   * を優先し、かつ videoId が現在の URL と一致することを確認する。
    */
   function getVideoTitle() {
-    // 1. microformat: SEO/OGP 用データなので原語タイトルが保持されている
+    const currentId = getVideoId();
+    const pickTitle = (resp) => {
+      if (!resp) return null;
+      if (currentId && resp.videoDetails?.videoId !== currentId) return null; // 別動画のレスポンスは無視
+      const s = resp.microformat?.playerMicroformatRenderer?.title?.simpleText;
+      return s?.trim() || null;
+    };
+
+    // 1. movie_player: SPA遷移後も現在の動画に追随する
     try {
-      const micro =
-        window.ytInitialPlayerResponse?.microformat?.playerMicroformatRenderer;
-      if (micro?.title?.simpleText?.trim()) return micro.title.simpleText.trim();
+      const resp = document.getElementById("movie_player")?.getPlayerResponse?.();
+      const t = pickTitle(resp);
+      if (t) return t;
     } catch (_) {/* ignore */}
 
-    // 2. movie_player の内部レスポンス（SPA遷移後でも更新される）
+    // 2. ytInitialPlayerResponse: 初回ロード時の埋め込みデータ（fullリロードの時は最新）
     try {
-      const player = document.getElementById("movie_player");
-      const resp = player?.getPlayerResponse?.();
-      const micro2 = resp?.microformat?.playerMicroformatRenderer;
-      if (micro2?.title?.simpleText?.trim()) return micro2.title.simpleText.trim();
+      const t = pickTitle(window.ytInitialPlayerResponse);
+      if (t) return t;
     } catch (_) {/* ignore */}
 
     // 3. フォールバック: DOM から取得（翻訳済みの場合あり）
