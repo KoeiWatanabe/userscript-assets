@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      8.3
+// @version      8.4
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -748,7 +748,12 @@
         video.play();
     }
 
-    const getVideoId = () => new URLSearchParams(location.search).get('v');
+    const getVideoId = () => {
+        const v = new URLSearchParams(location.search).get('v');
+        if (v) return v;
+        const m = location.pathname.match(/^\/live\/([^/?#]+)/);
+        return m ? m[1] : null;
+    };
 
     // =====================================================
     //  永続化
