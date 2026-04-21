@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのレイアウト調整
 // @namespace    https://example.com/
-// @version      3.6.0
+// @version      3.7.0
 // @description  YouTubeのレイアウトを調整する（高評価数の表示制御、Hideボタンの非表示など）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -28,12 +28,15 @@
 
   const rootsSelector = [
     'ytd-segmented-like-dislike-button-renderer #segmented-like-button',
+    'segmented-like-dislike-button-view-model like-button-view-model',
     'like-button-view-model'
   ].join(', ');
 
   const textSelector = [
     '#segmented-like-button .yt-spec-button-shape-next__button-text-content',
+    '#segmented-like-button .ytSpecButtonShapeNextButtonTextContent',
     'like-button-view-model .yt-spec-button-shape-next__button-text-content',
+    'like-button-view-model .ytSpecButtonShapeNextButtonTextContent',
     'like-button-view-model .yt-core-attributed-string'
   ].join(', ');
 
@@ -77,6 +80,7 @@
     }
 
     [${ROOT_ATTR}][${OPEN_ATTR}] .yt-spec-button-shape-next__button-text-content,
+    [${ROOT_ATTR}][${OPEN_ATTR}] .ytSpecButtonShapeNextButtonTextContent,
     [${ROOT_ATTR}][${OPEN_ATTR}] .yt-core-attributed-string {
       max-width: ${OPEN_WIDTH}px !important;
       opacity: 1 !important;
@@ -90,6 +94,7 @@
 
     /* 閉じる時もスムーズにアニメーション */
     [${ROOT_ATTR}]:not([${OPEN_ATTR}]) .yt-spec-button-shape-next__button-text-content,
+    [${ROOT_ATTR}]:not([${OPEN_ATTR}]) .ytSpecButtonShapeNextButtonTextContent,
     [${ROOT_ATTR}]:not([${OPEN_ATTR}]) .yt-core-attributed-string {
       transition-delay:
         0ms,
@@ -104,7 +109,9 @@
       #segmented-like-button[${ROOT_ATTR}]:not([${OPEN_ATTR}])
       .yt-spec-button-shape-next__button-content,
     like-button-view-model[${ROOT_ATTR}]:not([${OPEN_ATTR}])
-      .yt-spec-button-shape-next__button-content {
+      .yt-spec-button-shape-next__button-content,
+    like-button-view-model[${ROOT_ATTR}]:not([${OPEN_ATTR}])
+      button.ytSpecButtonShapeNextHost {
       justify-content: center !important;
     }
 
@@ -112,7 +119,9 @@
       #segmented-like-button[${ROOT_ATTR}]:not([${OPEN_ATTR}])
       .yt-spec-button-shape-next__icon,
     like-button-view-model[${ROOT_ATTR}]:not([${OPEN_ATTR}])
-      .yt-spec-button-shape-next__icon {
+      .yt-spec-button-shape-next__icon,
+    like-button-view-model[${ROOT_ATTR}]:not([${OPEN_ATTR}])
+      .ytSpecButtonShapeNextIcon {
       margin-inline: auto !important;
     }
 
@@ -120,7 +129,9 @@
       #segmented-like-button[${ROOT_ATTR}][${OPEN_ATTR}]
       .yt-spec-button-shape-next__button-content,
     like-button-view-model[${ROOT_ATTR}][${OPEN_ATTR}]
-      .yt-spec-button-shape-next__button-content {
+      .yt-spec-button-shape-next__button-content,
+    like-button-view-model[${ROOT_ATTR}][${OPEN_ATTR}]
+      button.ytSpecButtonShapeNextHost {
       justify-content: flex-start !important;
     }
 
