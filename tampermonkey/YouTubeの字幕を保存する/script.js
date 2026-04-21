@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.8.0
+// @version      1.8.1
 // @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
