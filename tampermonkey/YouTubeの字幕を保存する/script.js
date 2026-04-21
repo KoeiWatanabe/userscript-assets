@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.8.1
+// @version      1.8.2
 // @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -309,7 +309,7 @@
         resp = player?.getPlayerResponse?.() || window.ytInitialPlayerResponse;
         if (resp?.videoDetails?.videoId === videoId) break;
       } catch (_) {/* ignore */}
-      await sleep(500);
+      await sleep(1000);
     }
     if (!resp || resp.videoDetails?.videoId !== videoId) return;
 
@@ -515,19 +515,23 @@
 
   // セグメント未ロード時に "Show transcript" ボタンを自動クリックして待機する
   async function openTranscriptPanel(timeoutMs = 15000) {
-    // すでにセグメントが DOM にある場合はそのまま返す
     if (getDomConfig()) return true;
+    const deadline = Date.now() + timeoutMs;
 
-    // "show transcript" / "トランスクリプトを表示" 等のボタンを探す
-    const btn = findShowTranscriptButton();
+    // "Show transcript" ボタンが DOM に出現するまで待つ（/shorts → /watch のフル遷移直後はまだ描画されていない）
+    let btn = findShowTranscriptButton();
+    while (!btn && Date.now() < deadline) {
+      await sleep(200);
+      if (getDomConfig()) return true; // 何らかの理由で既にパネルが開いた
+      btn = findShowTranscriptButton();
+    }
     if (!btn) return false;
 
     btn.click();
 
     // セグメント数が STABLE_MS の間変化しなくなったらロード完了とみなす
-    const POLL_MS   = 200;   // ポーリング間隔
-    const STABLE_MS = 600;   // この時間カウントが変わらなければ完了
-    const deadline = Date.now() + timeoutMs;
+    const POLL_MS   = 200;
+    const STABLE_MS = 600;
     let lastCount = 0;
     let stableMs  = 0;
 
@@ -616,7 +620,7 @@
     if (!pending || Date.now() - pending.ts > PENDING_TTL_MS) return;
     if (!isVideoPage()) return;
 
-    // 遷移先で正しい動画IDが準備されるまで待つ
+    // 遷移先で正しい動画IDが準備されるまで待つ（違う動画ならそのまま中断）
     const deadline = Date.now() + 5000;
     let currentId = "";
     while (Date.now() < deadline) {
@@ -626,11 +630,12 @@
     }
     if (currentId !== pending.videoId) return;
 
-    // 遷移直後はトランスクリプトボタン等の DOM が未構築なので少し待つ
-    await sleep(500);
-
+    // toggle も save もパネルを開く必要があるので downloadViaShortcut の待機ロジックを共用する
     if (pending.action === "toggle") {
-      toggleTranscriptPanel();
+      const dismiss = showNotify("読み込み中…", "stay");
+      const loaded = await openTranscriptPanel();
+      dismiss();
+      if (!loaded) alert("文字起こしを読み込めませんでした。");
     } else {
       await downloadViaShortcut(pending.action === "save-with-ts");
     }
