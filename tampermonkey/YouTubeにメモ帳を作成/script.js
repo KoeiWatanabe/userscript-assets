@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      8.2
+// @version      8.3
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -844,6 +844,7 @@
     const RE_TS_FLAT_DROP     = new RegExp(`\\s*\\[${TS_CORE}\\]\\([^)]*\\)`, 'g');
     const RE_TS_NESTED_UNWRAP = new RegExp(`\\[\\[(${TS_CORE})\\]\\([^)]*\\)\\]`, 'g');
     const RE_TS_FLAT_UNWRAP   = new RegExp(`\\[(${TS_CORE})\\]\\([^)]*\\)`, 'g');
+    const RE_CITE             = /\s*\[cite:\s*\d+(?:\s*,\s*\d+)*\]/gi;
 
     trimBtn.addEventListener('click', () => {
         const lines = textarea.value.split('\n');
@@ -877,6 +878,8 @@
             .replace(RE_TS_FLAT_UNWRAP, '$1');
 
         trimmed = trimmed.replace(/\b00:0?(\d{1,2}):(\d{2})\b/g, '$1:$2');
+
+        trimmed = trimmed.replace(RE_CITE, '');
 
         textarea.value = trimmed;
         saveToLocal();
