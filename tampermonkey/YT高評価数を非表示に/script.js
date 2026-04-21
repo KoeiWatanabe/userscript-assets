@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのレイアウト調整
 // @namespace    https://example.com/
-// @version      3.7.0
+// @version      3.8.0
 // @description  YouTubeのレイアウトを調整する（高評価数の表示制御、Hideボタンの非表示など）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -19,12 +19,10 @@
 
   const HOVER_DELAY = 80;
   const WIDTH_DURATION = 140;
-  const TEXT_DELAY = 0;
   const TEXT_DURATION = 200;
 
   const ROOT_ATTR = 'data-yt-like-anim-root';
   const OPEN_ATTR = 'data-yt-like-open';
-  const BOUND_ATTR = 'data-yt-like-bound';
 
   const rootsSelector = [
     'ytd-segmented-like-dislike-button-renderer #segmented-like-button',
@@ -32,13 +30,11 @@
     'like-button-view-model'
   ].join(', ');
 
-  const textSelector = [
-    '#segmented-like-button .yt-spec-button-shape-next__button-text-content',
-    '#segmented-like-button .ytSpecButtonShapeNextButtonTextContent',
-    'like-button-view-model .yt-spec-button-shape-next__button-text-content',
-    'like-button-view-model .ytSpecButtonShapeNextButtonTextContent',
-    'like-button-view-model .yt-core-attributed-string'
-  ].join(', ');
+  const TEXT_CLASSES =
+    '.yt-spec-button-shape-next__button-text-content, .ytSpecButtonShapeNextButtonTextContent, .yt-core-attributed-string';
+
+  const textSelector =
+    `#segmented-like-button :is(${TEXT_CLASSES}), like-button-view-model :is(${TEXT_CLASSES})`;
 
   const css = `
     /* =========================================================
@@ -53,9 +49,7 @@
     }
 
     /* =========================================================
-       2) 数字のアニメーション
-       - 領域(max-width)が開く
-       - 少し遅れて文字(opacity)がフェードイン（移動なし）
+       2) 数字のアニメーション（領域展開 + フェードイン、移動なし）
        ========================================================= */
     ${textSelector} {
       display: inline-block !important;
@@ -73,33 +67,12 @@
         max-width ${WIDTH_DURATION}ms ease,
         opacity ${TEXT_DURATION}ms ease,
         margin-left ${WIDTH_DURATION}ms ease !important;
-      transition-delay:
-        0ms,
-        0ms,
-        0ms !important;
     }
 
-    [${ROOT_ATTR}][${OPEN_ATTR}] .yt-spec-button-shape-next__button-text-content,
-    [${ROOT_ATTR}][${OPEN_ATTR}] .ytSpecButtonShapeNextButtonTextContent,
-    [${ROOT_ATTR}][${OPEN_ATTR}] .yt-core-attributed-string {
+    [${ROOT_ATTR}][${OPEN_ATTR}] :is(${TEXT_CLASSES}) {
       max-width: ${OPEN_WIDTH}px !important;
       opacity: 1 !important;
       margin-left: 8px !important;
-
-      transition-delay:
-        0ms,
-        ${TEXT_DELAY}ms,
-        0ms !important;
-    }
-
-    /* 閉じる時もスムーズにアニメーション */
-    [${ROOT_ATTR}]:not([${OPEN_ATTR}]) .yt-spec-button-shape-next__button-text-content,
-    [${ROOT_ATTR}]:not([${OPEN_ATTR}]) .ytSpecButtonShapeNextButtonTextContent,
-    [${ROOT_ATTR}]:not([${OPEN_ATTR}]) .yt-core-attributed-string {
-      transition-delay:
-        0ms,
-        0ms,
-        0ms !important;
     }
 
     /* =========================================================
@@ -109,9 +82,7 @@
       #segmented-like-button[${ROOT_ATTR}]:not([${OPEN_ATTR}])
       .yt-spec-button-shape-next__button-content,
     like-button-view-model[${ROOT_ATTR}]:not([${OPEN_ATTR}])
-      .yt-spec-button-shape-next__button-content,
-    like-button-view-model[${ROOT_ATTR}]:not([${OPEN_ATTR}])
-      button.ytSpecButtonShapeNextHost {
+      :is(.yt-spec-button-shape-next__button-content, button.ytSpecButtonShapeNextHost) {
       justify-content: center !important;
     }
 
@@ -119,9 +90,7 @@
       #segmented-like-button[${ROOT_ATTR}]:not([${OPEN_ATTR}])
       .yt-spec-button-shape-next__icon,
     like-button-view-model[${ROOT_ATTR}]:not([${OPEN_ATTR}])
-      .yt-spec-button-shape-next__icon,
-    like-button-view-model[${ROOT_ATTR}]:not([${OPEN_ATTR}])
-      .ytSpecButtonShapeNextIcon {
+      :is(.yt-spec-button-shape-next__icon, .ytSpecButtonShapeNextIcon) {
       margin-inline: auto !important;
     }
 
@@ -129,9 +98,7 @@
       #segmented-like-button[${ROOT_ATTR}][${OPEN_ATTR}]
       .yt-spec-button-shape-next__button-content,
     like-button-view-model[${ROOT_ATTR}][${OPEN_ATTR}]
-      .yt-spec-button-shape-next__button-content,
-    like-button-view-model[${ROOT_ATTR}][${OPEN_ATTR}]
-      button.ytSpecButtonShapeNextHost {
+      :is(.yt-spec-button-shape-next__button-content, button.ytSpecButtonShapeNextHost) {
       justify-content: flex-start !important;
     }
 
@@ -154,6 +121,7 @@
 
   GM_addStyle(css);
 
+  const bound = new WeakSet();
   const timers = new WeakMap();
 
   function clearOpenTimer(root) {
@@ -175,21 +143,16 @@
   }
 
   function bindRoot(root) {
-    if (!root || root.nodeType !== 1 || root.hasAttribute(BOUND_ATTR)) {
-      return;
-    }
+    if (bound.has(root)) return;
+    bound.add(root);
 
     root.setAttribute(ROOT_ATTR, '');
-    root.setAttribute(BOUND_ATTR, '');
 
     root.addEventListener(
       'mouseenter',
       () => {
         clearOpenTimer(root);
-        const timer = setTimeout(() => {
-          openRoot(root);
-        }, HOVER_DELAY);
-        timers.set(root, timer);
+        timers.set(root, setTimeout(() => openRoot(root), HOVER_DELAY));
       },
       { passive: true }
     );
@@ -209,8 +172,14 @@
 
   bindAll();
 
+  let pending = false;
   const observer = new MutationObserver(() => {
-    bindAll();
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      bindAll();
+    });
   });
 
   observer.observe(document.documentElement, {
