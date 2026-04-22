@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Obsidianに保存する
 // @namespace    local.obsidian.capture
-// @version      4.3
+// @version      4.4
 // @description  最新AI返答をサイト純正コピー機能でObsidianに保存（Daily追記・新規ノート）＋チャット全体Markdownダウンロード。対応: ChatGPT / Gemini / Claude / T3 Chat
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -24,6 +24,9 @@
   const PREFIX = "\n\n";
   const SUFFIX = "\n";
   const INBOX_FOLDER = "00 Inbox";
+  const BUTTON_SIZE = 42;
+  const ICON_SIZE = 22;
+  const CAPTURE_STYLE_ID = "obsidian-capture-style";
 
   // 共有ストレージ（GM_*）で使うキー
   const LAST_NOTE_KEY = "obsidian_last_note_path";
@@ -42,25 +45,42 @@
     return null;
   })();
 
-  // サイトごとの設定（アイコン種別・要素セレクタ）
-  const SITE_CONFIG = {
+  // サイトごとの処理契約
+  const SITE_HANDLERS = {
     chatgpt: {
       forceSvg: true,
       pointerSelectors: ['[data-message-author-role="assistant"]', 'article'],
+      findLatestReplyElement: findChatGPTLatestReplyElement,
+      findCopyButton: findChatGPTCopyButton,
+      extractConversation: extractFullChatGPT,
     },
     gemini: {
       forceSvg: false,
       pointerSelectors: ['message-content', 'div[role="article"]', 'main div[role="main"] div', 'main div'],
+      findLatestReplyElement: findGeminiLatestReplyElement,
+      findCopyButton: findGeminiCopyButton,
+      extractConversation: extractFullGemini,
     },
     claude: {
       forceSvg: true,
       pointerSelectors: ['.standard-markdown', '[class*="standard-markdown"]'],
+      prepareMarkdownElement: stripClaudeVisualizationWidgets,
+      findLatestReplyElement: findClaudeLatestReplyElement,
+      findCopyButton: findClaudeCopyButton,
+      extractConversation: extractFullClaude,
     },
     t3chat: {
       forceSvg: false,
       pointerSelectors: ['[data-message-role="assistant"]', 'article', 'div[role="article"]'],
+      findLatestReplyElement: findT3ChatLatestReplyElement,
+      findCopyButton: findT3ChatCopyButton,
+      extractConversation: extractFullT3Chat,
     },
   };
+
+  function getSiteHandler() {
+    return SITE ? SITE_HANDLERS[SITE] || null : null;
+  }
 
   // =========================
   // Windowsファイル名バリデーション
@@ -125,10 +145,6 @@
     GM_setValue(LAST_NOTE_KEY, filepath);
   }
 
-  function getLastNotePath() {
-    return GM_getValue(LAST_NOTE_KEY, null);
-  }
-
   // 既存の localStorage（サイト別）に履歴が残っている場合、各サイトで1回だけGMへ移行して統合
   function migrateLocalStorageToGMOncePerHost() {
     const migratedKey = `obsidian_migrated_to_gm_v1__${location.hostname}`;
@@ -161,7 +177,7 @@
     'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&icon_names=calendar_add_on,download,note_add';
 
   function ensureMaterialSymbolsCss() {
-    if (SITE_CONFIG[SITE]?.forceSvg) return;
+    if (getSiteHandler()?.forceSvg) return;
     if (document.querySelector(`link[data-obsidian-ms="1"][href="${MATERIAL_SYMBOLS_HREF}"]`)) return;
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -213,14 +229,14 @@
   }
 
   async function fallbackIconsIfNeeded(rootEl, timeoutMs = 1200) {
-    if (SITE_CONFIG[SITE]?.forceSvg) return;
+    if (getSiteHandler()?.forceSvg) return;
     await Promise.race([
       (async () => { if (document.fonts?.ready) await document.fonts.ready; })(),
       new Promise(resolve => setTimeout(resolve, timeoutMs)),
     ]);
     if (canUseMaterialSymbolsFont()) return;
     for (const span of rootEl.querySelectorAll(".obsidian-capture-icon[data-icon-name]")) {
-      span.replaceWith(makeSvgIcon(span.dataset.iconName, 22));
+      span.replaceWith(makeSvgIcon(span.dataset.iconName, ICON_SIZE));
     }
   }
 
@@ -231,7 +247,7 @@
     btn.title = label;
     btn.setAttribute("aria-label", label);
     btn.addEventListener("click", onClick);
-    btn.appendChild(SITE_CONFIG[SITE]?.forceSvg ? makeSvgIcon(iconName, 22) : makeFontIcon(iconName));
+    btn.appendChild(getSiteHandler()?.forceSvg ? makeSvgIcon(iconName, ICON_SIZE) : makeFontIcon(iconName));
     return btn;
   }
 
@@ -549,7 +565,7 @@
   function markdownFromEl(el) {
     if (!el) return "";
     if (!ensureTurndown()) return (el.innerText || el.textContent || "").trim();
-    const target = SITE === 'claude' ? stripClaudeVisualizationWidgets(el) : el;
+    const target = getSiteHandler()?.prepareMarkdownElement?.(el) || el;
     return postProcessMarkdown(unescapeCheckboxes(turndownService.turndown(target).trim()));
   }
 
@@ -579,36 +595,53 @@
     ]) || candidates[candidates.length - 1];
   }
 
+  function findLastVisibleElement(selectors, predicate = () => true) {
+    for (const selector of selectors) {
+      const elements = Array.from(document.querySelectorAll(selector)).filter(el =>
+        isVisible(el) && predicate(el)
+      );
+      if (elements.length) return elements[elements.length - 1];
+    }
+    return null;
+  }
+
+  function findChatGPTLatestReplyElement() {
+    const nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
+    return nodes.length ? nodes[nodes.length - 1] : null;
+  }
+
+  function findGeminiLatestReplyElement() {
+    return findGeminiFallback();
+  }
+
+  function findClaudeLatestReplyElement() {
+    return findLastVisibleElement(
+      ['.standard-markdown', '[class*="standard-markdown"]'],
+      el => !!el.innerHTML && el.innerHTML.length > 50
+    );
+  }
+
+  function findT3ChatLatestReplyElement() {
+    const labeled = findLastVisibleElement(
+      ['[role="article"][aria-label="Assistant message"]'],
+      el => (el.innerText || "").trim().length > 50
+    );
+    if (labeled) return labeled;
+    return findLastVisibleElement(
+      ["article", "div[role='article']"],
+      el => (el.innerText || "").trim().length > 80
+    );
+  }
+
   function findWholeReplyElement() {
-    const cfg = SITE_CONFIG[SITE];
-    const fromPointer = (lastPointedEl && cfg)
-      ? closestBySelectors(lastPointedEl, cfg.pointerSelectors)
+    const handler = getSiteHandler();
+    const pointerSelectors = handler?.pointerSelectors || [];
+    const fromPointer = (lastPointedEl && pointerSelectors.length)
+      ? closestBySelectors(lastPointedEl, pointerSelectors)
       : null;
 
     if (fromPointer && isVisible(fromPointer) && fromPointer.innerHTML) return fromPointer;
-
-    switch (SITE) {
-      case 'chatgpt': {
-        const nodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
-        return nodes.length ? nodes[nodes.length - 1] : null;
-      }
-      case 'gemini':
-        return findGeminiFallback();
-      case 'claude': {
-        const msgs = Array.from(document.querySelectorAll('.standard-markdown'))
-          .filter(el => isVisible(el) && el.innerHTML?.length > 50);
-        return msgs.length ? msgs[msgs.length - 1] : null;
-      }
-      case 't3chat': {
-        const nodes = Array.from(document.querySelectorAll("article, div[role='article']"));
-        for (let i = nodes.length - 1; i >= 0; i--) {
-          if (markdownFromEl(nodes[i]).length > 80) return nodes[i];
-        }
-        return null;
-      }
-      default:
-        return null;
-    }
+    return handler?.findLatestReplyElement?.() || null;
   }
 
   // =========================
@@ -635,67 +668,60 @@
     setTimeout(() => { try { a.remove(); } catch {} }, 1000);
   }
 
-  function encodeObsidianFilepath(filepath) {
-    return encodeURIComponent(filepath);
-  }
-
   // =========================
   // コピーボタン探索（サイト別）
   // =========================
 
+  function findChatGPTCopyButton() {
+    const turns = Array.from(document.querySelectorAll('[data-testid^="conversation-turn"]'));
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (!turns[i].querySelector('[data-message-author-role="assistant"]')) continue;
+      const btn =
+        turns[i].querySelector('button[data-testid="copy-turn-action-button"]') ||
+        turns[i].querySelector('button[aria-label="回答をコピーする"]');
+      if (btn) return btn;
+    }
+    return null;
+  }
+
+  function findGeminiCopyButton() {
+    const responses = Array.from(document.querySelectorAll('model-response'));
+    for (let i = responses.length - 1; i >= 0; i--) {
+      const btn =
+        responses[i].querySelector('button[mattooltip="回答をコピー"]') ||
+        responses[i].querySelector('button[aria-label="コピー"]');
+      if (btn) return btn;
+    }
+    return null;
+  }
+
+  function findClaudeCopyButton() {
+    const responses = Array.from(document.querySelectorAll('.font-claude-response'));
+    for (let i = responses.length - 1; i >= 0; i--) {
+      let container = responses[i];
+      for (let j = 0; j < 3; j++) container = container?.parentElement;
+      if (!container) continue;
+      const btn = container.querySelector('button[data-testid="action-bar-copy"]');
+      if (btn) return btn;
+    }
+    return null;
+  }
+
+  function findT3ChatCopyButton() {
+    const footers = Array.from(document.querySelectorAll('[data-testid="assistant-message-footer"]'));
+    for (let i = footers.length - 1; i >= 0; i--) {
+      const btn =
+        footers[i].querySelector('button[aria-label="Copy response to clipboard"]') ||
+        footers[i].querySelector('button[aria-label*="Copy"]');
+      if (btn) return btn;
+    }
+    return null;
+  }
+
   // 各サイトの最新 assistant メッセージに対応するコピーボタンを返す。
   // ホバーで表示されるボタンも DOM に存在するため isVisible() チェックは行わない。
   function findLastAssistantCopyButton() {
-    switch (SITE) {
-      case 'chatgpt': {
-        // 会話ターンを末尾から辿り、assistant ターン内の「回答をコピーする」ボタンを返す
-        const turns = Array.from(document.querySelectorAll('[data-testid^="conversation-turn"]'));
-        for (let i = turns.length - 1; i >= 0; i--) {
-          if (!turns[i].querySelector('[data-message-author-role="assistant"]')) continue;
-          const btn =
-            turns[i].querySelector('button[data-testid="copy-turn-action-button"]') ||
-            turns[i].querySelector('button[aria-label="回答をコピーする"]');
-          if (btn) return btn;
-        }
-        return null;
-      }
-      case 'gemini': {
-        // model-response を末尾から辿り、「回答をコピー」ボタン（mattooltip 属性）を返す
-        const responses = Array.from(document.querySelectorAll('model-response'));
-        for (let i = responses.length - 1; i >= 0; i--) {
-          const btn =
-            responses[i].querySelector('button[mattooltip="回答をコピー"]') ||
-            responses[i].querySelector('button[aria-label="コピー"]');
-          if (btn) return btn;
-        }
-        return null;
-      }
-      case 'claude': {
-        // .font-claude-response の 3 階層上の .group コンテナ内の action-bar-copy ボタンを返す
-        const responses = Array.from(document.querySelectorAll('.font-claude-response'));
-        for (let i = responses.length - 1; i >= 0; i--) {
-          let container = responses[i];
-          for (let j = 0; j < 3; j++) container = container?.parentElement;
-          if (!container) continue;
-          const btn = container.querySelector('button[data-testid="action-bar-copy"]');
-          if (btn) return btn;
-        }
-        return null;
-      }
-      case 't3chat': {
-        // data-testid="assistant-message-footer" を末尾から辿り、コピーボタンを返す
-        const footers = Array.from(document.querySelectorAll('[data-testid="assistant-message-footer"]'));
-        for (let i = footers.length - 1; i >= 0; i--) {
-          const btn =
-            footers[i].querySelector('button[aria-label="Copy response to clipboard"]') ||
-            footers[i].querySelector('button[aria-label*="Copy"]');
-          if (btn) return btn;
-        }
-        return null;
-      }
-      default:
-        return null;
-    }
+    return getSiteHandler()?.findCopyButton?.() || null;
   }
 
   // コピーボタンをクリックしてクリップボードの内容を取得する。
@@ -756,7 +782,7 @@
     // content=null の場合はクリップボードをそのまま使う
     const uri =
       `obsidian://adv-uri?vault=${encodeURIComponent(VAULT_NAME)}` +
-      `&filepath=${encodeObsidianFilepath(filepath)}` +
+      `&filepath=${encodeURIComponent(filepath)}` +
       `&clipboard=true&mode=${mode}`;
     openObsidianUri(uri);
   }
@@ -1152,7 +1178,7 @@
         if (text) messages.push({ role: 'user', content: text });
       } else if (el.matches('.font-claude-response')) {
         if (el.parentElement?.closest('.font-claude-response')) return;
-        const md = removeDuplicateParagraphs(markdownFromEl(stripClaudeVisualizationWidgets(el)));
+        const md = removeDuplicateParagraphs(markdownFromEl(el));
         if (md) messages.push({ role: 'assistant', content: md });
       }
     });
@@ -1240,19 +1266,15 @@
   }
 
   async function exportChat() {
-    if (!SITE) {
+    const handler = getSiteHandler();
+    if (!handler) {
       alert('このサイトではダウンロード機能はサポートされていません。');
       return;
     }
 
     let data;
     try {
-      switch (SITE) {
-        case 'chatgpt': data = await extractFullChatGPT(); break;
-        case 'gemini':  data = extractFullGemini();  break;
-        case 'claude':  data = extractFullClaude();  break;
-        case 't3chat':  data = extractFullT3Chat();  break;
-      }
+      data = await handler.extractConversation();
     } catch (e) {
       alert('チャット履歴の取得中にエラーが発生しました: ' + e.message);
       console.error('Chat export error:', e);
@@ -1278,228 +1300,219 @@
     });
   }
 
+  const CAPTURE_STYLE_CSS = `
+    :root {
+      --obsidian-capture-btn-bg: #ffffff;
+      --obsidian-capture-btn-hover-bg: #e8e8e8;
+      --obsidian-capture-btn-fg: #333333;
+      --obsidian-capture-btn-border: rgba(0, 0, 0, 0.15);
+      --obsidian-capture-btn-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      --obsidian-capture-modal-bg: #ffffff;
+      --obsidian-capture-modal-fg: #222222;
+      --obsidian-capture-modal-border: rgba(0, 0, 0, 0.12);
+      --obsidian-capture-input-bg: #ffffff;
+      --obsidian-capture-input-fg: #222222;
+      --obsidian-capture-input-border: rgba(0, 0, 0, 0.18);
+      --obsidian-capture-secondary-bg: #eeeeee;
+      --obsidian-capture-secondary-fg: #222222;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --obsidian-capture-btn-bg: #2d2d2d;
+        --obsidian-capture-btn-hover-bg: #3d3d3d;
+        --obsidian-capture-btn-fg: #efefef;
+        --obsidian-capture-btn-border: rgba(255, 255, 255, 0.2);
+        --obsidian-capture-btn-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        --obsidian-capture-modal-bg: #232323;
+        --obsidian-capture-modal-fg: #efefef;
+        --obsidian-capture-modal-border: rgba(255, 255, 255, 0.14);
+        --obsidian-capture-input-bg: #1b1b1b;
+        --obsidian-capture-input-fg: #efefef;
+        --obsidian-capture-input-border: rgba(255, 255, 255, 0.18);
+        --obsidian-capture-secondary-bg: #3a3a3a;
+        --obsidian-capture-secondary-fg: #efefef;
+      }
+    }
+
+    html.dark,
+    body.dark,
+    [data-theme="dark"] {
+      --obsidian-capture-btn-bg: #2d2d2d;
+      --obsidian-capture-btn-hover-bg: #3d3d3d;
+      --obsidian-capture-btn-fg: #efefef;
+      --obsidian-capture-btn-border: rgba(255, 255, 255, 0.2);
+      --obsidian-capture-btn-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      --obsidian-capture-modal-bg: #232323;
+      --obsidian-capture-modal-fg: #efefef;
+      --obsidian-capture-modal-border: rgba(255, 255, 255, 0.14);
+      --obsidian-capture-input-bg: #1b1b1b;
+      --obsidian-capture-input-fg: #efefef;
+      --obsidian-capture-input-border: rgba(255, 255, 255, 0.18);
+      --obsidian-capture-secondary-bg: #3a3a3a;
+      --obsidian-capture-secondary-fg: #efefef;
+    }
+
+    .obsidian-capture-container {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 999999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .obsidian-capture-btn {
+      width: ${BUTTON_SIZE}px;
+      height: ${BUTTON_SIZE}px;
+      padding: 0;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: transform 0.15s ease, background-color 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background-color: var(--obsidian-capture-btn-bg) !important;
+      color: var(--obsidian-capture-btn-fg) !important;
+      border: 1px solid var(--obsidian-capture-btn-border) !important;
+      box-shadow: var(--obsidian-capture-btn-shadow) !important;
+    }
+
+    .obsidian-capture-btn:hover {
+      background-color: var(--obsidian-capture-btn-hover-bg) !important;
+      transform: translateY(-1px);
+    }
+
+    .obsidian-capture-btn:active {
+      transform: translateY(0px);
+    }
+
+    .material-symbols-outlined {
+      font-family: "Material Symbols Outlined";
+      font-weight: normal;
+      font-style: normal;
+      font-size: ${ICON_SIZE}px;
+      line-height: 1;
+      display: inline-block;
+      white-space: nowrap;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+      font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+    }
+
+    .obsidian-capture-modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(0, 0, 0, 0.45);
+    }
+
+    .obsidian-capture-modal {
+      width: min(520px, calc(100vw - 32px));
+      padding: 16px;
+      border-radius: 14px;
+      background: var(--obsidian-capture-modal-bg);
+      color: var(--obsidian-capture-modal-fg);
+      border: 1px solid var(--obsidian-capture-modal-border);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    .obsidian-capture-modal-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .obsidian-capture-modal-desc {
+      font-size: 13px;
+      opacity: 0.8;
+      margin-bottom: 12px;
+    }
+
+    .obsidian-capture-modal-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .obsidian-capture-modal-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--obsidian-capture-input-border);
+      background: var(--obsidian-capture-input-bg);
+      color: var(--obsidian-capture-input-fg);
+      outline: none;
+    }
+
+    .obsidian-capture-modal-input:focus {
+      border-color: #4f8cff;
+      box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.18);
+    }
+
+    .obsidian-capture-modal-preview {
+      margin-top: 10px;
+      font-size: 12px;
+      opacity: 0.8;
+      word-break: break-all;
+      font-family: ui-monospace, SFMono-Regular, Monaco, Consolas,
+        "Liberation Mono", "Courier New", monospace;
+    }
+
+    .obsidian-capture-modal-error {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #c62828;
+      white-space: pre-wrap;
+    }
+
+    .obsidian-capture-modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .obsidian-capture-modal-btn {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .obsidian-capture-modal-btn.secondary {
+      background: var(--obsidian-capture-secondary-bg);
+      color: var(--obsidian-capture-secondary-fg);
+    }
+
+    .obsidian-capture-modal-btn.primary {
+      background: #4f8cff;
+      color: #ffffff;
+    }
+  `;
+
+  function ensureCaptureStyle() {
+    if (document.getElementById(CAPTURE_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = CAPTURE_STYLE_ID;
+    style.textContent = CAPTURE_STYLE_CSS;
+    document.head.appendChild(style);
+  }
+
   function injectButton() {
     if (document.querySelector(".obsidian-capture-container")) return;
 
     ensureMaterialSymbolsCss();
-
-    const BTN_SIZE = 42;
-    const ICON_SIZE = 22;
-
-    const style = document.createElement("style");
-    style.textContent = `
-      .obsidian-capture-container {
-        position: fixed;
-        right: 16px;
-        bottom: 16px;
-        z-index: 999999;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-
-      .obsidian-capture-btn {
-        width: ${BTN_SIZE}px;
-        height: ${BTN_SIZE}px;
-        padding: 0;
-        border-radius: 999px;
-        cursor: pointer;
-        transition: transform 0.15s ease, background-color 0.2s ease;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-
-        background-color: #ffffff !important;
-        color: #333333 !important;
-        border: 1px solid rgba(0,0,0,0.15) !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
-      }
-
-      .obsidian-capture-btn:hover {
-        background-color: #e8e8e8 !important;
-        transform: translateY(-1px);
-      }
-
-      .obsidian-capture-btn:active {
-        transform: translateY(0px);
-      }
-
-      .material-symbols-outlined {
-        font-family: "Material Symbols Outlined";
-        font-weight: normal;
-        font-style: normal;
-        font-size: ${ICON_SIZE}px;
-        line-height: 1;
-        display: inline-block;
-        white-space: nowrap;
-        user-select: none;
-        -webkit-font-smoothing: antialiased;
-        font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
-      }
-
-      .obsidian-capture-modal-overlay {
-        position: fixed;
-        inset: 0;
-        z-index: 1000000;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 16px;
-        background: rgba(0, 0, 0, 0.45);
-      }
-
-      .obsidian-capture-modal {
-        width: min(520px, calc(100vw - 32px));
-        padding: 16px;
-        border-radius: 14px;
-        background: #ffffff;
-        color: #222222;
-        border: 1px solid rgba(0, 0, 0, 0.12);
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
-      }
-
-      .obsidian-capture-modal-title {
-        font-size: 18px;
-        font-weight: 700;
-        margin-bottom: 6px;
-      }
-
-      .obsidian-capture-modal-desc {
-        font-size: 13px;
-        opacity: 0.8;
-        margin-bottom: 12px;
-      }
-
-      .obsidian-capture-modal-label {
-        display: block;
-        font-size: 13px;
-        font-weight: 600;
-        margin-bottom: 6px;
-      }
-
-      .obsidian-capture-modal-input {
-        width: 100%;
-        box-sizing: border-box;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(0, 0, 0, 0.18);
-        background: #ffffff;
-        color: #222222;
-        outline: none;
-      }
-
-      .obsidian-capture-modal-input:focus {
-        border-color: #4f8cff;
-        box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.18);
-      }
-
-      .obsidian-capture-modal-preview {
-        margin-top: 10px;
-        font-size: 12px;
-        opacity: 0.8;
-        word-break: break-all;
-        font-family: ui-monospace, SFMono-Regular, Monaco, Consolas,
-          "Liberation Mono", "Courier New", monospace;
-      }
-
-      .obsidian-capture-modal-error {
-        margin-top: 10px;
-        font-size: 12px;
-        color: #c62828;
-        white-space: pre-wrap;
-      }
-
-      .obsidian-capture-modal-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 8px;
-        margin-top: 16px;
-      }
-
-      .obsidian-capture-modal-btn {
-        border: 0;
-        border-radius: 10px;
-        padding: 10px 14px;
-        cursor: pointer;
-        font-size: 13px;
-        font-weight: 600;
-      }
-
-      .obsidian-capture-modal-btn.secondary {
-        background: #eeeeee;
-        color: #222222;
-      }
-
-      .obsidian-capture-modal-btn.primary {
-        background: #4f8cff;
-        color: #ffffff;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        .obsidian-capture-btn {
-          background-color: #2d2d2d !important;
-          color: #efefef !important;
-          border: 1px solid rgba(255,255,255,0.2) !important;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
-        }
-        .obsidian-capture-btn:hover { background-color: #3d3d3d !important; }
-
-        .obsidian-capture-modal {
-          background: #232323;
-          color: #efefef;
-          border: 1px solid rgba(255, 255, 255, 0.14);
-        }
-
-        .obsidian-capture-modal-input {
-          background: #1b1b1b;
-          color: #efefef;
-          border: 1px solid rgba(255, 255, 255, 0.18);
-        }
-
-        .obsidian-capture-modal-btn.secondary {
-          background: #3a3a3a;
-          color: #efefef;
-        }
-      }
-
-      html.dark .obsidian-capture-btn,
-      body.dark .obsidian-capture-btn,
-      [data-theme="dark"] .obsidian-capture-btn {
-        background-color: #2d2d2d !important;
-        color: #efefef !important;
-        border: 1px solid rgba(255,255,255,0.2) !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
-      }
-      html.dark .obsidian-capture-btn:hover,
-      body.dark .obsidian-capture-btn:hover,
-      [data-theme="dark"] .obsidian-capture-btn:hover {
-        background-color: #3d3d3d !important;
-      }
-
-      html.dark .obsidian-capture-modal,
-      body.dark .obsidian-capture-modal,
-      [data-theme="dark"] .obsidian-capture-modal {
-        background: #232323;
-        color: #efefef;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-      }
-
-      html.dark .obsidian-capture-modal-input,
-      body.dark .obsidian-capture-modal-input,
-      [data-theme="dark"] .obsidian-capture-modal-input {
-        background: #1b1b1b;
-        color: #efefef;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-      }
-
-      html.dark .obsidian-capture-modal-btn.secondary,
-      body.dark .obsidian-capture-modal-btn.secondary,
-      [data-theme="dark"] .obsidian-capture-modal-btn.secondary {
-        background: #3a3a3a;
-        color: #efefef;
-      }
-    `;
-    document.head.appendChild(style);
+    ensureCaptureStyle();
 
     const container = document.createElement("div");
     container.className = "obsidian-capture-container";
@@ -1513,16 +1526,16 @@
     fallbackIconsIfNeeded(container).catch(() => {});
   }
 
-  function waitForTurndown() {
-    if (typeof TurndownService !== "undefined") {
-      turndownService = initTurndown();
-      migrateLocalStorageToGMOncePerHost();
-      injectButton();
-      setupExportShortcut();
-    } else {
-      setTimeout(waitForTurndown, 100);
+  function initializeScript() {
+    if (typeof TurndownService === "undefined") {
+      setTimeout(initializeScript, 100);
+      return;
     }
+    ensureTurndown();
+    migrateLocalStorageToGMOncePerHost();
+    injectButton();
+    setupExportShortcut();
   }
 
-  waitForTurndown();
+  initializeScript();
 })();
