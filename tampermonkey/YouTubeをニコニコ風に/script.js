@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風にする
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.1.0
+// @version      2.1.1
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
@@ -687,9 +687,9 @@
     }
   });
 
-  // ── Alt+C で弾幕ON/OFF ──
+  // ── Alt+L で弾幕ON/OFF ──
   document.addEventListener('keydown', (e) => {
-    if (e.altKey && (e.key === 'c' || e.key === 'C')) {
+    if (e.altKey && (e.key === 'l' || e.key === 'L')) {
       e.preventDefault();
       enabled = !enabled;
       if (!enabled && overlay) overlay.textContent = '';
