@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風にする
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.1.1
+// @version      2.1.2
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
@@ -265,7 +265,7 @@
           if (text.trim()) hasContent = true;
           if (text) parentFragment.appendChild(document.createTextNode(text));
         } else if (child.nodeType === 1) { // ELEMENT_NODE
-          if (child.tagName.toLowerCase() === 'img') {
+          if (child.localName === 'img') {
             const src = child.getAttribute('src');
             if (src) {
               hasContent = true;
@@ -284,45 +284,49 @@
 
   // チャットノードからメタ情報を抽出
   function extractChatInfo(node) {
-    const tagName = node.tagName.toLowerCase();
+    const tagName = node.localName;
     const authorType = node.getAttribute('author-type');
-    const authorNameEl = node.querySelector('#author-name');
-    const photoEl = node.querySelector('#author-photo img');
-    const badgeEl = node.querySelector('#chat-badges yt-live-chat-author-badge-renderer img');
+    const paidColorProp = PAID_TAGS[tagName];
+    const isMembership = tagName === 'yt-live-chat-membership-item-renderer';
+    const isOwner = authorType === 'owner';
+    const isModerator = authorType === 'moderator';
+    const isSpecial = Boolean(paidColorProp || isMembership || isOwner || isModerator);
 
     const info = {
       tagName,
       authorType,
-      authorName: authorNameEl ? (authorNameEl.textContent || '').trim() : '',
-      photoSrc: photoEl ? photoEl.getAttribute('src') : null,
-      badgeSrc: badgeEl ? badgeEl.getAttribute('src') : null,
+      authorName: '',
+      photoSrc: null,
+      badgeSrc: null,
       amount: null,
       bgColor: null,
-      textColor: CONFIG.color,
-      isSpecial: false,
+      textColor: isOwner ? CONFIG.ownerColor : isModerator ? CONFIG.modColor : CONFIG.color,
+      isSpecial,
     };
+
+    if (!isSpecial) return info;
+
+    const authorNameEl = node.querySelector('#author-name');
+    const photoEl = node.querySelector('#author-photo img');
+    const badgeEl = node.querySelector('#chat-badges yt-live-chat-author-badge-renderer img');
+    info.authorName = authorNameEl ? (authorNameEl.textContent || '').trim() : '';
+    info.photoSrc = photoEl ? photoEl.getAttribute('src') : null;
+    info.badgeSrc = badgeEl ? badgeEl.getAttribute('src') : null;
 
     // スーパーチャット / スティッカースパチャ（テーブル駆動で統合）
     // ※ YouTube は低額帯(緑・水色)で header-color を黒に設定するが、
     //   弾幕は動画上に表示するため文字色は常に白を使う
-    const colorProp = PAID_TAGS[tagName];
-    if (colorProp) {
+    if (paidColorProp) {
       const amountEl = node.querySelector('#purchase-amount, #purchase-amount-chip');
       info.amount = amountEl ? (amountEl.textContent || '').trim() : null;
-      info.bgColor = getComputedStyle(node).getPropertyValue(colorProp).trim() || 'rgba(230,33,23,0.8)';
+      info.bgColor = getComputedStyle(node).getPropertyValue(paidColorProp).trim() || 'rgba(230,33,23,0.8)';
       info.textColor = '#FFFFFF';
-      info.isSpecial = true;
     }
 
     // メンバー加入
-    if (tagName === 'yt-live-chat-membership-item-renderer') {
+    if (isMembership) {
       info.bgColor = 'rgba(15,157,88,0.8)';
-      info.isSpecial = true;
     }
-
-    // チャンネル主 / モデレーター
-    if (authorType === 'owner') { info.textColor = CONFIG.ownerColor; info.isSpecial = true; }
-    if (authorType === 'moderator') { info.textColor = CONFIG.modColor; info.isSpecial = true; }
 
     // 背景色の不透明度をCONFIG.bgOpacityで上書き
     if (info.bgColor) {
@@ -348,15 +352,108 @@
   let resizeObserver = null;
   let laneTracker = []; // 各レーンの最後のコメント情報 { startTime, speed, width }
   let enabled = true;
+  let watchSession = 0;
   let chatObserver = null;
+  let chatItemsHostObserver = null;
   let chatObservedItems = null;
-  let chatPollTimer = 0;
+  let chatItemsHost = null;
+  let pageObserver = null;
+  let waitPlayerObserver = null;
+  let chatRetryTimer = 0;
+  let chatFrameLoadTarget = null;
+  let chatFrameLoadHandler = null;
+  let chatFrameLoadSession = 0;
   const processedIds = new Set(); // 重複コメント排除用
   const processedIdQueue = [];   // FIFO順で管理
+  const channelNameTimers = new Set();
 
   // ── バッチ処理キュー ──
   let pendingNodes = [];
   let flushTimer = 0;
+
+  function clearTimeoutId(timerId) {
+    if (timerId) clearTimeout(timerId);
+    return 0;
+  }
+
+  function disconnectObserver(observer) {
+    if (observer) observer.disconnect();
+    return null;
+  }
+
+  function nextWatchSession() {
+    watchSession += 1;
+    return watchSession;
+  }
+
+  function isActiveWatchSession(session) {
+    return session === watchSession;
+  }
+
+  function clearChannelNameTimers() {
+    for (const timerId of channelNameTimers) clearTimeout(timerId);
+    channelNameTimers.clear();
+  }
+
+  function detachChatFrameLoad() {
+    if (chatFrameLoadTarget && chatFrameLoadHandler) {
+      chatFrameLoadTarget.removeEventListener('load', chatFrameLoadHandler);
+    }
+    chatFrameLoadTarget = null;
+    chatFrameLoadHandler = null;
+    chatFrameLoadSession = 0;
+  }
+
+  function stopChatTracking() {
+    chatObserver = disconnectObserver(chatObserver);
+    chatItemsHostObserver = disconnectObserver(chatItemsHostObserver);
+    pageObserver = disconnectObserver(pageObserver);
+    chatObservedItems = null;
+    chatItemsHost = null;
+    chatRetryTimer = clearTimeoutId(chatRetryTimer);
+    detachChatFrameLoad();
+  }
+
+  function stopPlayerWait() {
+    waitPlayerObserver = disconnectObserver(waitPlayerObserver);
+  }
+
+  function stopOverlay() {
+    resizeObserver = disconnectObserver(resizeObserver);
+    if (overlay && overlay.isConnected) overlay.remove();
+    overlay = null;
+    overlayWidth = 0;
+    overlayHeight = 0;
+  }
+
+  function resetWatchState(clearProcessed) {
+    nextWatchSession();
+    stopChatTracking();
+    stopPlayerWait();
+    stopOverlay();
+    resetRuntimeState(clearProcessed);
+  }
+
+  function waitForPlayer(session) {
+    waitPlayerObserver = disconnectObserver(waitPlayerObserver);
+    waitPlayerObserver = new MutationObserver(() => {
+      if (!isActiveWatchSession(session)) return;
+      if (!document.querySelector('#movie_player')) return;
+      waitPlayerObserver = disconnectObserver(waitPlayerObserver);
+      overlay = createOverlay();
+      if (overlay) waitForChat(session);
+    });
+    waitPlayerObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function startWatchSession(session) {
+    overlay = createOverlay();
+    if (overlay) {
+      waitForChat(session);
+      return;
+    }
+    waitForPlayer(session);
+  }
 
   function enqueueNode(node) {
     if (!node || node.nodeType !== 1) return;
@@ -524,7 +621,7 @@
 
   // ── チャットメッセージの処理 ──
   function processNode(node) {
-    const tagName = node.tagName.toLowerCase();
+    const tagName = node.localName;
     if (!MESSAGE_TAGS.has(tagName)) return;
 
     // 重複排除: message-id があれば既に処理済みかチェック (FIFO管理)
@@ -540,7 +637,7 @@
 
     // special系（スパチャ・メンバー加入等）で名前が@ハンドルの場合、チャンネル名読み込みを待つ
     if (chatInfo.isSpecial && chatInfo.authorName && chatInfo.authorName.startsWith('@')) {
-      waitForChannelName(node, chatInfo, 20); // 50ms間隔 × 最大20回 = 最大1秒
+      waitForChannelName(node, chatInfo, 20, watchSession); // 50ms間隔 × 最大20回 = 最大1秒
       return;
     }
 
@@ -548,18 +645,23 @@
   }
 
   // special系コメントの@ハンドル → チャンネル名の読み込みを待つ
-  function waitForChannelName(node, chatInfo, remaining) {
+  function waitForChannelName(node, chatInfo, remaining, session) {
+    if (!isActiveWatchSession(session)) return;
     if (remaining <= 0) { spawnFromNode(node, chatInfo); return; }
-    setTimeout(() => {
+
+    const timerId = setTimeout(() => {
+      channelNameTimers.delete(timerId);
+      if (!isActiveWatchSession(session)) return;
       const el = node.querySelector('#author-name');
       const name = el ? (el.textContent || '').trim() : '';
       if (name.startsWith('@')) {
-        waitForChannelName(node, chatInfo, remaining - 1);
+        waitForChannelName(node, chatInfo, remaining - 1, session);
       } else {
         chatInfo.authorName = name;
         spawnFromNode(node, chatInfo);
       }
     }, 50);
+    channelNameTimers.add(timerId);
   }
 
   // ノードからメッセージを組み立てて弾幕を発射
@@ -599,6 +701,7 @@
   function resetRuntimeState(clearProcessed) {
     laneTracker = [];
     pendingNodes.length = 0;
+    clearChannelNameTimers();
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0; }
     if (clearProcessed) {
       processedIds.clear();
@@ -617,66 +720,89 @@
   }
 
   // ── iframeのチャットDOMを監視 ──
-  function observeChat() {
+  function bindChatFrameLoad(chatFrame, session) {
+    if (chatFrameLoadTarget === chatFrame && chatFrameLoadSession === session) return;
+    detachChatFrameLoad();
+
+    chatFrameLoadHandler = () => {
+      if (!isActiveWatchSession(session)) return;
+      chatObserver = disconnectObserver(chatObserver);
+      chatItemsHostObserver = disconnectObserver(chatItemsHostObserver);
+      chatObservedItems = null;
+      chatItemsHost = null;
+      observeChat(session) || retryObserveChat(0, session);
+    };
+    chatFrame.addEventListener('load', chatFrameLoadHandler);
+    chatFrameLoadTarget = chatFrame;
+    chatFrameLoadSession = session;
+  }
+
+  function observeChat(session) {
     const chatFrame = document.querySelector('#chatframe');
     if (!chatFrame) return false;
+    bindChatFrameLoad(chatFrame, session);
 
     let chatDoc;
     try { chatDoc = chatFrame.contentDocument; } catch (e) { return false; }
     if (!chatDoc || !chatDoc.body) return false;
 
-    const itemList = chatDoc.querySelector('yt-live-chat-item-list-renderer #items');
+    const itemsHost = chatDoc.querySelector('yt-live-chat-item-list-renderer');
+    if (itemsHost && chatItemsHost !== itemsHost) {
+      chatItemsHostObserver = disconnectObserver(chatItemsHostObserver);
+      chatItemsHost = itemsHost;
+      chatItemsHostObserver = new MutationObserver(() => {
+        if (!isActiveWatchSession(session)) return;
+        const nextItems = chatItemsHost ? chatItemsHost.querySelector('#items') : null;
+        if (nextItems && nextItems !== chatObservedItems) observeChat(session);
+      });
+      chatItemsHostObserver.observe(itemsHost, { childList: true });
+    }
+
+    const itemList = itemsHost ? itemsHost.querySelector('#items') : chatDoc.querySelector('yt-live-chat-item-list-renderer #items');
     if (!itemList) return false;
     if (chatObservedItems === itemList) return true;
 
-    if (chatObserver) chatObserver.disconnect();
-
+    chatObserver = disconnectObserver(chatObserver);
     chatObserver = new MutationObserver(handleChatMutation);
     chatObserver.observe(itemList, { childList: true });
     chatObservedItems = itemList;
-
-    // Top chat / Live chat 切替時に #items が差し替わるのを検知するポーリング
-    if (!chatPollTimer) {
-      chatPollTimer = setInterval(() => {
-        try {
-          const cf = document.querySelector('#chatframe');
-          if (!cf) return;
-          const cd = cf.contentDocument;
-          if (!cd) return;
-          const newItems = cd.querySelector('yt-live-chat-item-list-renderer #items');
-          if (newItems && newItems !== chatObservedItems) observeChat();
-        } catch (e) { /* ignore */ }
-      }, 2000);
-    }
+    chatRetryTimer = clearTimeoutId(chatRetryTimer);
+    pageObserver = disconnectObserver(pageObserver);
 
     return true;
   }
 
   // ── iframeの準備完了を待つ ──
-  function waitForChat() {
-    if (observeChat()) return;
+  function waitForChat(session) {
+    if (observeChat(session)) return;
 
     const chatFrame = document.querySelector('#chatframe');
-    if (chatFrame) chatFrame.addEventListener('load', () => retryObserveChat(0));
+    if (chatFrame) {
+      bindChatFrameLoad(chatFrame, session);
+      retryObserveChat(0, session);
+      return;
+    }
 
-    const pageObserver = new MutationObserver(() => {
+    pageObserver = disconnectObserver(pageObserver);
+    pageObserver = new MutationObserver(() => {
+      if (!isActiveWatchSession(session)) return;
       const cf = document.querySelector('#chatframe');
-      if (cf) {
-        pageObserver.disconnect();
-        cf.addEventListener('load', () => retryObserveChat(0));
-        retryObserveChat(0);
-      }
+      if (!cf) return;
+      pageObserver = disconnectObserver(pageObserver);
+      bindChatFrameLoad(cf, session);
+      observeChat(session) || retryObserveChat(0, session);
     });
     pageObserver.observe(document.body, { childList: true, subtree: true });
   }
 
-  function retryObserveChat(attempt) {
-    // ※ ポーリングはここでリセットしない。
-    //   observeChat() が「同一 #items → 早期リターン」するパスでは
-    //   ポーリングが再起動されないため、停止すると切替検知が永久に失われる。
-    //   ポーリングのリセットは yt-navigate-finish（ページ遷移）時のみ行う。
-    if (observeChat()) return;
-    if (attempt < 15) setTimeout(() => retryObserveChat(attempt + 1), 1000);
+  function retryObserveChat(attempt, session) {
+    if (!isActiveWatchSession(session)) return;
+    chatRetryTimer = clearTimeoutId(chatRetryTimer);
+    if (observeChat(session) || attempt >= 15) return;
+    chatRetryTimer = setTimeout(() => {
+      chatRetryTimer = 0;
+      retryObserveChat(attempt + 1, session);
+    }, 1000);
   }
 
   // ── タブ復帰時にキューをクリア ──
@@ -707,33 +833,21 @@
   // ── 初期化 ──
   function init() {
     if (!isWatchPage()) return; // 動画ページ以外では何もしない
-    overlay = createOverlay();
-    if (!overlay) {
-      const waitPlayer = new MutationObserver(() => {
-        if (document.querySelector('#movie_player')) {
-          waitPlayer.disconnect();
-          overlay = createOverlay();
-          waitForChat();
-        }
-      });
-      waitPlayer.observe(document.body, { childList: true, subtree: true });
-    } else {
-      waitForChat();
-    }
+    const session = nextWatchSession();
+    startWatchSession(session);
   }
 
   init();
 
   // ── SPA ナビゲーション対応 ──
   document.addEventListener('yt-navigate-finish', () => {
-    if (isWatchPage()) {
-      if (chatObserver) { chatObserver.disconnect(); chatObserver = null; chatObservedItems = null; }
-      if (chatPollTimer) { clearInterval(chatPollTimer); chatPollTimer = 0; }
-      resetRuntimeState(true);
-      setTimeout(() => {
-        overlay = createOverlay();
-        waitForChat();
-      }, 1500);
-    }
+    resetWatchState(true);
+    if (!isWatchPage()) return;
+
+    const session = nextWatchSession();
+    setTimeout(() => {
+      if (!isActiveWatchSession(session) || !isWatchPage()) return;
+      startWatchSession(session);
+    }, 1500);
   });
 })();
