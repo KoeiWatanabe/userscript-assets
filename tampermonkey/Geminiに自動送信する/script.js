@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Geminiに自動送信する
 // @namespace    http://tampermonkey.net/
-// @version      2.1.0
-// @description  URLクエリパラメータ ?q= の内容をGeminiのチャットに自動入力して送信する
+// @version      2.2.2
+// @description  URLクエリパラメータ ?q= の内容をGeminiのチャットに自動入力して送信する（?submit=0 で送信抑止）
 // @author       You
 // @match        https://gemini.google.com/*
 // @grant        none
@@ -16,6 +16,7 @@
 
     const PARAM_NAME = 'q';
     const MODE_PARAM = 'mode';
+    const SUBMIT_PARAM = 'submit';
     const DEFAULT_MODE = 'fast';
     const INPUT_DELAY_MS = 1000;
     const MAX_WAIT_MS = 15000;
@@ -38,6 +39,8 @@
     const query = params.get(PARAM_NAME);
     if (!query) return;
     const modeKey = params.get(MODE_PARAM) ?? DEFAULT_MODE;
+    const submitRaw = params.get(SUBMIT_PARAM);
+    const shouldSubmit = !(submitRaw === '0' || submitRaw === 'false');
 
     const storageKey = 'gemini-auto-submit:' + btoa(encodeURIComponent(query)).slice(0, 32);
     if (sessionStorage.getItem(storageKey)) return;
@@ -57,8 +60,38 @@
         });
     }
 
+    // 複数行テキストは Quill の execCommand('insertParagraph') と insertText が
+    // 競合して先行行が欠落することがあるため DOM API で組み立てる。
+    // GeminiはTrusted Typesポリシー下にあり innerHTML= は弾かれるので createElement 系で構築する必要がある。
+    function insertMultilineViaDom(el, text) {
+        el.focus();
+        while (el.firstChild) el.removeChild(el.firstChild);
+        const lines = text.split('\n');
+        for (const line of lines) {
+            const p = document.createElement('p');
+            if (line) {
+                p.textContent = line;
+            } else {
+                p.appendChild(document.createElement('br'));
+            }
+            el.appendChild(p);
+        }
+        const lastP = el.lastElementChild;
+        const range = document.createRange();
+        range.setStart(lastP, 0);
+        range.collapse(true);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
+    }
+
     // execCommand は非推奨だが contenteditable への確実な挿入手段として現状最良
     function insertText(el, text) {
+        if (text.includes('\n')) {
+            insertMultilineViaDom(el, text);
+            return;
+        }
         el.focus();
         document.execCommand('selectAll', false, null);
         document.execCommand('delete', false, null);
@@ -112,6 +145,11 @@
         ]);
         insertText(inputEl, query);
 
+        sessionStorage.setItem(storageKey, '1');
+
+        // submit=0 のときは入力のみで終了（ユーザーが自分で編集・送信する用途）
+        if (!shouldSubmit) return;
+
         await new Promise(r => setTimeout(r, INPUT_DELAY_MS));
 
         // 送信ボタン: 日本語UI / 英語UI / クラスフォールバック
@@ -122,8 +160,6 @@
             'button.send-button',
         ], { predicate: el => !el.disabled, timeout: 5000, interval: 100 });
         sendBtn.click();
-
-        sessionStorage.setItem(storageKey, '1');
     }
 
     autoSubmit();

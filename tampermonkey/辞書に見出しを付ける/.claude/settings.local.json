@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -c \"G:/バイブコード/github/tampermonkey/辞書に見出しを付ける/script.js\")"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check \"G:/バイブコード/github/tampermonkey/YouTubeコメント欄の名前をもとに戻す/script.js\")"
+    ]
+  }
+}

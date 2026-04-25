@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeコメント欄の名前をもとに戻す＋
 // @namespace    https://example.com/
-// @version      1.0.2
+// @version      1.0.3
 // @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
 // @match        https://www.youtube.com/*
 // @match        https://www.youtube.com/live_chat*
@@ -22,6 +22,10 @@
     negCacheMax: 20000,
     negativeTTL: 5 * 60 * 1000,
     reattachInterval: 900,
+    startupReattachMs: 15000,
+    navigateReattachMs: 12000,
+    actionReattachMs: 4000,
+    maxConcurrentFetches: 4,
     fetchTimeout: 7000,
     maxBytesToScan: 700 * 1024,
     maxChunks: 80,
@@ -43,11 +47,14 @@
     'yt-live-chat-ticker-paid-sticker-item-renderer #text,' +
     'yt-live-chat-ticker-sponsor-item-renderer #text';
   const AUTHOR_NAME_SEL = 'yt-live-chat-author-chip #author-name, a#author-name, span#author-name';
+  const LIVE_CHAT_SCAN_SEL = `${AUTHOR_NAME_SEL},${TICKER_TEXT_SEL}`;
+  const COMMENT_AUTHOR_LINK_SEL = 'a#author-text[href^="/@"], a#author-name[href^="/@"]';
+  const entityDecoder = new DOMParser();
 
   function decodeEntities(s) {
     if (!s || !s.includes('&')) return s || '';
     try {
-      return new DOMParser().parseFromString(`<i>${s}</i>`, 'text/html').body.textContent || s;
+      return entityDecoder.parseFromString(`<i>${s}</i>`, 'text/html').body.textContent || s;
     } catch { return s; }
   }
 
@@ -120,6 +127,11 @@
   loadPersistentCache();
 
   const inFlight = new Map(); // handle -> Promise<string|null>
+  const fetchQueue = [];
+  let activeFetchCount = 0;
+  const authorQueue = new Set();
+  const authorState = new WeakMap(); // Element -> { handle, pending?, checkedAt? }
+  let authorQueueScheduled = false;
 
   const OG_TITLE_RE = /<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i;
   function extractOgTitleFromHtml(html) {
@@ -129,6 +141,80 @@
     const name = decodeEntities(m[1] || '').trim().replace(/\s+-\s+YouTube\s*$/i, '').trim();
     if (!name || /^YouTube$/i.test(name)) return null;
     return name;
+  }
+
+  function scheduleAuthorQueueFlush() {
+    if (authorQueueScheduled) return;
+    authorQueueScheduled = true;
+    requestAnimationFrame(() => {
+      authorQueueScheduled = false;
+      const batch = Array.from(authorQueue);
+      authorQueue.clear();
+      for (const el of batch) processAuthorElement(el);
+    });
+  }
+
+  function enqueueAuthorElement(el) {
+    if (!isElement(el)) return;
+    authorQueue.add(el);
+    scheduleAuthorQueueFlush();
+  }
+
+  function pumpFetchQueue() {
+    while (activeFetchCount < CFG.maxConcurrentFetches && fetchQueue.length) {
+      const job = fetchQueue.shift();
+      activeFetchCount++;
+      fetchDisplayNameFromNetwork(job.handle)
+        .then(job.resolve, () => job.resolve(null))
+        .finally(() => {
+          activeFetchCount--;
+          pumpFetchQueue();
+        });
+    }
+  }
+
+  async function fetchDisplayNameFromNetwork(handle) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => { try { controller.abort(); } catch { } }, CFG.fetchTimeout);
+    try {
+      const res = await fetch(`https://www.youtube.com/${handle}`, {
+        credentials: 'include',
+        signal: controller.signal,
+      });
+
+      const body = res.body;
+      if (!body || !body.getReader) {
+        return extractOgTitleFromHtml(await res.text());
+      }
+
+      const reader = body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let scannedBytes = 0, scannedChunks = 0, buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        scannedChunks++;
+        scannedBytes += value.byteLength;
+        buffer += decoder.decode(value, { stream: true });
+
+        const name = extractOgTitleFromHtml(buffer);
+        if (name) {
+          try { controller.abort(); } catch { }
+          return name;
+        }
+
+        if (scannedBytes > CFG.maxBytesToScan || scannedChunks > CFG.maxChunks) break;
+        if (buffer.length > 250000) buffer = buffer.slice(-120000);
+      }
+
+      return extractOgTitleFromHtml(buffer);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   async function fetchDisplayNameByHandle(handle) {
@@ -146,50 +232,10 @@
 
     if (inFlight.has(handle)) return inFlight.get(handle);
 
-    const p = (async () => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => { try { controller.abort(); } catch { } }, CFG.fetchTimeout);
-      try {
-        const res = await fetch(`https://www.youtube.com/${handle}`, {
-          method: 'GET',
-          credentials: 'include',
-          signal: controller.signal,
-        });
-
-        const body = res.body;
-        if (!body || !body.getReader) {
-          return extractOgTitleFromHtml(await res.text());
-        }
-
-        const reader = body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let scannedBytes = 0, scannedChunks = 0, buffer = '';
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          scannedChunks++;
-          scannedBytes += value.byteLength;
-          buffer += decoder.decode(value, { stream: true });
-
-          const name = extractOgTitleFromHtml(buffer);
-          if (name) {
-            try { controller.abort(); } catch { }
-            return name;
-          }
-
-          if (scannedBytes > CFG.maxBytesToScan || scannedChunks > CFG.maxChunks) break;
-          if (buffer.length > 250000) buffer = buffer.slice(-120000);
-        }
-
-        return extractOgTitleFromHtml(buffer);
-      } catch {
-        return null;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    })();
+    const p = new Promise((resolve) => {
+      fetchQueue.push({ handle, resolve });
+      pumpFetchQueue();
+    });
 
     inFlight.set(handle, p);
     try {
@@ -212,7 +258,6 @@
 
     const text = (authorEl.textContent || '').trim();
     if (!isHandleText(text)) return;
-    if (authorEl.dataset.ytNameRestored === '1') return;
 
     let handle = extractHandleFromText(text);
     if (!handle) {
@@ -229,16 +274,66 @@
     }
     if (!handle) return;
 
+    const state = authorState.get(authorEl);
+    if (state && state.handle === handle) {
+      if (state.pending) return;
+      if (state.checkedAt && (now() - state.checkedAt) < CFG.negativeTTL) return;
+    }
+
+    authorState.set(authorEl, { handle, pending: true });
     const name = await fetchDisplayNameByHandle(handle);
-    if (!name) return;
+
+    const latestState = authorState.get(authorEl);
+    if (!latestState || latestState.handle !== handle || !latestState.pending) return;
+    if (!name) {
+      authorState.set(authorEl, { handle, checkedAt: now() });
+      return;
+    }
 
     const latestText = (authorEl.textContent || '').trim();
-    if (extractHandleFromText(latestText) !== handle) return;
+    if (extractHandleFromText(latestText) !== handle) {
+      authorState.delete(authorEl);
+      return;
+    }
 
     authorEl.textContent = name;
     authorEl.dataset.ytNameRestored = '1';
     authorEl.dataset.originalHandle = handle;
     try { authorEl.setAttribute('title', handle); } catch { }
+    authorState.delete(authorEl);
+  }
+
+  function queueAuthorCandidatesUnder(root, selector) {
+    if (!isElement(root)) return;
+    if (root.matches(selector)) enqueueAuthorElement(root);
+    for (const el of root.querySelectorAll(selector)) enqueueAuthorElement(el);
+  }
+
+  function getCommentAuthorTarget(link) {
+    let child = link.firstElementChild;
+    while (child) {
+      const tag = child.localName;
+      if (tag === 'span' || tag === 'yt-formatted-string') return child;
+      child = child.nextElementSibling;
+    }
+    return link;
+  }
+
+  function queueCommentAuthorsUnder(root, remaining = Infinity) {
+    if (!isElement(root) || remaining <= 0) return remaining;
+
+    if (root.matches(COMMENT_AUTHOR_LINK_SEL)) {
+      enqueueAuthorElement(getCommentAuthorTarget(root));
+      remaining--;
+    }
+    if (remaining <= 0) return remaining;
+
+    for (const link of root.querySelectorAll(COMMENT_AUTHOR_LINK_SEL)) {
+      enqueueAuthorElement(getCommentAuthorTarget(link));
+      remaining--;
+      if (remaining <= 0) break;
+    }
+    return remaining;
   }
 
   /**********************
@@ -275,19 +370,16 @@
     }
 
     function scanAndProcessAuthorElements(root) {
-      if (!isElement(root)) return;
-      if (root.matches(AUTHOR_NAME_SEL) || root.matches(TICKER_TEXT_SEL)) {
-        processAuthorElement(root);
-      }
-      for (const el of root.querySelectorAll(AUTHOR_NAME_SEL)) processAuthorElement(el);
-      for (const el of root.querySelectorAll(TICKER_TEXT_SEL)) processAuthorElement(el);
+      queueAuthorCandidatesUnder(root, LIVE_CHAT_SCAN_SEL);
     }
 
     function makeObserver(watchAttrs) {
       return new MutationObserver((mutList) => {
         for (const mut of mutList) {
-          for (const node of mut.addedNodes) enqueueNode(node);
-          if (watchAttrs && mut.type === 'attributes') enqueueNode(mut.target);
+          for (const node of mut.addedNodes) {
+            if (isElement(node)) enqueueNode(node);
+          }
+          if (watchAttrs && mut.type === 'attributes' && isElement(mut.target)) enqueueNode(mut.target);
         }
       });
     }
@@ -322,17 +414,40 @@
    **********************/
   const Comments = (() => {
     const observers = new Map(); // Element -> MutationObserver
+    const pendingRoots = new Set();
     let scanTimer = null;
+    let scanDueAt = 0;
     let lastScanAt = 0;
 
+    function flushPendingRoots() {
+      scanTimer = null;
+      scanDueAt = 0;
+      lastScanAt = now();
+      attachObserversIfNeeded(false);
+
+      let remaining = CFG.scanMaxPerPass;
+      const roots = pendingRoots.size ? Array.from(pendingRoots) : findLikelyCommentContainers();
+      pendingRoots.clear();
+
+      for (let i = 0; i < roots.length; i++) {
+        const root = roots[i];
+        remaining = queueCommentAuthorsUnder(root, remaining);
+        if (remaining <= 0) {
+          pendingRoots.add(root);
+          for (let j = i + 1; j < roots.length; j++) pendingRoots.add(roots[j]);
+          break;
+        }
+      }
+
+      if (pendingRoots.size) scheduleScan(CFG.scanDebounceMs);
+    }
+
     function scheduleScan(delay = 0) {
-      if (scanTimer) return;
-      const dueIn = Math.max(delay, CFG.scanDebounceMs - (now() - lastScanAt));
-      scanTimer = setTimeout(() => {
-        scanTimer = null;
-        lastScanAt = now();
-        scanAllCommentAuthors();
-      }, dueIn);
+      const dueAt = now() + Math.max(delay, CFG.scanDebounceMs - (now() - lastScanAt));
+      if (scanTimer && dueAt >= scanDueAt) return;
+      if (scanTimer) clearTimeout(scanTimer);
+      scanDueAt = dueAt;
+      scanTimer = setTimeout(flushPendingRoots, Math.max(0, dueAt - now()));
     }
 
     function findLikelyCommentContainers() {
@@ -351,17 +466,25 @@
       return Array.from(targets);
     }
 
-    function attachObserversIfNeeded() {
+    function attachObserversIfNeeded(shouldSchedule = true) {
+      let queuedNewRoot = false;
       for (const c of findLikelyCommentContainers()) {
         if (observers.has(c)) continue;
         const mo = new MutationObserver((mutList) => {
+          let sawElement = false;
           for (const mut of mutList) {
-            for (const node of mut.addedNodes) scanCommentAuthorsUnder(node);
+            for (const node of mut.addedNodes) {
+              if (!isElement(node)) continue;
+              pendingRoots.add(node);
+              sawElement = true;
+            }
           }
+          if (sawElement) scheduleScan();
         });
         mo.observe(c, { childList: true, subtree: true });
         observers.set(c, mo);
-        scanCommentAuthorsUnder(c);
+        pendingRoots.add(c);
+        queuedNewRoot = true;
       }
       for (const [el, mo] of observers) {
         if (!document.contains(el)) {
@@ -369,6 +492,7 @@
           observers.delete(el);
         }
       }
+      if (queuedNewRoot && shouldSchedule) scheduleScan();
     }
 
     function reset() {
@@ -376,29 +500,39 @@
         try { mo.disconnect(); } catch { }
       }
       observers.clear();
-    }
-
-    function scanAllCommentAuthors() {
-      let remaining = CFG.scanMaxPerPass;
-      for (const t of document.querySelectorAll('ytd-comment-thread-renderer')) {
-        if (remaining <= 0) break;
-        remaining = scanCommentAuthorsUnder(t, remaining);
-      }
-    }
-
-    function scanCommentAuthorsUnder(root, remaining = Infinity) {
-      if (!isElement(root)) return remaining;
-      for (const a of root.querySelectorAll('a[href^="/@"]')) {
-        if (remaining <= 0) break;
-        const inner = a.querySelector('span') || a.querySelector('yt-formatted-string');
-        processAuthorElement(inner || a);
-        remaining--;
-      }
-      return remaining;
+      pendingRoots.clear();
+      if (scanTimer) clearTimeout(scanTimer);
+      scanTimer = null;
+      scanDueAt = 0;
+      lastScanAt = 0;
     }
 
     return { attachObserversIfNeeded, reset, scheduleScan };
   })();
+
+  let reattachTimer = null;
+  let reattachUntil = 0;
+
+  function runAttachPass() {
+    LiveChat.attachObserverIfNeeded();
+    Comments.attachObserversIfNeeded();
+  }
+
+  function scheduleReattachBurst(durationMs) {
+    const until = now() + durationMs;
+    if (until > reattachUntil) reattachUntil = until;
+    if (reattachTimer) return;
+
+    const tick = () => {
+      reattachTimer = null;
+      runAttachPass();
+      if (now() < reattachUntil) {
+        reattachTimer = setTimeout(tick, CFG.reattachInterval);
+      }
+    };
+
+    tick();
+  }
 
   /**********************
    * yt-action / yt-navigate-finish hooks
@@ -416,15 +550,17 @@
     document.addEventListener('yt-action', (e) => {
       const name = e && e.detail && e.detail.actionName;
       const delay = YT_ACTION_DELAYS.get(name);
-      if (delay !== undefined) Comments.scheduleScan(delay);
+      if (delay !== undefined) {
+        scheduleReattachBurst(CFG.actionReattachMs);
+        Comments.scheduleScan(delay);
+      }
     });
 
     document.addEventListener('yt-navigate-finish', () => {
       LiveChat.reset();
       Comments.reset();
       setTimeout(() => {
-        LiveChat.attachObserverIfNeeded();
-        Comments.attachObserversIfNeeded();
+        scheduleReattachBurst(CFG.navigateReattachMs);
         Comments.scheduleScan(80);
       }, 80);
     });
@@ -435,17 +571,11 @@
 
     while (!document.documentElement) await sleep(20);
 
-    setInterval(() => {
-      LiveChat.attachObserverIfNeeded();
-      Comments.attachObserversIfNeeded();
-    }, CFG.reattachInterval);
-
-    LiveChat.attachObserverIfNeeded();
-    Comments.attachObserversIfNeeded();
+    scheduleReattachBurst(CFG.startupReattachMs);
     Comments.scheduleScan(200);
 
     document.addEventListener('DOMContentLoaded', () => {
-      Comments.attachObserversIfNeeded();
+      scheduleReattachBurst(CFG.startupReattachMs);
       Comments.scheduleScan(120);
     }, { once: true });
   }

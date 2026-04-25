@@ -1,0 +1,75 @@
+// ==UserScript==
+// @name         Youtube - No scroll to top on timestamps
+// @namespace    q1k
+// @version      1.4
+// @description  Prevent Youtube scrolling to top when clicking timestamps in description or comments
+// @author       q1k
+// @match        *://www.youtube.com/*
+// @grant        none
+// @run-at       document-end
+// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Youtube - No scroll to top on timestamps/icon_128.png
+// ==/UserScript==
+
+(function () {
+    "use strict";
+
+    const TIMESTAMP_MULTIPLIERS = [1, 60, 3600, 86400];
+
+    function parseTimestamp(text) {
+        const parts = text?.trim().split(":");
+        if (!parts || parts.length < 2 || parts.length > TIMESTAMP_MULTIPLIERS.length) {
+            return null;
+        }
+
+        let totalSeconds = 0;
+        for (let i = 0; i < parts.length; i++) {
+            const value = parts[parts.length - 1 - i];
+            if (!/^\d+$/.test(value)) {
+                return null;
+            }
+            totalSeconds += Number(value) * TIMESTAMP_MULTIPLIERS[i];
+        }
+
+        return totalSeconds;
+    }
+
+    function getTimestampSeconds(target) {
+        const link = target.closest("a");
+        if (!link) {
+            return null;
+        }
+
+        const directTimestamp = parseTimestamp(link.textContent);
+        if (directTimestamp !== null) {
+            return directTimestamp;
+        }
+
+        if (!link.matches("a#endpoint")) {
+            return null;
+        }
+
+        return parseTimestamp(link.querySelector("#details #time")?.textContent);
+    }
+
+    document.addEventListener("click", (event) => {
+        if (!(event.target instanceof Element)) {
+            return;
+        }
+
+        const seconds = getTimestampSeconds(event.target);
+        if (seconds === null) {
+            return;
+        }
+
+        const player = document.getElementById("movie_player");
+        if (!player?.seekTo) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        player.seekTo(seconds);
+    }, { capture: true });
+})();
+
