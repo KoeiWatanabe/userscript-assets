@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      8.5
+// @version      8.6
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -773,14 +773,14 @@
         e.stopPropagation();
         const video = document.querySelector('video');
         if (!video) return;
-        const insert = `${formatVideoTimestamp(video.currentTime)} `;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-        textarea.value =
-            textarea.value.slice(0, start) + insert + textarea.value.slice(end);
-        const caret = start + insert.length;
+        const ts = `${formatVideoTimestamp(video.currentTime)} `;
+        const current = textarea.value;
+        const prefix = current.length === 0 || current.endsWith('\n') ? '' : '\n';
+        textarea.value = current + prefix + ts;
+        const caret = textarea.value.length;
         textarea.focus();
         textarea.setSelectionRange(caret, caret);
+        textarea.scrollTop = textarea.scrollHeight;
         onTextInput();
     });
 
