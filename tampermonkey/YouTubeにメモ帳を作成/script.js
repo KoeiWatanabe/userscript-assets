@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      8.4
+// @version      8.5
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -512,6 +512,37 @@
         .yt-timestamp-link:hover {
             text-decoration: underline;
         }
+
+        #yt-note-ts-btn {
+            position: absolute;
+            right: 30px;
+            bottom: 30px;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: none;
+            background: var(--btn-bg);
+            color: var(--btn-text);
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+            z-index: 5;
+            transition: background 0.15s, transform 0.1s;
+        }
+
+        #yt-note-ts-btn:hover {
+            background: var(--btn-hover);
+        }
+
+        #yt-note-ts-btn:active {
+            transform: scale(0.92);
+        }
+
+        #yt-note-panel.is-dragging #yt-note-ts-btn {
+            pointer-events: none;
+        }
     `;
     document.head.appendChild(style);
 
@@ -556,6 +587,7 @@
             </div>
             <textarea id="yt-note-textarea" placeholder="# 見出し&#10;- 箇条書き&#10;1:23 タイムスタンプ"></textarea>
             <div id="yt-note-view"></div>
+            <button id="yt-note-ts-btn" title="現在の再生位置のタイムスタンプを挿入"></button>
         </div>
         <div id="yt-note-tab-wrap">
             <button id="yt-note-toggle" title="メモ帳を開く">
@@ -582,6 +614,7 @@
     const geminiModeBtn = document.getElementById('yt-note-gemini-mode-btn');
     const trimBtn = document.getElementById('yt-note-trim-btn');
     const sizeToggleBtn = document.getElementById('yt-note-size-toggle-btn');
+    const tsBtn = document.getElementById('yt-note-ts-btn');
 
     // =====================================================
     //  State + ユーティリティ
@@ -644,6 +677,7 @@
     const ICON_SIZE_MIN = svgIcon('M432-432v240h-72v-168H192v-72h240Zm168-336v168h168v72H528v-240h72Z');
     const ICON_GEMINI_SIMPLE = svgIcon('M480-80q0-83-31.5-156T363-363q-54-54-127-85.5T80-480q83 0 156-31.5T363-597q54-54 85.5-127T480-880q0 83 31.5 156T597-597q54 54 127 85.5T880-480q-83 0-156 31.5T597-363q-54 54-85.5 127T480-80Z', 22);
     const ICON_GEMINI_STRUCTURED = '<img id="yt-gemini-icon" src="https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg" width="16" height="16" alt="Gemini">';
+    const ICON_TIMESTAMP = svgIcon('M301-170.5q-61-26.5-106.5-72t-72-106.5Q96-410 96-480t26.5-131q26.5-61 72-106.5t106.5-72Q362-816 432-816q12 0 24 1t24 3v73q-11-2-23.5-3.5T432-744q-109 0-186.5 77.5T168-480q0 109 77.5 186.5T432-216q109 0 186.5-77.5T696-480q0-12-1.5-24.5T691-528h73q2 12 3 24t1 24q0 70-26.5 131t-72 106.5Q624-197 563-170.5T432-144q-70 0-131-26.5ZM545-313 396-462v-210h72v180l128 128-51 51Zm139-311v-108H576v-72h108v-108h72v108h108v72H756v108h-72Z', 22);
 
     // =====================================================
     //  モード管理
@@ -653,6 +687,7 @@
         state.isEditMode = edit;
         textarea.style.display = edit ? 'block' : 'none';
         viewArea.style.display = edit ? 'none' : 'block';
+        tsBtn.style.display = edit ? 'flex' : 'none';
         modeBtn.innerHTML = _html.createHTML(edit ? ICON_VIEW : ICON_EDIT);
         modeBtn.title = edit ? 'Viewモードに切り替え' : 'Editモードに切り替え';
         if (!edit) renderView();
@@ -720,6 +755,33 @@
             e.preventDefault();
             seekVideo(tsLink.dataset.time);
         }
+    });
+
+    tsBtn.innerHTML = _html.createHTML(ICON_TIMESTAMP);
+
+    function formatVideoTimestamp(seconds) {
+        const t = Math.max(0, Math.floor(seconds));
+        const h = Math.floor(t / 3600);
+        const m = Math.floor((t % 3600) / 60);
+        const s = t % 60;
+        const ss = String(s).padStart(2, '0');
+        if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${ss}`;
+        return `${m}:${ss}`;
+    }
+
+    tsBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const video = document.querySelector('video');
+        if (!video) return;
+        const insert = `${formatVideoTimestamp(video.currentTime)} `;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        textarea.value =
+            textarea.value.slice(0, start) + insert + textarea.value.slice(end);
+        const caret = start + insert.length;
+        textarea.focus();
+        textarea.setSelectionRange(caret, caret);
+        onTextInput();
     });
 
     // =====================================================
