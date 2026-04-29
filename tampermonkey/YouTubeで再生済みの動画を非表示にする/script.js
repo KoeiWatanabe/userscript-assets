@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeで再生済みの動画を非表示にする
 // @namespace    https://tampermonkey.net/
-// @version      1.0.1
-// @description  チャンネルの /videos /streams /shorts で再生済み動画をトグルで非表示化。Alt+Hでも切替可能。
+// @version      1.1.0
+// @description  チャンネルの /videos /streams /shorts と検索結果ページで再生済み動画をトグルで非表示化。チャンネル内検索もAlt+Hで切替可能。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        none
@@ -19,13 +19,25 @@
   const STYLE_ID = 'hide-watched-yt-styles';
   const CHIP_ID = 'hide-watched-yt-chip';
   const HTML_ATTR = 'hideWatchedYt';
-  const CHANNEL_TAB_RE = /^\/(?:@[^/]+|c\/[^/]+|channel\/[^/]+|user\/[^/]+)\/(videos|streams|shorts)\/?$/;
+  const CHANNEL_FEED_RE = /^\/(?:@[^/]+|c\/[^/]+|channel\/[^/]+|user\/[^/]+)\/(?:videos|streams|shorts)\/?$/;
+  const CHANNEL_SEARCH_RE = /^\/(?:@[^/]+|c\/[^/]+|channel\/[^/]+|user\/[^/]+)\/search\/?$/;
+  const GLOBAL_SEARCH_RE = /^\/results\/?$/;
 
   const state = { hideWatched: false };
 
-  function getActiveTab() {
-    const m = location.pathname.match(CHANNEL_TAB_RE);
-    return m ? m[1] : null;
+  function getMode() {
+    const p = location.pathname;
+    if (CHANNEL_FEED_RE.test(p)) return 'channel-feed';
+    if (GLOBAL_SEARCH_RE.test(p)) return 'global-search';
+    if (CHANNEL_SEARCH_RE.test(p)) return 'channel-search';
+    return null;
+  }
+  function isSupportedPage() {
+    return getMode() !== null;
+  }
+  function shouldShowChip() {
+    const m = getMode();
+    return m === 'channel-feed' || m === 'global-search';
   }
 
   function isTyping(el) {
@@ -42,7 +54,9 @@
     style.id = STYLE_ID;
     style.textContent = `
       html[data-hide-watched-yt="1"] ytd-rich-item-renderer:has(yt-thumbnail-overlay-progress-bar-view-model),
-      html[data-hide-watched-yt="1"] ytd-rich-item-renderer:has(ytd-thumbnail-overlay-resume-playback-renderer) {
+      html[data-hide-watched-yt="1"] ytd-rich-item-renderer:has(ytd-thumbnail-overlay-resume-playback-renderer),
+      html[data-hide-watched-yt="1"] ytd-video-renderer:has(yt-thumbnail-overlay-progress-bar-view-model),
+      html[data-hide-watched-yt="1"] ytd-video-renderer:has(ytd-thumbnail-overlay-resume-playback-renderer) {
         display: none !important;
       }
       html[data-hide-watched-yt="1"] ytm-shorts-lockup-view-model:has(yt-thumbnail-overlay-progress-bar-view-model),
@@ -120,9 +134,13 @@
   }
 
   function injectChip() {
-    if (!getActiveTab()) return false;
+    if (!shouldShowChip()) {
+      document.getElementById(CHIP_ID)?.remove();
+      return false;
+    }
     const existing = document.getElementById(CHIP_ID);
-    const bar = findChipContainer();
+    // Channel feeds have an inline chip bar; search pages don't, so use floating mode there.
+    const bar = getMode() === 'channel-feed' ? findChipContainer() : null;
     if (existing) {
       // Re-home if the existing placement no longer matches reality
       const isFloating = existing.dataset.floating === '1';
@@ -172,7 +190,7 @@
     if (!e.altKey || e.code !== 'KeyH') return;
     if (e.ctrlKey || e.metaKey || e.shiftKey) return;
     if (isTyping(document.activeElement)) return;
-    if (!getActiveTab()) return;
+    if (!isSupportedPage()) return;
     e.preventDefault();
     e.stopPropagation();
     toggle();
