@@ -8,6 +8,7 @@
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Merriam-Websterの語釈をシンプルにする/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Merriam-Websterの語釈をシンプルにする/script.js
+// @icon         https://www.merriam-webster.com/favicon.svg
 // ==/UserScript==
 
 (function () {
