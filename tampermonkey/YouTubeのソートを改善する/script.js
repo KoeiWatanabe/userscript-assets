@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.0.0
+// @version      1.1.0
 // @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -89,24 +89,13 @@
       chips: ['unwatched', 'watched'],
       sort: false,
       mountChips(barEl) {
-        const titleContainer = document.querySelector(
-          'ytd-rich-grid-renderer ytd-shelf-renderer #title-container'
+        const subscribeButton = document.querySelector(
+          'ytd-rich-grid-renderer ytd-shelf-renderer #title-container > #subscribe-button'
         );
-        if (titleContainer) {
-          titleContainer.classList.add('tm-yt-shelf-title-flex');
-          titleContainer.appendChild(barEl);
-          barEl.dataset.placement = 'shelf-title';
-          return true;
-        }
-        const chipBar = document.querySelector('chip-bar-view-model > div');
-        if (chipBar) { chipBar.appendChild(barEl); barEl.dataset.placement = 'chip-bar'; return true; }
-        const contents = document.querySelector('ytd-rich-grid-renderer #contents');
-        if (contents) {
-          contents.parentNode.insertBefore(barEl, contents);
-          barEl.dataset.placement = 'top-row';
-          return true;
-        }
-        return false;
+        if (!subscribeButton) return false;
+        subscribeButton.parentNode.insertBefore(barEl, subscribeButton);
+        barEl.dataset.placement = 'subscribe-button-left';
+        return true;
       },
     },
     {
@@ -116,11 +105,9 @@
       sort: false,
       mountChips(barEl) {
         const chipBar = document.querySelector('chip-bar-view-model > div');
-        if (chipBar) { chipBar.appendChild(barEl); barEl.dataset.placement = 'chip-bar'; return true; }
-        const legacy = document.querySelector('ytd-feed-filter-chip-bar-renderer #chips');
-        if (legacy) { legacy.appendChild(barEl); barEl.dataset.placement = 'chip-bar'; return true; }
-        document.body.appendChild(barEl);
-        barEl.dataset.placement = 'floating';
+        if (!chipBar) return false;
+        chipBar.appendChild(barEl);
+        barEl.dataset.placement = 'chip-bar';
         return true;
       },
     },
@@ -139,14 +126,8 @@
         const root = document.querySelector(this.rootSelector);
         if (!root) return false;
         const header = this.findHeader(root);
-        const contents = root.querySelector(':scope > #contents');
-        if (header && header !== root.parentNode) {
-          header.appendChild(barEl);
-        } else if (contents) {
-          contents.parentNode.insertBefore(barEl, contents);
-        } else {
-          return false;
-        }
+        if (!header) return false;
+        header.appendChild(barEl);
         if (this.chipBarPaddingLeft) barEl.style.paddingLeft = `${this.chipBarPaddingLeft}px`;
         return true;
       },
@@ -170,25 +151,17 @@
       videoSelector: null,
       dedupe: false,
       chipBarPaddingLeft: 36,
-      findHeader(root) {
-        return (
-          document.querySelector(
-            'ytd-browse[role="main"][page-subtype="playlist"] #header-container'
-          ) || root.parentNode
+      findHeader() {
+        return document.querySelector(
+          'ytd-browse[role="main"][page-subtype="playlist"] #header-container'
         );
       },
       mountChips(barEl) {
         const root = document.querySelector(this.rootSelector);
         if (!root) return false;
-        const header = this.findHeader(root);
-        const contents = root.querySelector(':scope > #contents');
-        if (header && header !== root.parentNode) {
-          header.appendChild(barEl);
-        } else if (contents) {
-          contents.parentNode.insertBefore(barEl, contents);
-        } else {
-          return false;
-        }
+        const header = this.findHeader();
+        if (!header) return false;
+        header.appendChild(barEl);
         if (this.chipBarPaddingLeft) barEl.style.paddingLeft = `${this.chipBarPaddingLeft}px`;
         return true;
       },
@@ -273,13 +246,6 @@
         display: none !important;
       }
 
-      .tm-yt-shelf-title-flex {
-        display: flex !important;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 12px;
-      }
-
       #${CHIP_BAR_ID} {
         --tm-chip-bg: rgba(0,0,0,0.05);
         --tm-chip-bg-hover: rgba(0,0,0,0.1);
@@ -308,27 +274,12 @@
         --tm-status-done: #81c995;
       }
 
-      /* When mounted in chip-bar inside subscription/channel feed, render as inline row */
-      #${CHIP_BAR_ID}[data-placement="shelf-title"],
+      /* Inline placements within YouTube's existing chip rows */
       #${CHIP_BAR_ID}[data-placement="chip-bar"] {
         margin: 0 0 0 4px;
       }
-      #${CHIP_BAR_ID}[data-placement="top-row"] {
-        margin: 12px 0;
-        padding: 0 16px;
-      }
-      #${CHIP_BAR_ID}[data-placement="floating"] {
-        position: fixed;
-        top: 72px;
-        right: 24px;
-        z-index: 2200;
-        background: var(--yt-spec-base-background, #fff);
-        padding: 8px 12px;
-        border-radius: 12px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-      }
-      :is(html[dark], [dark]) #${CHIP_BAR_ID}[data-placement="floating"] {
-        background: var(--yt-spec-base-background, #0f0f0f);
+      #${CHIP_BAR_ID}[data-placement="subscribe-button-left"] {
+        margin: 0 8px 0 0;
       }
 
       /* Sort/filter pages get a stacked layout when not inline with chip-bar */
@@ -760,9 +711,6 @@
   function removeInjectedNodes() {
     document.getElementById(CHIP_BAR_ID)?.remove();
     document.getElementById(SORT_CONTAINER_ID)?.remove();
-    document
-      .querySelectorAll('.tm-yt-shelf-title-flex')
-      .forEach((n) => n.classList.remove('tm-yt-shelf-title-flex'));
   }
 
   /* === Click / shortcut handling === */
