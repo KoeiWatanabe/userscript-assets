@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.1.1
+// @version      1.1.2
 // @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -274,12 +274,19 @@
         --tm-status-done: #81c995;
       }
 
+      /* The chip row is always flex so chips get a real gap regardless of page type */
+      #${CHIP_BAR_ID} .tm-chip-list {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
       /* Inline placements within YouTube's existing chip rows */
       #${CHIP_BAR_ID}[data-placement="chip-bar"] {
         margin: 0 0 0 4px;
       }
       #${CHIP_BAR_ID}[data-placement="subscribe-button-left"] {
-        gap: 8px;
         margin: 0 8px 0 0;
       }
       /* Match the pill shape of the adjacent "All subscriptions" button */
@@ -290,16 +297,11 @@
         line-height: 36px;
       }
 
-      /* Sort/filter pages get a stacked layout when not inline with chip-bar */
+      /* Sort/filter pages get a stacked layout (chip row + status line) */
       #${CHIP_BAR_ID}[data-with-status="1"] {
         display: grid;
         gap: 8px;
         padding: 8px 0;
-      }
-      #${CHIP_BAR_ID}[data-with-status="1"] .tm-chip-list {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
       }
 
       #${CHIP_BAR_ID} .tm-chip {
