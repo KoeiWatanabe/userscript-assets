@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.1.3
+// @version      1.1.4
 // @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -39,7 +39,6 @@
     'ytd-playlist-video-renderer',
     'ytm-shorts-lockup-view-model',
     'ytm-shorts-lockup-view-model-v2',
-    'ytd-item-section-renderer',
   ];
 
   const I18N = {
@@ -239,7 +238,7 @@
       /* Hide section wrappers that have no visible video child after filtering */
       html.${FILTER_CLASS_PREFIX}unwatched ytd-item-section-renderer:has(ytd-video-renderer:has(${progressList})):not(:has(ytd-video-renderer:not(:has(${progressList})))),
       html.${FILTER_CLASS_PREFIX}watched ytd-item-section-renderer:has(ytd-video-renderer:not(:has(${progressList}))):not(:has(ytd-video-renderer:has(${progressList}))) {
-        /* let inner CSS handle this; fall through */
+        display: none !important;
       }
 
       ytd-item-section-renderer.${DUPLICATE_CLASS} {
