@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.1.2
+// @version      1.1.3
 // @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -282,10 +282,9 @@
         gap: 8px;
       }
 
-      /* Inline placements within YouTube's existing chip rows */
-      #${CHIP_BAR_ID}[data-placement="chip-bar"] {
-        margin: 0 0 0 4px;
-      }
+      /* Inline placements within YouTube's existing chip rows.
+         The native chip-bar children already carry margin-right: 8px,
+         so we don't add extra left margin here. */
       #${CHIP_BAR_ID}[data-placement="subscribe-button-left"] {
         margin: 0 8px 0 0;
       }
