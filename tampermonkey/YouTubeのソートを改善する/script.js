@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.1.0
+// @version      1.1.1
 // @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -279,7 +279,15 @@
         margin: 0 0 0 4px;
       }
       #${CHIP_BAR_ID}[data-placement="subscribe-button-left"] {
+        gap: 8px;
         margin: 0 8px 0 0;
+      }
+      /* Match the pill shape of the adjacent "All subscriptions" button */
+      #${CHIP_BAR_ID}[data-placement="subscribe-button-left"] .tm-chip {
+        height: 36px;
+        border-radius: 18px;
+        padding: 0 16px;
+        line-height: 36px;
       }
 
       /* Sort/filter pages get a stacked layout when not inline with chip-bar */
