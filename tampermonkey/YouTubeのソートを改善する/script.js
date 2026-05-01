@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.1.4
+// @version      1.1.5
 // @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -136,7 +136,6 @@
       matches: () => location.pathname === '/results',
       chips: [],
       sort: false,
-      mountChips() { return true; },
     },
     {
       key: 'playlist',
@@ -185,7 +184,6 @@
     observer: null,
     lastLocationKey: '',
     setupRetryTimer: null,
-    styleInjected: false,
   };
 
   function resetState() {
@@ -200,10 +198,6 @@
     state.originalIndexCounter = 0;
   }
 
-  function getLocationKey() {
-    return `${location.pathname}${location.search}`;
-  }
-
   function isTyping(el) {
     if (!el) return false;
     const tag = el.tagName?.toLowerCase();
@@ -213,10 +207,7 @@
   }
 
   function ensureStyle() {
-    if (state.styleInjected || document.getElementById(STYLE_ID)) {
-      state.styleInjected = true;
-      return;
-    }
+    if (document.getElementById(STYLE_ID)) return;
 
     const progressList = PROGRESS_SELECTORS.join(', ');
     const unwatchedRules = HOST_SELECTORS
@@ -342,7 +333,6 @@
       #${SORT_CONTAINER_ID}[hidden] { display: none !important; }
     `;
     (document.head || document.documentElement).appendChild(style);
-    state.styleInjected = true;
   }
 
   function applyFilterClass() {
@@ -376,10 +366,7 @@
   function parseCompactNumber(numberText, suffix = '') {
     const value = parseFloat(String(numberText || '').replace(/,/g, '').trim());
     if (!Number.isFinite(value)) return 0;
-    const multiplier =
-      NUMBER_MULTIPLIERS[suffix.toUpperCase?.() || suffix] ||
-      NUMBER_MULTIPLIERS[suffix] ||
-      1;
+    const multiplier = NUMBER_MULTIPLIERS[suffix?.toUpperCase?.() || suffix] || 1;
     return Math.round(value * multiplier);
   }
 
@@ -553,12 +540,6 @@
     return container;
   }
 
-  function appendEntries(target, entries) {
-    const frag = document.createDocumentFragment();
-    entries.forEach((entry) => frag.appendChild(entry.section));
-    target.replaceChildren(frag);
-  }
-
   function resetDisplayState() {
     const contents = getContents();
     if (contents) contents.hidden = false;
@@ -591,7 +572,9 @@
     const container = ensureSortContainer();
     if (!contents || !container) return;
     const orderedEntries = getSortedEntries();
-    appendEntries(container, orderedEntries);
+    const frag = document.createDocumentFragment();
+    orderedEntries.forEach((entry) => frag.appendChild(entry.section));
+    container.replaceChildren(frag);
     container.hidden = false;
     contents.hidden = true;
     const messageKey = state.collectionComplete ? 'sorted' : 'showing';
@@ -702,7 +685,6 @@
       const active =
         (SORT_KEYS.has(key) && state.currentSort === key) ||
         (FILTER_KEYS.has(key) && state.currentFilter === key);
-      btn.classList.toggle('tm-chip-active', active);
       btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
   }
@@ -724,12 +706,7 @@
   /* === Click / shortcut handling === */
 
   async function onChipClick(key) {
-    if (FILTER_KEYS.has(key)) {
-      state.currentFilter = state.currentFilter === key ? null : key;
-      applyFilterClass();
-      updateActiveChips();
-      return;
-    }
+    if (FILTER_KEYS.has(key)) { toggleFilter(key); return; }
     if (!SORT_KEYS.has(key)) return;
     if (!state.page?.sort) return;
 
@@ -813,7 +790,7 @@
   }
 
   function onNavigate() {
-    const locationKey = getLocationKey();
+    const locationKey = `${location.pathname}${location.search}`;
     if (locationKey !== state.lastLocationKey) {
       state.lastLocationKey = locationKey;
       resetState();
@@ -843,7 +820,7 @@
     true
   );
 
-  state.lastLocationKey = getLocationKey();
+  state.lastLocationKey = `${location.pathname}${location.search}`;
   ensureStyle();
   setup();
 })();
