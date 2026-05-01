@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.1.5
-// @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）
+// @version      1.1.7
+// @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）。プレイリスト人気順は別言語fetchで同点を再判定し精度向上。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        none
@@ -53,6 +53,7 @@
       sorted: (n) => `Sorted ${n} collected results.`,
       showing: (n) => `Showing ${n} collected results.`,
       stopped: (n) => `Stopped after collecting ${n} results.`,
+      refining: 'Refining ties using a finer-grained locale...',
     },
     ja: {
       latest: '新しい順', popular: '人気の動画', oldest: '古い順',
@@ -65,11 +66,15 @@
       sorted: (n) => `取得した ${n} 件を並べ替えました。`,
       showing: (n) => `取得した ${n} 件を表示中。`,
       stopped: (n) => `${n} 件取得した時点で停止しました。`,
+      refining: '同点の動画を別言語の表記で再判定中...',
     },
   };
 
-  const SORT_KEYS = new Set(['latest', 'popular', 'oldest']);
-  const FILTER_KEYS = new Set(['unwatched', 'watched']);
+  const SORT_CHIPS = ['latest', 'popular', 'oldest'];
+  const FILTER_CHIPS = ['unwatched', 'watched'];
+  const SORT_FILTER_CHIPS = [...SORT_CHIPS, ...FILTER_CHIPS];
+  const SORT_KEYS = new Set(SORT_CHIPS);
+  const FILTER_KEYS = new Set(FILTER_CHIPS);
 
   function getLocale() {
     const lang = String(document.documentElement.lang || navigator.language || 'en').toLowerCase();
@@ -81,11 +86,21 @@
     return typeof value === 'function' ? value(...args) : value;
   }
 
+  function mountInSortHeader(barEl) {
+    const root = document.querySelector(this.rootSelector);
+    if (!root) return false;
+    const header = this.findHeader(root);
+    if (!header) return false;
+    header.appendChild(barEl);
+    if (this.chipBarPaddingLeft) barEl.style.paddingLeft = `${this.chipBarPaddingLeft}px`;
+    return true;
+  }
+
   const PAGE_DEFS = [
     {
       key: 'subscriptions',
       matches: () => location.pathname === '/feed/subscriptions',
-      chips: ['unwatched', 'watched'],
+      chips: FILTER_CHIPS,
       sort: false,
       mountChips(barEl) {
         const subscribeButton = document.querySelector(
@@ -100,7 +115,7 @@
     {
       key: 'channelFeed',
       matches: () => CHANNEL_FEED_RE.test(location.pathname),
-      chips: ['unwatched', 'watched'],
+      chips: FILTER_CHIPS,
       sort: false,
       mountChips(barEl) {
         const chipBar = document.querySelector('chip-bar-view-model > div');
@@ -113,7 +128,7 @@
     {
       key: 'channelSearch',
       matches: () => CHANNEL_SEARCH_RE.test(location.pathname),
-      chips: ['latest', 'popular', 'oldest', 'unwatched', 'watched'],
+      chips: SORT_FILTER_CHIPS,
       sort: true,
       rootSelector: 'ytd-browse[role="main"][page-subtype="channels"] ytd-section-list-renderer',
       itemTag: 'YTD-ITEM-SECTION-RENDERER',
@@ -121,17 +136,10 @@
       dedupe: true,
       chipBarPaddingLeft: 0,
       findHeader(root) { return root.querySelector(':scope > #header-container'); },
-      mountChips(barEl) {
-        const root = document.querySelector(this.rootSelector);
-        if (!root) return false;
-        const header = this.findHeader(root);
-        if (!header) return false;
-        header.appendChild(barEl);
-        if (this.chipBarPaddingLeft) barEl.style.paddingLeft = `${this.chipBarPaddingLeft}px`;
-        return true;
-      },
+      mountChips: mountInSortHeader,
     },
     {
+      // /results にチップは出さないが、Alt+U / Alt+W のショートカット絞り込み対象として残す。
       key: 'searchResults',
       matches: () => location.pathname === '/results',
       chips: [],
@@ -141,8 +149,9 @@
       key: 'playlist',
       matches: () =>
         location.pathname === '/playlist' && new URLSearchParams(location.search).has('list'),
-      chips: ['latest', 'popular', 'oldest', 'unwatched', 'watched'],
+      chips: SORT_FILTER_CHIPS,
       sort: true,
+      altLanguageFetch: true,
       rootSelector:
         'ytd-browse[role="main"][page-subtype="playlist"] ytd-playlist-video-list-renderer',
       itemTag: 'YTD-PLAYLIST-VIDEO-RENDERER',
@@ -154,15 +163,7 @@
           'ytd-browse[role="main"][page-subtype="playlist"] #header-container'
         );
       },
-      mountChips(barEl) {
-        const root = document.querySelector(this.rootSelector);
-        if (!root) return false;
-        const header = this.findHeader();
-        if (!header) return false;
-        header.appendChild(barEl);
-        if (this.chipBarPaddingLeft) barEl.style.paddingLeft = `${this.chipBarPaddingLeft}px`;
-        return true;
-      },
+      mountChips: mountInSortHeader,
     },
   ];
 
@@ -184,6 +185,10 @@
     observer: null,
     lastLocationKey: '',
     setupRetryTimer: null,
+    scanRafId: 0,
+    altLang: null,
+    altByVideoId: new Map(),
+    altFetchPromise: null,
   };
 
   function resetState() {
@@ -196,6 +201,13 @@
     state.collectionComplete = false;
     state.runId += 1;
     state.originalIndexCounter = 0;
+    state.altLang = null;
+    state.altByVideoId = new Map();
+    state.altFetchPromise = null;
+    if (state.scanRafId) {
+      cancelAnimationFrame(state.scanRafId);
+      state.scanRafId = 0;
+    }
   }
 
   function isTyping(el) {
@@ -370,33 +382,35 @@
     return Math.round(value * multiplier);
   }
 
+  // 未検出時は null、検出時は数値（0 を含む）を返す。
   function parseViewCount(text) {
-    if (!text) return 0;
+    if (!text) return null;
     const s = String(text);
     const jaMatch = s.match(/([\d.,]+)\s*(億|万|千)?\s*回(?:視聴|再生)/i);
     if (jaMatch) return parseCompactNumber(jaMatch[1], jaMatch[2] || '');
     const enMatch = s.match(/([\d.,]+)\s*([KMB])?\s*views?\b/i);
     if (enMatch) return parseCompactNumber(enMatch[1], enMatch[2] || '');
-    return 0;
+    return null;
   }
 
+  // 未検出時は null、検出時は秒数を返す。
   function parseRelativeAgeSeconds(text) {
-    if (!text) return Infinity;
+    if (!text) return null;
     const s = String(text);
     const jaMatch = s.match(/([\d.]+)\s*(年|(?:か|ヶ|カ|ケ)月|ヵ月|ヶ月|週(?:間)?|日|時間|分|秒)\s*前?/i);
     if (jaMatch) {
       const value = parseFloat(jaMatch[1]);
       const unit = JA_AGE_UNITS.find(([pattern]) => pattern.test(jaMatch[2]));
-      return unit && Number.isFinite(value) ? value * unit[1] : Infinity;
+      return unit && Number.isFinite(value) ? value * unit[1] : null;
     }
     const enMatch = s.match(/([\d.]+)\s*(years?|months?|weeks?|days?|hours?|minutes?|seconds?)\s+ago/i);
     if (enMatch) {
       const value = parseFloat(enMatch[1]);
       const baseUnit = enMatch[2].toLowerCase().replace(/s$/, '');
       const multiplier = EN_AGE_UNITS[baseUnit];
-      return multiplier && Number.isFinite(value) ? value * multiplier : Infinity;
+      return multiplier && Number.isFinite(value) ? value * multiplier : null;
     }
-    return Infinity;
+    return null;
   }
 
   function getListRoot() {
@@ -429,14 +443,6 @@
     }
   }
 
-  function findMetric(texts, parser, isMatch, fallback) {
-    for (const text of texts) {
-      const value = parser(text);
-      if (isMatch(value)) return value;
-    }
-    return fallback;
-  }
-
   function readMetricsFromItem(item) {
     const texts = new Set();
     const data = getVideoData(item);
@@ -448,7 +454,7 @@
     addText(data?.viewCountText?.simpleText);
     addText(data?.shortViewCountText?.simpleText);
     if (Array.isArray(data?.videoInfo?.runs)) {
-      data.videoInfo.runs.forEach((run) => addText(run?.text));
+      for (const run of data.videoInfo.runs) addText(run?.text);
     }
     item
       .querySelectorAll(
@@ -461,14 +467,20 @@
     item.querySelectorAll('a[aria-label]').forEach((node) => addText(node.getAttribute('aria-label')));
     addText(item.getAttribute?.('aria-label'));
 
-    let viewCount = findMetric(texts, parseViewCount, (v) => v > 0, 0);
-    let ageSeconds = findMetric(texts, parseRelativeAgeSeconds, Number.isFinite, Infinity);
-    if (!viewCount || !Number.isFinite(ageSeconds)) {
-      addText(item.innerText);
-      viewCount = viewCount || findMetric(texts, parseViewCount, (v) => v > 0, 0);
-      ageSeconds = Number.isFinite(ageSeconds)
-        ? ageSeconds
-        : findMetric(texts, parseRelativeAgeSeconds, Number.isFinite, Infinity);
+    let viewCount = null;
+    let ageSeconds = null;
+    for (const text of texts) {
+      if (viewCount === null) viewCount = parseViewCount(text);
+      if (ageSeconds === null) ageSeconds = parseRelativeAgeSeconds(text);
+      if (viewCount !== null && ageSeconds !== null) break;
+    }
+    if (viewCount === null || ageSeconds === null) {
+      // textContent fallback (innerText だと layout flush を誘発するため避ける)
+      const fallback = String(item.textContent || '').replace(/\s+/g, ' ').trim();
+      if (fallback && !texts.has(fallback)) {
+        if (viewCount === null) viewCount = parseViewCount(fallback);
+        if (ageSeconds === null) ageSeconds = parseRelativeAgeSeconds(fallback);
+      }
     }
     return { viewCount, ageSeconds };
   }
@@ -488,29 +500,57 @@
         isDuplicate,
         viewCount: 0,
         ageSeconds: Infinity,
+        metricsComplete: false,
       };
       state.sectionEntryByNode.set(section, entry);
       state.sectionEntries.push(entry);
     }
-    const metrics = readMetricsFromItem(section);
-    entry.hasVideo = Boolean(getVideoNode(section));
-    entry.viewCount = metrics.viewCount;
-    entry.ageSeconds = metrics.ageSeconds;
+    if (!entry.metricsComplete) {
+      const { viewCount, ageSeconds } = readMetricsFromItem(section);
+      entry.hasVideo = Boolean(getVideoNode(section));
+      entry.viewCount = viewCount ?? 0;
+      entry.ageSeconds = ageSeconds ?? Infinity;
+      if (viewCount !== null && ageSeconds !== null) entry.metricsComplete = true;
+    }
     return entry;
   }
 
   function scanSections() {
     const contents = getContents();
     if (!contents) return;
-    Array.from(contents.children).filter(isItemRenderer).forEach(upsertSectionEntry);
+    for (const child of contents.children) {
+      if (isItemRenderer(child)) upsertSectionEntry(child);
+    }
+  }
+
+  function queueScanSections() {
+    if (state.scanRafId) return;
+    state.scanRafId = requestAnimationFrame(() => {
+      state.scanRafId = 0;
+      scanSections();
+    });
   }
 
   function getRenderableEntries() {
     return state.sectionEntries.filter((e) => !e.isDuplicate);
   }
 
+  function getEntryAltViewCount(entry) {
+    if (!entry?.videoId) return null;
+    const v = state.altByVideoId.get(entry.videoId);
+    return Number.isFinite(v) ? v : null;
+  }
+
   function compareEntries(a, b) {
-    if (state.currentSort === 'popular') return b.viewCount - a.viewCount || a.originalIndex - b.originalIndex;
+    if (state.currentSort === 'popular') {
+      const va = getEntryAltViewCount(a);
+      const vb = getEntryAltViewCount(b);
+      return (
+        b.viewCount - a.viewCount ||
+        (vb ?? -Infinity) - (va ?? -Infinity) ||
+        a.originalIndex - b.originalIndex
+      );
+    }
     if (state.currentSort === 'latest') return a.ageSeconds - b.ageSeconds || a.originalIndex - b.originalIndex;
     if (state.currentSort === 'oldest') return b.ageSeconds - a.ageSeconds || a.originalIndex - b.originalIndex;
     return a.originalIndex - b.originalIndex;
@@ -642,6 +682,74 @@
     finally { if (state.collectionPromise === promise) state.collectionPromise = null; }
   }
 
+  /* === Alt-language refinement (playlist popular sort tie-breaker) ===
+     YouTube のプレイリストでは丸めた表示しか露出していない（例: ja "18万回視聴"）。
+     別言語で同じプレイリストを fetch すると粒度が変わるレンジがあり、
+     ja の 10 万〜99 万帯の "18万" は en では "181K" "189K" の 1K 粒度になる。
+     人気順で同点が出たときだけ別言語を 1 回だけ fetch して 2 段目のソートキーに使う。 */
+
+  function hasPopularTies() {
+    const counts = new Map();
+    for (const entry of getRenderableEntries()) {
+      if (!entry.hasVideo) continue;
+      if (!Number.isFinite(entry.viewCount)) continue;
+      const next = (counts.get(entry.viewCount) || 0) + 1;
+      if (next > 1) return true;
+      counts.set(entry.viewCount, next);
+    }
+    return false;
+  }
+
+  function parsePlaylistVideoCounts(html) {
+    const map = new Map();
+    const m = html.match(/var ytInitialData\s*=\s*(\{[\s\S]+?\});\s*<\/script>/);
+    if (!m) return map;
+    let data;
+    try { data = JSON.parse(m[1]); }
+    catch { return map; }
+    const stack = [data];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || typeof node !== 'object') continue;
+      if (Array.isArray(node)) { for (const v of node) stack.push(v); continue; }
+      const r = node.playlistVideoRenderer;
+      if (r && r.videoId && !map.has(r.videoId) && Array.isArray(r.videoInfo?.runs)) {
+        for (const run of r.videoInfo.runs) {
+          const v = parseViewCount(run?.text);
+          if (v !== null) { map.set(r.videoId, v); break; }
+        }
+      }
+      for (const k of Object.keys(node)) stack.push(node[k]);
+    }
+    return map;
+  }
+
+  async function fetchAltLanguageViewCounts(altLang, runId) {
+    if (state.altLang === altLang && state.altByVideoId.size > 0) return true;
+    if (state.altFetchPromise) return state.altFetchPromise;
+    const url = new URL(location.href);
+    url.searchParams.set('hl', altLang);
+    url.searchParams.set('persist_hl', '1');
+    const promise = (async () => {
+      try {
+        const res = await fetch(url.href, { credentials: 'omit' });
+        if (!res.ok) return false;
+        const html = await res.text();
+        if (runId !== state.runId) return false;
+        const map = parsePlaylistVideoCounts(html);
+        if (map.size === 0) return false;
+        state.altByVideoId = map;
+        state.altLang = altLang;
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    state.altFetchPromise = promise;
+    try { return await promise; }
+    finally { if (state.altFetchPromise === promise) state.altFetchPromise = null; }
+  }
+
   /* === Chip UI === */
 
   function buildChipBar() {
@@ -657,7 +765,6 @@
       btn.type = 'button';
       btn.className = 'tm-chip';
       btn.dataset.chipKey = key;
-      btn.setAttribute('role', 'tab');
       btn.setAttribute('aria-pressed', 'false');
       const hintKey = `hint${key.charAt(0).toUpperCase()}${key.slice(1)}`;
       btn.title = t(hintKey) || '';
@@ -690,11 +797,11 @@
   }
 
   function injectChipBar() {
-    if (!state.page || !state.page.chips.length) return Boolean(state.page);
+    if (!state.page?.chips.length) return true;
     if (document.getElementById(CHIP_BAR_ID)) return true;
     const bar = buildChipBar();
     const ok = state.page.mountChips(bar);
-    if (!ok) bar.remove?.();
+    if (!ok) bar.remove();
     return ok;
   }
 
@@ -725,6 +832,20 @@
     if (!state.currentSort || runId !== state.runId) return;
     renderSortedContents(runId);
     if (!completed) setStatus(t('stopped', getRenderableEntries().length), 'warn');
+
+    if (
+      state.currentSort === 'popular' &&
+      state.page?.altLanguageFetch &&
+      state.altLang === null &&
+      hasPopularTies()
+    ) {
+      const altLang = getLocale() === 'ja' ? 'en' : 'ja';
+      setStatus(t('refining'), 'progress');
+      const refined = await fetchAltLanguageViewCounts(altLang, runId);
+      if (state.currentSort !== 'popular' || runId !== state.runId) return;
+      if (refined) renderSortedContents(runId);
+      else if (completed) setStatus(t('sorted', getRenderableEntries().length), 'done');
+    }
   }
 
   function toggleFilter(key) {
@@ -741,7 +862,7 @@
     state.observer = new MutationObserver(() => {
       if (!state.page) return;
       if (state.page.chips.length && !document.getElementById(CHIP_BAR_ID)) injectChipBar();
-      if (state.page.sort) scanSections();
+      if (state.page.sort) queueScanSections();
     });
     const target = state.page.sort ? getContents() : document.documentElement;
     if (!target) return false;
