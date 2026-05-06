@@ -76,6 +76,9 @@
   const SORT_KEYS = new Set(SORT_CHIPS);
   const FILTER_KEYS = new Set(FILTER_CHIPS);
   const ALT_FETCH_TIMEOUT_MS = 10000;
+  const ALT_WATCH_FETCH_TIMEOUT_MS = 10000;
+  const ALT_WATCH_FETCH_MAX_MS = 45000;
+  const ALT_WATCH_FETCH_CONCURRENCY = 3;
 
   function getLocale() {
     const lang = String(document.documentElement.lang || navigator.language || 'en').toLowerCase();
@@ -961,6 +964,51 @@
     return loadedMore;
   }
 
+
+  function parseInitialPlayerResponse(html) {
+    return parseJsonObjectLiteral(html, /(?:var\s+ytInitialPlayerResponse|window\["ytInitialPlayerResponse"\])\s*=\s*\{/);
+  }
+
+  function addWatchViewCount(html, videoId, map, unresolvedIds) {
+    const player = parseInitialPlayerResponse(html);
+    const raw =
+      player?.videoDetails?.viewCount ||
+      player?.microformat?.playerMicroformatRenderer?.viewCount ||
+      null;
+    const count = raw === null ? NaN : Number(String(raw).replace(/,/g, ''));
+    if (!Number.isFinite(count) || count < 0) return false;
+    map.set(videoId, count);
+    unresolvedIds.delete(videoId);
+    return true;
+  }
+
+  async function fetchAltLanguageWatchCounts(altLang, unresolvedIds, map, runId) {
+    const queue = Array.from(unresolvedIds);
+    if (queue.length === 0) return false;
+    const startedAt = Date.now();
+    let cursor = 0;
+    let added = false;
+    async function worker() {
+      while (runId === state.runId && unresolvedIds.size > 0 && Date.now() - startedAt < ALT_WATCH_FETCH_MAX_MS) {
+        const videoId = queue[cursor++];
+        if (!videoId) return;
+        if (!unresolvedIds.has(videoId)) continue;
+        const url = new URL('/watch', location.origin);
+        url.searchParams.set('v', videoId);
+        url.searchParams.set('hl', altLang);
+        url.searchParams.set('persist_hl', '1');
+        try {
+          const res = await fetchWithTimeout(url.href, { credentials: 'same-origin' }, ALT_WATCH_FETCH_TIMEOUT_MS);
+          if (!res.ok) continue;
+          const html = await res.text();
+          if (runId !== state.runId) return;
+          added = addWatchViewCount(html, videoId, map, unresolvedIds) || added;
+        } catch {}
+      }
+    }
+    await Promise.all(Array.from({ length: ALT_WATCH_FETCH_CONCURRENCY }, () => worker()));
+    return added;
+  }
   async function fetchAltLanguageViewCounts(altLang, runId) {
     if (state.altLang === altLang && state.altByVideoId.size > 0) return true;
     if (state.altFetchPromise) return state.altFetchPromise;
@@ -980,6 +1028,7 @@
         const unresolvedIds = new Set(Array.from(tiedIds).filter((videoId) => !map.has(videoId)));
         if (unresolvedIds.size > 0 && initialData) {
           await fetchAltLanguageDomCounts(altLang, map, unresolvedIds, runId);
+          if (unresolvedIds.size > 0) await fetchAltLanguageWatchCounts(altLang, unresolvedIds, map, runId);
         }
         if (map.size === 0) return false;
         state.altByVideoId = map;
