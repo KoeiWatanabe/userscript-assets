@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Merriam-Websterの語釈をシンプルにする
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
-// @description  Merriam-Websterで「Simple Definition」トグルがあれば自動的にONにする
+// @version      1.2.0
+// @description  Merriam-WebsterでSimple Definitionがあれば対応する/simple/ページへ移動する
 // @match        https://www.merriam-webster.com/*
 // @grant        none
 // @run-at       document-end
@@ -14,25 +14,48 @@
 (function () {
   "use strict";
 
-  const SELECTOR = "button.simple-definitions-toggle-btn";
-  let lastUrl = "";
-  let done = false;
+  const SELECTOR = 'button[role="switch"][aria-label="Show simplified definitions"]';
+  const DICTIONARY_PREFIX = "/dictionary/";
+  const SIMPLE_PREFIX = "/simple/";
+  let lastHandledUrl = "";
 
-  function tryToggle() {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      done = false;
+  function getSimpleUrl() {
+    if (!location.pathname.startsWith(DICTIONARY_PREFIX)) {
+      return null;
     }
-    if (done) return;
-    const btn = document.querySelector(SELECTOR);
-    if (!btn) return;
-    done = true;
-    if (btn.getAttribute("aria-checked") !== "true") btn.click();
+
+    return (
+      SIMPLE_PREFIX +
+      location.pathname.slice(DICTIONARY_PREFIX.length) +
+      location.search +
+      location.hash
+    );
   }
 
-  tryToggle();
+  function tryRedirect() {
+    if (location.href === lastHandledUrl) return;
 
-  const observer = new MutationObserver(tryToggle);
+    const simpleUrl = getSimpleUrl();
+    if (!simpleUrl) {
+      lastHandledUrl = location.href;
+      return;
+    }
+
+    const btn = document.querySelector(SELECTOR);
+    if (!btn) return;
+
+    if (btn.getAttribute("aria-checked") === "true") {
+      lastHandledUrl = location.href;
+      return;
+    }
+
+    lastHandledUrl = location.href;
+    location.assign(simpleUrl);
+  }
+
+  tryRedirect();
+
+  const observer = new MutationObserver(tryRedirect);
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
   // SPA 遷移（pushState/replaceState/popstate）を検知して再評価
@@ -40,9 +63,9 @@
     const orig = history[method];
     history[method] = function () {
       const result = orig.apply(this, arguments);
-      tryToggle();
+      tryRedirect();
       return result;
     };
   }
-  window.addEventListener("popstate", tryToggle);
+  window.addEventListener("popstate", tryRedirect);
 })();
