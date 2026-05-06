@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風に
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.2.0
+// @version      2.2.1
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
@@ -32,7 +32,6 @@
     ownerColor: '#FFD600',  // チャンネル主の文字色
     modColor: '#5E84F1',    // モデレーターの文字色
     bgOpacity: 0.35,        // 特殊コメント背景の不透明度 (0.0〜1.0)
-    notifyIcon: "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeをニコニコ風に/icon_128.png",
   };
 
   // ─── バッチ処理設定 ───
@@ -186,55 +185,6 @@
         margin: 0 1px;
         object-fit: contain;
       }
-      @keyframes yt-danmaku-notify-in {
-        0%   { opacity: 0; transform: translate(-50%, -100%); }
-        8%   { opacity: 1; transform: translate(-50%, 0); }
-        80%  { opacity: 1; transform: translate(-50%, 0); }
-        100% { opacity: 0; transform: translate(-50%, -100%); }
-      }
-      .yt-danmaku-notify {
-        position: absolute;
-        top: 12px; left: 50%;
-        transform: translateX(-50%);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border-radius: 14px;
-        padding: 10px 14px;
-        pointer-events: none;
-        z-index: 2022;
-        min-width: 260px; max-width: 340px;
-        display: flex; align-items: center; gap: 10px;
-        font-family: -apple-system, BlinkMacSystemFont, "Noto Sans JP", "Helvetica Neue", sans-serif;
-        animation: yt-danmaku-notify-in 3s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-      }
-      .yt-danmaku-notify.--dark {
-        background: rgba(30, 30, 30, 0.88);
-        box-shadow: 0 4px 24px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(255,255,255,0.1) inset;
-        --nt-title: rgba(255,255,255,0.95); --nt-msg: rgba(255,255,255,0.6); --nt-time: rgba(255,255,255,0.35);
-      }
-      .yt-danmaku-notify.--light {
-        background: rgba(255, 255, 255, 0.92);
-        box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06);
-        --nt-title: rgba(0,0,0,0.88); --nt-msg: rgba(0,0,0,0.5); --nt-time: rgba(0,0,0,0.3);
-      }
-      .yt-danmaku-notify__icon-fallback {
-        width: 36px; height: 36px;
-        border-radius: 8px;
-        background: linear-gradient(135deg, #FF3B30, #FF6B6B);
-        display: flex; align-items: center; justify-content: center;
-        flex-shrink: 0;
-        color: #fff; font-size: 18px; font-weight: bold;
-      }
-      .yt-danmaku-notify__icon-img {
-        width: 36px; height: 36px;
-        border-radius: 8px;
-        object-fit: cover;
-        flex-shrink: 0;
-      }
-      .yt-danmaku-notify__body  { display: flex; flex-direction: column; gap: 1px; }
-      .yt-danmaku-notify__title { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; color: var(--nt-title); }
-      .yt-danmaku-notify__msg   { font-size: 12px; font-weight: 400; color: var(--nt-msg); }
-      .yt-danmaku-notify__time  { font-size: 11px; margin-left: auto; align-self: flex-start; flex-shrink: 0; color: var(--nt-time); }
       .yt-danmaku-toggle-button .yt-danmaku-toggle-button__icon {
         width: 23px;
         height: 23px;
@@ -290,40 +240,6 @@
       }
     `;
     document.head.appendChild(style);
-  }
-
-  // ── iOS風トグル通知 ──
-  let notifyTimer = 0;
-  function showToggleNotify(isEnabled) {
-    const player = document.querySelector('#movie_player');
-    if (!player) return;
-
-    const existing = player.querySelector('.yt-danmaku-notify');
-    if (existing) existing.remove();
-    if (notifyTimer) { clearTimeout(notifyTimer); notifyTimer = 0; }
-
-    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const fallbackIcon = () => h('div', { className: 'yt-danmaku-notify__icon-fallback' }, '\u5F3E');
-
-    const iconEl = CONFIG.notifyIcon
-      ? h('img', {
-          className: 'yt-danmaku-notify__icon-img',
-          src: CONFIG.notifyIcon,
-          onerror() { this.replaceWith(fallbackIcon()); },
-        })
-      : fallbackIcon();
-
-    const banner = h('div', { className: 'yt-danmaku-notify ' + (isDark ? '--dark' : '--light') }, [
-      iconEl,
-      h('div', { className: 'yt-danmaku-notify__body' }, [
-        h('div', { className: 'yt-danmaku-notify__title' }, 'YouTubeをニコニコ風にする'),
-        h('div', { className: 'yt-danmaku-notify__msg' }, isEnabled ? '弾幕をオンにしました' : '弾幕をオフにしました'),
-      ]),
-      h('div', { className: 'yt-danmaku-notify__time' }, '今'),
-    ]);
-
-    player.appendChild(banner);
-    notifyTimer = setTimeout(() => { banner.remove(); notifyTimer = 0; }, 3500);
   }
 
   // メッセージ要素からDOMノード群をクローンして返す（空なら null）
@@ -679,7 +595,6 @@
     if (!enabled && overlay) overlay.textContent = '';
     resetRuntimeState(false);
     syncDanmakuToggleButtonState();
-    showToggleNotify(enabled);
   }
 
   function enqueueNode(node) {
