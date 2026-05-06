@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTubeをニコニコ風にする
+// @name         YouTubeをニコニコ風に
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.1.2
+// @version      2.2.0
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
@@ -48,6 +48,27 @@
     'yt-live-chat-paid-message-renderer': '--yt-live-chat-paid-message-primary-color',
     'yt-live-chat-paid-sticker-renderer': '--yt-live-chat-paid-sticker-background-color',
   };
+
+  const DANMAKU_ICON_OFF_PATH = 'M 31 146 L 14 187 L 14 543 L 26 576 L 48 600 L 84 616 L 147 617 L 187 665 L 201 673 L 217 669 L 262 617 L 411 617 L 455 669 L 472 673 L 526 617 L 600 614 L 625 602 L 648 579 L 662 542 L 660 177 L 638 138 L 598 115 L 405 113 L 484 32 L 487 19 L 481 8 L 460 7 L 354 113 L 323 113 L 219 9 L 201 5 L 190 16 L 192 32 L 272 113 L 89 113 L 56 124 Z M 56 166 L 75 150 L 91 145 L 585 145 L 606 153 L 622 169 L 631 194 L 631 537 L 622 561 L 608 575 L 588 584 L 509 586 L 469 632 L 425 585 L 248 585 L 204 632 L 162 585 L 93 585 L 69 576 L 51 556 L 45 535 L 45 194 Z M 271 245 L 263 252 L 259 261 L 259 461 L 262 469 L 266 474 L 271 477 L 282 478 L 292 474 L 447 380 L 454 370 L 455 357 L 449 346 L 290 247 L 282 244 Z M 292 286 L 317 301 L 322 305 L 340 315 L 353 324 L 361 328 L 390 347 L 398 351 L 414 362 L 399 372 L 394 374 L 384 381 L 366 391 L 358 397 L 330 413 L 322 419 L 302 430 L 292 437 L 291 436 L 291 287 Z';
+  const DANMAKU_ICON_ON_PATH = 'M 31 146 L 14 187 L 14 543 L 26 576 L 48 600 L 84 616 L 147 617 L 187 665 L 201 673 L 217 669 L 262 617 L 411 617 L 455 669 L 472 673 L 526 617 L 600 614 L 625 602 L 648 579 L 662 542 L 660 177 L 638 138 L 598 115 L 405 113 L 484 32 L 487 19 L 481 8 L 460 7 L 354 113 L 323 113 L 219 9 L 201 5 L 190 16 L 192 32 L 272 113 L 89 113 L 56 124 Z M 292 286 L 317 301 L 322 305 L 340 315 L 353 324 L 361 328 L 390 347 L 398 351 L 414 362 L 399 372 L 394 374 L 384 381 L 366 391 L 358 397 L 330 413 L 322 419 L 302 430 L 292 437 L 291 436 L 291 287 Z';
+  const DANMAKU_TOGGLE_LABELS = {
+    ja: {
+      title: '弾幕',
+      enable: '弾幕をオンにする',
+      disable: '弾幕をオフにする',
+      shortcutText: 'Alt + L',
+      ariaShortcut: 'キーボード ショートカット Alt+L',
+    },
+    en: {
+      title: 'Danmaku',
+      enable: 'Turn on danmaku',
+      disable: 'Turn off danmaku',
+      shortcutText: 'Alt + L',
+      ariaShortcut: 'keyboard shortcut Alt+L',
+    },
+  };
+  const DANMAKU_TOGGLE_SHORTCUT = 'Alt+L';
+  const SVG_NS = 'http://www.w3.org/2000/svg';
 
   // ─── DOM生成ヘルパー ───
   // h('div', { className: 'foo', style: 'color:red' }, [child1, 'text'])
@@ -214,6 +235,59 @@
       .yt-danmaku-notify__title { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; color: var(--nt-title); }
       .yt-danmaku-notify__msg   { font-size: 12px; font-weight: 400; color: var(--nt-msg); }
       .yt-danmaku-notify__time  { font-size: 11px; margin-left: auto; align-self: flex-start; flex-shrink: 0; color: var(--nt-time); }
+      .yt-danmaku-toggle-button .yt-danmaku-toggle-button__icon {
+        width: 23px;
+        height: 23px;
+        pointer-events: none;
+      }
+      .yt-danmaku-toggle-button .yt-danmaku-toggle-button__icon path {
+        fill: #fff;
+      }
+      .yt-danmaku-toggle-tooltip.ytp-tooltip {
+        position: absolute;
+        z-index: 2024;
+        display: block;
+        max-width: 300px;
+        bottom: auto;
+        pointer-events: none;
+        color: #eee;
+        font-family: "YouTube Noto", Roboto, Arial, Helvetica, sans-serif;
+        font-size: 12.98px;
+        font-weight: 500;
+        line-height: 15px;
+      }
+      .yt-danmaku-toggle-tooltip .ytp-tooltip-text-wrapper {
+        position: relative;
+        z-index: 1;
+        padding: 0;
+      }
+      .yt-danmaku-toggle-tooltip .ytp-tooltip-bottom-text {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 9px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.3);
+        color: #eee;
+        white-space: nowrap;
+      }
+      .yt-danmaku-toggle-tooltip .ytp-tooltip-text {
+        display: inline-block;
+      }
+      .yt-danmaku-toggle-tooltip .ytp-tooltip-keyboard-shortcut {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 11px;
+        min-height: 15px;
+        padding: 0 2px;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        color: #fff;
+        font-size: 12.98px;
+        font-weight: 500;
+        line-height: 15px;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -359,6 +433,9 @@
   let chatItemsHost = null;
   let pageObserver = null;
   let waitPlayerObserver = null;
+  let controlsObserver = null;
+  let danmakuToggleButton = null;
+  let danmakuToggleTooltip = null;
   let chatRetryTimer = 0;
   let chatFrameLoadTarget = null;
   let chatFrameLoadHandler = null;
@@ -418,6 +495,13 @@
     waitPlayerObserver = disconnectObserver(waitPlayerObserver);
   }
 
+  function stopControlsObserver() {
+    controlsObserver = disconnectObserver(controlsObserver);
+    hideDanmakuToggleTooltip();
+    if (danmakuToggleButton && danmakuToggleButton.isConnected) danmakuToggleButton.remove();
+    danmakuToggleButton = null;
+  }
+
   function stopOverlay() {
     resizeObserver = disconnectObserver(resizeObserver);
     if (overlay && overlay.isConnected) overlay.remove();
@@ -430,6 +514,7 @@
     nextWatchSession();
     stopChatTracking();
     stopPlayerWait();
+    stopControlsObserver();
     stopOverlay();
     resetRuntimeState(clearProcessed);
   }
@@ -441,7 +526,10 @@
       if (!document.querySelector('#movie_player')) return;
       waitPlayerObserver = disconnectObserver(waitPlayerObserver);
       overlay = createOverlay();
-      if (overlay) waitForChat(session);
+      if (overlay) {
+        startControlsObserver(session);
+        waitForChat(session);
+      }
     });
     waitPlayerObserver.observe(document.body, { childList: true, subtree: true });
   }
@@ -449,10 +537,149 @@
   function startWatchSession(session) {
     overlay = createOverlay();
     if (overlay) {
+      startControlsObserver(session);
       waitForChat(session);
       return;
     }
     waitForPlayer(session);
+  }
+
+  function createDanmakuToggleButton() {
+    const button = document.createElement('button');
+    button.className = 'ytp-button yt-danmaku-toggle-button';
+    button.type = 'button';
+
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.classList.add('yt-danmaku-toggle-button__icon');
+    svg.setAttribute('viewBox', '0 0 679 679');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill-rule', 'evenodd');
+    svg.appendChild(path);
+    button.appendChild(svg);
+
+    button.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleDanmaku();
+    });
+    button.addEventListener('mouseenter', showDanmakuToggleTooltip);
+    button.addEventListener('focus', showDanmakuToggleTooltip);
+    button.addEventListener('mouseleave', hideDanmakuToggleTooltip);
+    button.addEventListener('blur', hideDanmakuToggleTooltip);
+
+    return button;
+  }
+
+  function getDanmakuToggleLabels() {
+    const lang = (document.documentElement.lang || navigator.language || '').toLowerCase();
+    return lang.startsWith('ja') ? DANMAKU_TOGGLE_LABELS.ja : DANMAKU_TOGGLE_LABELS.en;
+  }
+
+  function createDanmakuToggleTooltip() {
+    const labels = getDanmakuToggleLabels();
+    return h('div', { className: 'yt-danmaku-toggle-tooltip ytp-tooltip ytp-bottom' }, [
+      h('div', { className: 'ytp-tooltip-text-wrapper', ariaHidden: 'true' }, [
+        h('div', { className: 'ytp-tooltip-bottom-text' }, [
+          h('span', { className: 'ytp-tooltip-text' }, labels.title),
+          h('div', { className: 'ytp-tooltip-keyboard-shortcut' }, labels.shortcutText),
+        ]),
+      ]),
+    ]);
+  }
+
+  function showDanmakuToggleTooltip() {
+    if (!danmakuToggleButton || !danmakuToggleButton.isConnected) return;
+
+    const player = document.querySelector('#movie_player');
+    if (!player) return;
+
+    if (!danmakuToggleTooltip || !danmakuToggleTooltip.isConnected) {
+      danmakuToggleTooltip = createDanmakuToggleTooltip();
+      player.appendChild(danmakuToggleTooltip);
+    }
+
+    const buttonRect = danmakuToggleButton.getBoundingClientRect();
+    const playerRect = player.getBoundingClientRect();
+    const tooltipRect = danmakuToggleTooltip.getBoundingClientRect();
+    const left = buttonRect.left - playerRect.left + (buttonRect.width / 2) - (tooltipRect.width / 2);
+    const top = buttonRect.top - playerRect.top - tooltipRect.height - 22;
+
+    danmakuToggleTooltip.style.left = Math.max(8, left) + 'px';
+    danmakuToggleTooltip.style.top = Math.max(8, top) + 'px';
+    danmakuToggleTooltip.style.bottom = 'auto';
+  }
+
+  function hideDanmakuToggleTooltip() {
+    if (danmakuToggleTooltip && danmakuToggleTooltip.isConnected) danmakuToggleTooltip.remove();
+    danmakuToggleTooltip = null;
+  }
+
+  function syncDanmakuToggleButtonState() {
+    if (!danmakuToggleButton) return;
+
+    const labels = getDanmakuToggleLabels();
+    const nextLabel = enabled ? labels.disable : labels.enable;
+    const path = danmakuToggleButton.querySelector('path');
+    if (path) path.setAttribute('d', enabled ? DANMAKU_ICON_ON_PATH : DANMAKU_ICON_OFF_PATH);
+
+    danmakuToggleButton.classList.toggle('yt-danmaku-toggle-button--enabled', enabled);
+    danmakuToggleButton.setAttribute('aria-label', nextLabel + ' ' + labels.ariaShortcut);
+    danmakuToggleButton.setAttribute('aria-keyshortcuts', DANMAKU_TOGGLE_SHORTCUT);
+    danmakuToggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    danmakuToggleButton.setAttribute('title', '');
+    danmakuToggleButton.setAttribute('data-title-no-tooltip', labels.title);
+    danmakuToggleButton.setAttribute('data-tooltip-title', labels.title);
+  }
+
+  function ensureDanmakuToggleButton() {
+    if (!document.querySelector('#chatframe')) {
+      if (danmakuToggleButton && danmakuToggleButton.isConnected) danmakuToggleButton.remove();
+      return false;
+    }
+
+    const rightControls = document.querySelector('#movie_player .ytp-right-controls');
+    const subtitlesButton = rightControls ? rightControls.querySelector('.ytp-subtitles-button') : null;
+    if (!rightControls || !subtitlesButton) return false;
+
+    const insertionParent = subtitlesButton.parentNode;
+    if (!insertionParent || !rightControls.contains(insertionParent)) return false;
+
+    if (!danmakuToggleButton || !danmakuToggleButton.isConnected) {
+      danmakuToggleButton = createDanmakuToggleButton();
+    }
+
+    syncDanmakuToggleButtonState();
+
+    if (danmakuToggleButton.parentNode !== insertionParent || danmakuToggleButton.nextSibling !== subtitlesButton) {
+      insertionParent.insertBefore(danmakuToggleButton, subtitlesButton);
+    }
+
+    return true;
+  }
+
+  function startControlsObserver(session) {
+    controlsObserver = disconnectObserver(controlsObserver);
+    ensureDanmakuToggleButton();
+
+    const player = document.querySelector('#movie_player');
+    if (!player) return;
+
+    controlsObserver = new MutationObserver(() => {
+      if (!isActiveWatchSession(session)) return;
+      ensureDanmakuToggleButton();
+    });
+    controlsObserver.observe(player, { childList: true, subtree: true });
+  }
+
+  function toggleDanmaku() {
+    enabled = !enabled;
+    if (!enabled && overlay) overlay.textContent = '';
+    resetRuntimeState(false);
+    syncDanmakuToggleButtonState();
+    showToggleNotify(enabled);
   }
 
   function enqueueNode(node) {
@@ -768,6 +995,7 @@
     chatObservedItems = itemList;
     chatRetryTimer = clearTimeoutId(chatRetryTimer);
     pageObserver = disconnectObserver(pageObserver);
+    ensureDanmakuToggleButton();
 
     return true;
   }
@@ -790,6 +1018,7 @@
       if (!cf) return;
       pageObserver = disconnectObserver(pageObserver);
       bindChatFrameLoad(cf, session);
+      ensureDanmakuToggleButton();
       observeChat(session) || retryObserveChat(0, session);
     });
     pageObserver.observe(document.body, { childList: true, subtree: true });
@@ -817,10 +1046,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.altKey && (e.key === 'l' || e.key === 'L')) {
       e.preventDefault();
-      enabled = !enabled;
-      if (!enabled && overlay) overlay.textContent = '';
-      resetRuntimeState(false);
-      showToggleNotify(enabled);
+      toggleDanmaku();
     }
   });
 
