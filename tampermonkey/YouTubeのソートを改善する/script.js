@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.1.7
+// @version      1.1.8
 // @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）。プレイリスト人気順は別言語fetchで同点を再判定し精度向上。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -75,6 +75,7 @@
   const SORT_FILTER_CHIPS = [...SORT_CHIPS, ...FILTER_CHIPS];
   const SORT_KEYS = new Set(SORT_CHIPS);
   const FILTER_KEYS = new Set(FILTER_CHIPS);
+  const ALT_FETCH_TIMEOUT_MS = 10000;
 
   function getLocale() {
     const lang = String(document.documentElement.lang || navigator.language || 'en').toLowerCase();
@@ -621,7 +622,33 @@
     setStatus(t(messageKey, orderedEntries.length), state.collectionComplete ? 'done' : 'warn');
   }
 
+  function getPlaylistExpectedCount() {
+    if (state.page?.key !== 'playlist') return null;
+    const candidates = [];
+    document
+      .querySelectorAll(
+        'ytd-playlist-header-renderer, ytd-playlist-sidebar-primary-info-renderer, ytd-playlist-byline-renderer, yt-formatted-string, span'
+      )
+      .forEach((node) => {
+        const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text) candidates.push(text);
+      });
+    for (const text of candidates) {
+      const ja = text.match(/([\d,]+)\s*本の動画/);
+      if (ja) return parseInt(ja[1].replace(/,/g, ''), 10);
+      const en = text.match(/([\d,]+)\s+videos?\b/i);
+      if (en) return parseInt(en[1].replace(/,/g, ''), 10);
+    }
+    return null;
+  }
+
+  function hasCollectedExpectedPlaylistCount() {
+    const expected = getPlaylistExpectedCount();
+    return Number.isFinite(expected) && expected > 0 && getRenderableEntries().length >= expected;
+  }
+
   function findContinuationNode() {
+    if (hasCollectedExpectedPlaylistCount()) return null;
     const contents = getContents();
     return (
       contents?.querySelector(':scope > ytd-continuation-item-renderer') ||
@@ -660,6 +687,10 @@
     const startScrollY = window.scrollY;
     const promise = (async () => {
       scanSections();
+      if (hasCollectedExpectedPlaylistCount()) {
+        state.collectionComplete = true;
+        return true;
+      }
       setStatus(t('collecting', getRenderableEntries().length), 'progress');
       let stalledRounds = 0;
       for (let i = 0; i < 80 && runId === state.runId; i += 1) {
@@ -670,6 +701,7 @@
         if (runId !== state.runId) return false;
         const currentCount = getRenderableEntries().length;
         setStatus(t('collecting', currentCount), 'progress');
+        if (hasCollectedExpectedPlaylistCount()) { state.collectionComplete = true; break; }
         if (!findContinuationNode()) { state.collectionComplete = true; break; }
         stalledRounds = currentCount > previousCount ? 0 : stalledRounds + 1;
         if (stalledRounds >= 3) break;
@@ -700,28 +732,233 @@
     return false;
   }
 
-  function parsePlaylistVideoCounts(html) {
-    const map = new Map();
-    const m = html.match(/var ytInitialData\s*=\s*(\{[\s\S]+?\});\s*<\/script>/);
-    if (!m) return map;
-    let data;
-    try { data = JSON.parse(m[1]); }
-    catch { return map; }
-    const stack = [data];
+  function getPopularTieVideoIds() {
+    const byCount = new Map();
+    for (const entry of getRenderableEntries()) {
+      if (!entry.hasVideo || !entry.videoId || !Number.isFinite(entry.viewCount)) continue;
+      if (!byCount.has(entry.viewCount)) byCount.set(entry.viewCount, []);
+      byCount.get(entry.viewCount).push(entry.videoId);
+    }
+    return new Set(
+      Array.from(byCount.values())
+        .filter((ids) => ids.length > 1)
+        .flat()
+    );
+  }
+
+  function walkObject(root, visit) {
+    const stack = [root];
     while (stack.length) {
       const node = stack.pop();
       if (!node || typeof node !== 'object') continue;
-      if (Array.isArray(node)) { for (const v of node) stack.push(v); continue; }
-      const r = node.playlistVideoRenderer;
-      if (r && r.videoId && !map.has(r.videoId) && Array.isArray(r.videoInfo?.runs)) {
-        for (const run of r.videoInfo.runs) {
-          const v = parseViewCount(run?.text);
-          if (v !== null) { map.set(r.videoId, v); break; }
-        }
+      visit(node);
+      if (Array.isArray(node)) {
+        for (const v of node) stack.push(v);
+        continue;
       }
       for (const k of Object.keys(node)) stack.push(node[k]);
     }
+  }
+
+  function parseJsonObjectLiteral(source, prefixPattern) {
+    const startMatch = prefixPattern.exec(source);
+    if (!startMatch) return null;
+    const start = startMatch.index + startMatch[0].length - 1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < source.length; i += 1) {
+      const ch = source[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          try { return JSON.parse(source.slice(start, i + 1)); }
+          catch { return null; }
+        }
+      }
+    }
+    return null;
+  }
+
+  function parseInitialData(html) {
+    return parseJsonObjectLiteral(html, /(?:var\s+ytInitialData|window\["ytInitialData"\])\s*=\s*\{/);
+  }
+
+
+  function parseYtcfg(html) {
+    const cfg = {};
+    const setPattern = /ytcfg\.set\s*\(\s*\{/g;
+    let match;
+    while ((match = setPattern.exec(html))) {
+      const chunk = parseJsonObjectLiteral(html.slice(match.index), /ytcfg\.set\s*\(\s*\{/);
+      if (chunk) Object.assign(cfg, chunk);
+    }
+    return cfg;
+  }
+
+  function addPlaylistVideoCounts(data, map) {
+    walkObject(data, (node) => {
+      const r = node.playlistVideoRenderer;
+      if (!r?.videoId || map.has(r.videoId) || !Array.isArray(r.videoInfo?.runs)) return;
+      for (const run of r.videoInfo.runs) {
+        const v = parseViewCount(run?.text);
+        if (v !== null) { map.set(r.videoId, v); break; }
+      }
+    });
+  }
+
+  function findContinuationToken(data) {
+    let token = null;
+    walkObject(data, (node) => {
+      if (token) return;
+      token =
+        node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token ||
+        node.continuationEndpoint?.continuationCommand?.token ||
+        node.nextContinuationData?.continuation ||
+        node.reloadContinuationData?.continuation ||
+        null;
+    });
+    return token;
+  }
+
+  function parsePlaylistVideoCounts(html) {
+    const map = new Map();
+    const data = parseInitialData(html);
+    if (data) addPlaylistVideoCounts(data, map);
     return map;
+  }
+
+  async function fetchWithTimeout(url, options = {}, timeoutMs = ALT_FETCH_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function getVideoIdFromAltItem(item) {
+    const data = item?.data || item?.__data || null;
+    if (data?.videoId) return data.videoId;
+    const href = item?.querySelector?.('a[href*="watch?v="]')?.getAttribute('href');
+    if (!href) return null;
+    try {
+      return new URL(href, location.origin).searchParams.get('v');
+    } catch {
+      return null;
+    }
+  }
+
+  function readAltViewCountFromItem(item) {
+    const texts = new Set();
+    const data = item?.data || item?.__data || null;
+    const addText = (value) => {
+      const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+      if (normalized) texts.add(normalized);
+    };
+    addText(data?.viewCountText?.simpleText);
+    addText(data?.shortViewCountText?.simpleText);
+    if (Array.isArray(data?.videoInfo?.runs)) {
+      for (const run of data.videoInfo.runs) addText(run?.text);
+    }
+    item
+      ?.querySelectorAll?.('#metadata-line span, #video-info span, #byline span, span.inline-metadata-item, yt-formatted-string')
+      .forEach((node) => {
+        addText(node.textContent);
+        addText(node.getAttribute?.('aria-label'));
+      });
+    item?.querySelectorAll?.('a[aria-label]').forEach((node) => addText(node.getAttribute('aria-label')));
+    addText(item?.getAttribute?.('aria-label'));
+    for (const text of texts) {
+      const viewCount = parseViewCount(text);
+      if (viewCount !== null) return viewCount;
+    }
+    const fallback = String(item?.textContent || '').replace(/\s+/g, ' ').trim();
+    return parseViewCount(fallback);
+  }
+
+  function addAltPlaylistDomCounts(doc, map, unresolvedIds) {
+    if (!doc) return 0;
+    let added = 0;
+    doc.querySelectorAll('ytd-playlist-video-renderer, ytd-video-renderer').forEach((item) => {
+      const videoId = getVideoIdFromAltItem(item);
+      if (!videoId || map.has(videoId)) return;
+      const viewCount = readAltViewCountFromItem(item);
+      if (viewCount === null) return;
+      map.set(videoId, viewCount);
+      unresolvedIds.delete(videoId);
+      added += 1;
+    });
+    return added;
+  }
+
+  async function waitForAltPlaylistFrame(iframe, runId, timeoutMs = ALT_FETCH_TIMEOUT_MS) {
+    const startedAt = Date.now();
+    while (runId === state.runId && Date.now() - startedAt < timeoutMs) {
+      const doc = iframe.contentDocument;
+      if (doc?.querySelector?.('ytd-playlist-video-renderer, ytd-video-renderer')) return doc;
+      await wait(150);
+    }
+    return iframe.contentDocument || null;
+  }
+
+  async function fetchAltLanguageDomCounts(altLang, map, unresolvedIds, runId) {
+    const url = new URL(location.href);
+    url.searchParams.set('hl', altLang);
+    url.searchParams.set('persist_hl', '1');
+    const iframe = document.createElement('iframe');
+    iframe.src = url.href;
+    iframe.setAttribute('aria-hidden', 'true');
+    Object.assign(iframe.style, {
+      position: 'fixed',
+      left: '-10000px',
+      top: '0',
+      width: '1280px',
+      height: '900px',
+      border: '0',
+      opacity: '0',
+      pointerEvents: 'none',
+      zIndex: '-1',
+    });
+    document.documentElement.appendChild(iframe);
+    let loadedMore = false;
+    try {
+      let doc = await waitForAltPlaylistFrame(iframe, runId);
+      let previousCount = 0;
+      let stalledRounds = 0;
+      for (let i = 0; doc && unresolvedIds.size > 0 && i < 80 && runId === state.runId; i += 1) {
+        const added = addAltPlaylistDomCounts(doc, map, unresolvedIds);
+        loadedMore = loadedMore || added > 0;
+        if (unresolvedIds.size === 0) break;
+        const count = doc.querySelectorAll('ytd-playlist-video-renderer, ytd-video-renderer').length;
+        stalledRounds = count > previousCount ? 0 : stalledRounds + 1;
+        previousCount = Math.max(previousCount, count);
+        if (stalledRounds >= 12) break;
+        const continuation = doc.querySelector('ytd-continuation-item-renderer');
+        if (continuation?.scrollIntoView) continuation.scrollIntoView({ block: 'end', inline: 'nearest' });
+        iframe.contentWindow?.scrollTo?.({ top: (doc.scrollingElement || doc.documentElement).scrollHeight, behavior: 'auto' });
+        await wait(250);
+        doc = iframe.contentDocument;
+      }
+    } catch {
+      // Best effort: the initial alternate-language fetch remains available for already-loaded items.
+    } finally {
+      iframe.remove();
+    }
+    return loadedMore;
   }
 
   async function fetchAltLanguageViewCounts(altLang, runId) {
@@ -732,11 +969,18 @@
     url.searchParams.set('persist_hl', '1');
     const promise = (async () => {
       try {
-        const res = await fetch(url.href, { credentials: 'omit' });
+        const res = await fetchWithTimeout(url.href, { credentials: 'same-origin' });
         if (!res.ok) return false;
         const html = await res.text();
         if (runId !== state.runId) return false;
-        const map = parsePlaylistVideoCounts(html);
+        const initialData = parseInitialData(html);
+        const map = new Map();
+        if (initialData) addPlaylistVideoCounts(initialData, map);
+        const tiedIds = getPopularTieVideoIds();
+        const unresolvedIds = new Set(Array.from(tiedIds).filter((videoId) => !map.has(videoId)));
+        if (unresolvedIds.size > 0 && initialData) {
+          await fetchAltLanguageDomCounts(altLang, map, unresolvedIds, runId);
+        }
         if (map.size === 0) return false;
         state.altByVideoId = map;
         state.altLang = altLang;
