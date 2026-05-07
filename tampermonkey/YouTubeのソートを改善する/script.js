@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.2.7
+// @version      1.2.8
 // @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）。プレイリスト人気順は別言語fetchで同点を再判定し精度向上。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -189,6 +189,7 @@
     lastLocationKey: '',
     setupRetryTimer: null,
     scanRafId: 0,
+    playlistExpectedCount: null,
     altLang: null,
     altByVideoId: new Map(),
     altFetchPromise: null,
@@ -204,6 +205,7 @@
     state.collectionComplete = false;
     state.runId += 1;
     state.originalIndexCounter = 0;
+    state.playlistExpectedCount = null;
     state.altLang = null;
     state.altByVideoId = new Map();
     state.altFetchPromise = null;
@@ -533,9 +535,9 @@
       if (videoId) entry.videoId = videoId;
     }
     if (!entry.playlistIndex) entry.playlistIndex = getPlaylistIndexFromItem(section);
+    entry.hasVideo = Boolean(getVideoNode(section));
     if (!entry.metricsComplete) {
       const { viewCount, ageSeconds } = readMetricsFromItem(section);
-      entry.hasVideo = Boolean(getVideoNode(section));
       entry.viewCount = viewCount ?? 0;
       entry.ageSeconds = ageSeconds ?? Infinity;
       if (viewCount !== null && ageSeconds !== null) entry.metricsComplete = true;
@@ -559,18 +561,7 @@
     });
   }
 
-  function refreshEntryMetadata(entry) {
-    if (!entry?.section) return;
-    if (!entry.videoId) {
-      const videoId = getVideoIdFromItem(entry.section);
-      if (videoId) entry.videoId = videoId;
-    }
-    if (!entry.playlistIndex) entry.playlistIndex = getPlaylistIndexFromItem(entry.section);
-    entry.hasVideo = Boolean(getVideoNode(entry.section));
-  }
-
   function getRenderableEntries() {
-    state.sectionEntries.forEach(refreshEntryMetadata);
     return state.sectionEntries.filter((e) => !e.isDuplicate);
   }
 
@@ -666,20 +657,22 @@
 
   function getPlaylistExpectedCount() {
     if (state.page?.key !== 'playlist') return null;
-    const candidates = [];
-    document
-      .querySelectorAll(
-        'ytd-playlist-header-renderer, ytd-playlist-sidebar-primary-info-renderer, ytd-playlist-byline-renderer, yt-formatted-string, span'
-      )
-      .forEach((node) => {
-        const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (text) candidates.push(text);
-      });
-    for (const text of candidates) {
+    if (state.playlistExpectedCount !== null) return state.playlistExpectedCount;
+    for (const node of document.querySelectorAll(
+      'ytd-playlist-header-renderer, ytd-playlist-sidebar-primary-info-renderer, ytd-playlist-byline-renderer, yt-formatted-string, span'
+    )) {
+      const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text) continue;
       const ja = text.match(/([\d,]+)\s*本の動画/);
-      if (ja) return parseInt(ja[1].replace(/,/g, ''), 10);
+      if (ja) {
+        state.playlistExpectedCount = parseInt(ja[1].replace(/,/g, ''), 10);
+        return state.playlistExpectedCount;
+      }
       const en = text.match(/([\d,]+)\s+videos?\b/i);
-      if (en) return parseInt(en[1].replace(/,/g, ''), 10);
+      if (en) {
+        state.playlistExpectedCount = parseInt(en[1].replace(/,/g, ''), 10);
+        return state.playlistExpectedCount;
+      }
     }
     return null;
   }
@@ -762,30 +755,20 @@
      ja の 10 万〜99 万帯の "18万" は en では "181K" "189K" の 1K 粒度になる。
      人気順で同点が出たときだけ別言語を 1 回だけ fetch して 2 段目のソートキーに使う。 */
 
-  function hasPopularTies() {
-    const counts = new Map();
-    for (const entry of getRenderableEntries()) {
-      if (!entry.hasVideo) continue;
-      if (!Number.isFinite(entry.viewCount)) continue;
-      const next = (counts.get(entry.viewCount) || 0) + 1;
-      if (next > 1) return true;
-      counts.set(entry.viewCount, next);
-    }
-    return false;
-  }
-
   function getPopularTieVideoIds() {
-    const byCount = new Map();
+    const firstIdByCount = new Map();
+    const tiedIds = new Set();
     for (const entry of getRenderableEntries()) {
       if (!entry.hasVideo || !entry.videoId || !Number.isFinite(entry.viewCount)) continue;
-      if (!byCount.has(entry.viewCount)) byCount.set(entry.viewCount, []);
-      byCount.get(entry.viewCount).push(entry.videoId);
+      const firstId = firstIdByCount.get(entry.viewCount);
+      if (firstId) {
+        tiedIds.add(firstId);
+        tiedIds.add(entry.videoId);
+      } else {
+        firstIdByCount.set(entry.viewCount, entry.videoId);
+      }
     }
-    return new Set(
-      Array.from(byCount.values())
-        .filter((ids) => ids.length > 1)
-        .flat()
-    );
+    return tiedIds;
   }
 
   function walkObject(root, visit) {
@@ -964,7 +947,7 @@
     }
   }
 
-  async function fetchAltLanguageViewCounts(altLang, runId) {
+  async function fetchAltLanguageViewCounts(altLang, runId, tiedIds = getPopularTieVideoIds()) {
     if (state.altLang === altLang && state.altByVideoId.size > 0) return true;
     if (state.altFetchPromise) return state.altFetchPromise;
     const url = new URL(location.href);
@@ -974,7 +957,6 @@
       const startedAt = Date.now();
       const remainingMs = () => Math.max(0, ALT_FETCH_MAX_MS - (Date.now() - startedAt));
       try {
-        const tiedIds = getPopularTieVideoIds();
         if (tiedIds.size === 0) return false;
         const res = await fetchWithTimeout(
           url.href,
@@ -987,7 +969,7 @@
         const initialData = parseInitialData(html);
         const cfg = getAltFetchConfig(html);
         const map = new Map();
-        if (initialData) addPlaylistVideoCounts(initialData, map);
+        if (initialData) addPlaylistVideoCounts(initialData, map, tiedIds);
         let continuationToken = parseInitialContinuationToken(html) || (initialData ? findContinuationToken(initialData) : null);
         for (
           let page = 0;
@@ -1002,7 +984,7 @@
             Math.min(ALT_FETCH_TIMEOUT_MS, remainingMs())
           );
           if (!data || runId !== state.runId) break;
-          addPlaylistVideoCounts(data, map);
+          addPlaylistVideoCounts(data, map, tiedIds);
           continuationToken = findContinuationToken(data);
         }
         if (map.size === 0) return false;
@@ -1104,12 +1086,13 @@
     if (
       state.currentSort === 'popular' &&
       state.page?.altLanguageFetch &&
-      state.altLang === null &&
-      hasPopularTies()
+      state.altLang === null
     ) {
+      const tiedIds = getPopularTieVideoIds();
+      if (tiedIds.size === 0) return;
       const altLang = getLocale() === 'ja' ? 'en' : 'ja';
       setStatus(t('refining'), 'progress');
-      const refined = await fetchAltLanguageViewCounts(altLang, runId);
+      const refined = await fetchAltLanguageViewCounts(altLang, runId, tiedIds);
       if (state.currentSort !== 'popular' || runId !== state.runId) return;
       if (refined) renderSortedContents(runId);
       else if (completed) setStatus(t('sorted', getRenderableEntries().length), 'done');
