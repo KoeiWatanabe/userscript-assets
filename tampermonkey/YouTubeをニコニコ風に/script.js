@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風に
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.2.1
+// @version      2.2.2
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
