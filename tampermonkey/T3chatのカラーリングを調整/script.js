@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         T3chatのカラーリングを調整
 // @namespace    https://tampermonkey.net/
-// @version      1.0.0
-// @description  t3.chat のライトテーマ+Boring Mode時の配色を調整します
+// @version      1.0.1
+// @description  t3.chat の Boring Mode 時の配色を調整します
 // @match        https://t3.chat/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/T3chatのカラーリングを調整/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/T3chatのカラーリングを調整/script.js
@@ -22,7 +22,6 @@
     'data-t3-boring-new-chat',
     'data-t3-boring-chip',
     'data-t3-boring-model-trigger',
-    'data-t3-boring-action-chip',
     'data-t3-boring-chat-form',
     'data-t3-boring-model-dialog',
     'data-t3-boring-model-header',
@@ -33,7 +32,6 @@
     'data-t3-boring-avatar',
   ];
   const CHIP_LABELS = new Set(['Create', 'Explore', 'Code', 'Learn']);
-  const ACTION_CHIP_LABELS = new Set(['Instant', 'Search', 'Attach']);
   const BRAND_LABELS = new Set([
     'Favorites',
     'OpenAI',
@@ -60,17 +58,30 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-logo="1"] {
   color: #ca0277 !important;
 }
 
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"] {
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"] {
   background: #ffffff !important;
   color: #111111 !important;
   border: 1px solid rgba(0, 0, 0, 0.12) !important;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06) !important;
 }
 
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]:hover,
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]:active {
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]:hover,
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]:active {
   background: #f5f5f5 !important;
   color: #111111 !important;
+}
+
+html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"] {
+  background: #2f2f2f !important;
+  color: #f2f2f2 !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+}
+
+html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]:hover,
+html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]:active {
+  background: #383838 !important;
+  color: #f2f2f2 !important;
 }
 
 html[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]::before,
@@ -80,7 +91,7 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]::after {
   background: transparent !important;
 }
 
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"] {
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"] {
   background: rgba(255, 255, 255, 0.72) !important;
   color: #222222 !important;
   outline: 1px solid rgba(0, 0, 0, 0.16) !important;
@@ -89,36 +100,57 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"] {
   box-shadow: none !important;
 }
 
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]:hover,
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]:active {
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]:hover,
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]:active {
   background: rgba(255, 255, 255, 0.86) !important;
   color: #222222 !important;
 }
 
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]::before,
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]::after {
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]::before,
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]::after {
   opacity: 0 !important;
   box-shadow: none !important;
   background: transparent !important;
 }
 
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-action-chip="1"] {
-  border-color: rgba(0, 0, 0, 0.24) !important;
-  color: #4a4a4a !important;
-  box-shadow: none !important;
-}
-
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"] {
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"] {
   border: 1px solid rgba(0, 0, 0, 0.10) !important;
   outline: none !important;
   box-shadow: none !important;
 }
 
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::before,
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::after {
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::before,
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::after {
   opacity: 0 !important;
   box-shadow: none !important;
   background: transparent !important;
+}
+
+html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"] {
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::before,
+html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::after {
+  opacity: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+html.dark[${ACTIVE_ATTR}="1"] main ol li::marker,
+html.dark[${ACTIVE_ATTR}="1"] main ul li::marker {
+  color: #d5d5d5 !important;
+}
+
+html.dark[${ACTIVE_ATTR}="1"] main input[type="checkbox"] {
+  accent-color: #6b6b6b !important;
+}
+
+html.dark[${ACTIVE_ATTR}="1"] main button[aria-label="Copy response to clipboard"],
+html.dark[${ACTIVE_ATTR}="1"] main button[aria-label="Copy message"] {
+  color: inherit !important;
 }
 
 html[${ACTIVE_ATTR}="1"] [data-t3-boring-avatar="1"] {
@@ -165,11 +197,7 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-avatar="1"] {
   }
 
   function isActiveTheme() {
-    return (
-      document.documentElement.classList.contains('light') &&
-      document.body &&
-      document.body.classList.contains('theme-boring')
-    );
+    return document.body && document.body.classList.contains('theme-boring');
   }
 
   function isModelRow(button) {
@@ -245,14 +273,6 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-avatar="1"] {
     const input = document.querySelector('textarea[name="input"]');
     const form = input ? input.closest('form') : null;
     setFlag(form, 'data-t3-boring-chat-form');
-    if (form) {
-      const actionButtons = Array.from(form.querySelectorAll('button'));
-      for (const button of actionButtons) {
-        if (ACTION_CHIP_LABELS.has(normalizeText(button.textContent))) {
-          setFlag(button, 'data-t3-boring-action-chip');
-        }
-      }
-    }
 
     const avatarButton = document.querySelector('[data-sidebar="footer"] button[aria-label="User menu"]');
     setFlag(avatarButton, 'data-t3-boring-avatar-button');
