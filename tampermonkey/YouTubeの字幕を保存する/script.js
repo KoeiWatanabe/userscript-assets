@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.8.3
-// @description  Adds 2 save buttons to YouTube transcript panel header. Chapters → .md with ## headings, no chapters → .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
+// @version      1.8.4
+// @description  Adds 2 save buttons to YouTube transcript panel header. Timestamped save → plain .lrc, no-timestamp save → chaptered .md or plain .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
@@ -568,7 +568,7 @@
 
   /**
    * 字幕をダウンロードする統合関数。
-   * チャプターがあれば .md、なければ .txt で保存する。
+   * タイムスタンプ付きは常に .lrc、なしはチャプターありで .md / なしで .txt で保存する。
    * @param {boolean} withTs - タイムスタンプを含めるかどうか
    */
   function saveTranscript(withTs) {
@@ -596,15 +596,19 @@
     // 3. タイムスタンプ検証
     if (withTs && !allRes.hasAnyTs) { alert(MSG_NO_TS); return; }
 
+    const segments = entries.filter((e) => e.type === "segment");
+
     // 4. 出力生成
     let content, suffix;
-    if (hasChapters) {
-      content = buildMarkdownWithChapters(entries, withTs);
-      suffix = withTs ? " - transcript (with timestamps).md" : " - transcript.md";
+    if (withTs) {
+      content = buildLrc(segments);
+      suffix = " - transcript.lrc";
+    } else if (hasChapters) {
+      content = buildMarkdownWithChapters(entries, false);
+      suffix = " - transcript.md";
     } else {
-      const segments = entries.filter((e) => e.type === "segment");
-      content = withTs ? buildTimestampedTxt(segments) : segments.map((e) => e.text).join("\n");
-      suffix = withTs ? " - transcript (with timestamps).txt" : " - transcript.txt";
+      content = segments.map((e) => e.text).join("\n");
+      suffix = " - transcript.txt";
     }
 
     // 5. ダウンロード + 通知
@@ -711,8 +715,18 @@
     });
   }
 
-  function buildTimestampedTxt(segments) {
-    const lines = segments.map((s) => (s.tsText ? `${s.tsText}\t${s.text}` : s.text));
+  function formatLrcTimestamp(totalSeconds) {
+    if (typeof totalSeconds !== "number" || Number.isNaN(totalSeconds)) return null;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `[${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.00]`;
+  }
+
+  function buildLrc(segments) {
+    const lines = segments.map((s) => {
+      const ts = formatLrcTimestamp(s.seconds);
+      return ts ? `${ts}${s.text}` : s.text;
+    });
     return lines.join("\n");
   }
 
@@ -814,7 +828,7 @@
       const btnWithTs = makeIconButton({
         id: BTN_ID_WITH_TS,
         title: "タイムスタンプありで字幕を保存",
-        ariaLabel: "タイムスタンプありで字幕を保存（TXT）",
+        ariaLabel: "タイムスタンプありで字幕を保存（LRC）",
         pathD: TS_ICON_PATH,
         onClick: () => saveTranscript(true),
       });
