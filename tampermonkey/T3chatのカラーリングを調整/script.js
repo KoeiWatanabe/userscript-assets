@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T3chatのカラーリングを調整
 // @namespace    https://tampermonkey.net/
-// @version      1.0.1
+// @version      1.0.2
 // @description  t3.chat の Boring Mode 時の配色を調整します
 // @match        https://t3.chat/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/T3chatのカラーリングを調整/script.js
@@ -17,37 +17,7 @@
   const CLEANUP_KEY = '__codexT3BoringCleanup';
   const STYLE_ID = 'codex-t3-boring-style';
   const ACTIVE_ATTR = 'data-t3-boring-active';
-  const MARK_ATTRS = [
-    'data-t3-boring-logo',
-    'data-t3-boring-new-chat',
-    'data-t3-boring-chip',
-    'data-t3-boring-model-trigger',
-    'data-t3-boring-chat-form',
-    'data-t3-boring-model-dialog',
-    'data-t3-boring-model-header',
-    'data-t3-boring-model-search',
-    'data-t3-boring-model-left',
-    'data-t3-boring-model-right',
-    'data-t3-boring-avatar-button',
-    'data-t3-boring-avatar',
-  ];
   const CHIP_LABELS = new Set(['Create', 'Explore', 'Code', 'Learn']);
-  const BRAND_LABELS = new Set([
-    'Favorites',
-    'OpenAI',
-    'Anthropic',
-    'Google',
-    'Meta',
-    'DeepSeek',
-    'xAI',
-    'Alibaba',
-    'Moonshot',
-    'Z.ai',
-    'MiniMax',
-    'Xiaomi',
-    'Stealth',
-    'InclusionAI',
-  ]);
 
   const CSS_TEXT = `
 html[${ACTIVE_ATTR}="1"] body {
@@ -85,7 +55,11 @@ html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]:active {
 }
 
 html[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]::before,
-html[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]::after {
+html[${ACTIVE_ATTR}="1"] [data-t3-boring-new-chat="1"]::after,
+html[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]::before,
+html[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]::after,
+html[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::before,
+html[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::after {
   opacity: 0 !important;
   box-shadow: none !important;
   background: transparent !important;
@@ -106,37 +80,18 @@ html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]:active {
   color: #222222 !important;
 }
 
-html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]::before,
-html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chip="1"]::after {
-  opacity: 0 !important;
+html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"],
+html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"] {
+  outline: none !important;
   box-shadow: none !important;
-  background: transparent !important;
 }
 
 html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"] {
   border: 1px solid rgba(0, 0, 0, 0.10) !important;
-  outline: none !important;
-  box-shadow: none !important;
-}
-
-html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::before,
-html.light[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::after {
-  opacity: 0 !important;
-  box-shadow: none !important;
-  background: transparent !important;
 }
 
 html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"] {
   border: 1px solid rgba(255, 255, 255, 0.06) !important;
-  outline: none !important;
-  box-shadow: none !important;
-}
-
-html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::before,
-html.dark[${ACTIVE_ATTR}="1"] [data-t3-boring-chat-form="1"]::after {
-  opacity: 0 !important;
-  box-shadow: none !important;
-  background: transparent !important;
 }
 
 html.dark[${ACTIVE_ATTR}="1"] main ol li::marker,
@@ -162,6 +117,7 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-avatar="1"] {
 
   let observer = null;
   let scheduled = false;
+  let markedElements = [];
 
   if (typeof window[CLEANUP_KEY] === 'function') {
     window[CLEANUP_KEY]();
@@ -172,18 +128,18 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-avatar="1"] {
   }
 
   function setFlag(element, attrName) {
-    if (element && element.getAttribute(attrName) !== '1') {
-      element.setAttribute(attrName, '1');
+    if (!element || element.getAttribute(attrName) === '1') {
+      return;
     }
+    element.setAttribute(attrName, '1');
+    markedElements.push([element, attrName]);
   }
 
   function clearFlags() {
-    for (const attrName of MARK_ATTRS) {
-      const marked = document.querySelectorAll(`[${attrName}="1"]`);
-      for (const element of marked) {
-        element.removeAttribute(attrName);
-      }
+    for (const [element, attrName] of markedElements) {
+      element.removeAttribute(attrName);
     }
+    markedElements = [];
   }
 
   function ensureStyle() {
@@ -198,51 +154,6 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-avatar="1"] {
 
   function isActiveTheme() {
     return document.body && document.body.classList.contains('theme-boring');
-  }
-
-  function isModelRow(button) {
-    const text = normalizeText(button.textContent);
-    if (!text || BRAND_LABELS.has(text) || text === 'Upgrade') {
-      return false;
-    }
-    if (!/[$·]/.test(text) || text.length < 8) {
-      return false;
-    }
-    return true;
-  }
-
-  function isRailButton(button) {
-    if (!button || isModelRow(button)) {
-      return false;
-    }
-    if (normalizeText(button.textContent)) {
-      return false;
-    }
-    return Boolean(button.querySelector('img, svg'));
-  }
-
-  function findCommonAncestor(elements) {
-    if (!elements.length) {
-      return null;
-    }
-    let current = elements[0];
-    while (current) {
-      const matchesAll = elements.every((element) => current.contains(element));
-      if (matchesAll) {
-        return current;
-      }
-      current = current.parentElement;
-    }
-    return null;
-  }
-
-  function findSmallestContainer(root, predicate) {
-    const matches = Array.from(root.querySelectorAll('div')).filter(predicate);
-    if (!matches.length) {
-      return null;
-    }
-    matches.sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length);
-    return matches[0];
   }
 
   function markStaticTargets() {
@@ -267,60 +178,12 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-avatar="1"] {
       }
     }
 
-    const modelTrigger = document.querySelector('[role="combobox"][aria-label^="Select model. Current model:"]');
-    setFlag(modelTrigger, 'data-t3-boring-model-trigger');
-
     const input = document.querySelector('textarea[name="input"]');
     const form = input ? input.closest('form') : null;
     setFlag(form, 'data-t3-boring-chat-form');
 
     const avatarButton = document.querySelector('[data-sidebar="footer"] button[aria-label="User menu"]');
-    setFlag(avatarButton, 'data-t3-boring-avatar-button');
     setFlag(avatarButton ? avatarButton.querySelector('span[data-slot="avatar"]') : null, 'data-t3-boring-avatar');
-  }
-
-  function markModelDialog() {
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
-    const dialog = dialogs.find((candidate) =>
-      candidate.querySelector('input[placeholder="Search models..."]')
-    );
-
-    if (!dialog) {
-      return;
-    }
-
-    setFlag(dialog, 'data-t3-boring-model-dialog');
-    setFlag(dialog.querySelector('a[href="/settings/subscription"]')?.closest('div'), 'data-t3-boring-model-header');
-    setFlag(dialog.querySelector('input[placeholder="Search models..."]')?.closest('div[class]'), 'data-t3-boring-model-search');
-
-    const modelRows = Array.from(dialog.querySelectorAll('button')).filter(isModelRow);
-    const leftPanel =
-      findSmallestContainer(dialog, (element) => {
-        const buttons = Array.from(element.querySelectorAll('button')).filter(isRailButton);
-        const rows = Array.from(element.querySelectorAll('button')).filter(isModelRow);
-        return buttons.length >= 5 && rows.length === 0;
-      }) || null;
-
-    setFlag(leftPanel, 'data-t3-boring-model-left');
-    const leftWrapper = leftPanel ? leftPanel.parentElement : null;
-    const layout =
-      leftWrapper &&
-      findSmallestContainer(dialog, (element) => {
-        const rows = Array.from(element.querySelectorAll('button')).filter(isModelRow);
-        return element.contains(leftWrapper) && rows.length >= 3;
-      });
-    const rightPanel =
-      (layout && leftWrapper
-        ? Array.from(layout.children).find((child) => child !== leftWrapper && child.contains(modelRows[0] || dialog))
-        : null) ||
-      findSmallestContainer(dialog, (element) => {
-        const rows = Array.from(element.querySelectorAll('button')).filter(isModelRow);
-        const rails = Array.from(element.querySelectorAll('[data-t3-boring-model-left="1"]'));
-        return rows.length >= 3 && rails.length === 0;
-      }) ||
-      findCommonAncestor(modelRows);
-
-    setFlag(rightPanel, 'data-t3-boring-model-right');
   }
 
   function applyChanges() {
@@ -333,15 +196,14 @@ html[${ACTIVE_ATTR}="1"] [data-t3-boring-avatar="1"] {
     }
 
     const active = isActiveTheme();
-    if (active) {
-      document.documentElement.setAttribute(ACTIVE_ATTR, '1');
-    } else {
+    clearFlags();
+    if (!active) {
       document.documentElement.removeAttribute(ACTIVE_ATTR);
+      return;
     }
 
-    clearFlags();
+    document.documentElement.setAttribute(ACTIVE_ATTR, '1');
     markStaticTargets();
-    markModelDialog();
   }
 
   function scheduleApply() {
