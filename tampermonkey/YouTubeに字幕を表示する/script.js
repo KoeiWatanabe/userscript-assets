@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      1.4.0
-// @description  自作の .srt / .lrc 字幕を YouTube 動画にオーバーレイ表示する。Alt+C: 表示オン/オフ, Alt+Shift+C: 字幕ファイル読み込み, Alt+S: 字幕保存（タイムスタンプ付き）, Alt+Shift+S: 字幕保存。フルスクリーン/通常時とも動画領域に追従。
+// @version      1.7.8
+// @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み, Alt+Shift+C: カスタム字幕オン/オフ, Alt+S: 字幕保存（タイムスタンプ付き）, Alt+Shift+S: 字幕保存。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_setValue
@@ -15,46 +15,108 @@
 (() => {
   "use strict";
 
-  // ── Tuning constants (edit to taste) ──────────────────────────────────────
-  const FONT_RATIO     = 0.045; // font-size = player_height * FONT_RATIO
-  const FONT_MIN_PX    = 14;
-  const FONT_MAX_PX    = 56;
-  const BOTTOM_PERCENT = 5;     // distance from bottom of player (%)
-  const MAX_WIDTH_PCT  = 85;    // max width relative to player (%)
+  // ── Tuning constants ──────────────────────────────────────────────────────
+  const FONT_RATIO = 0.045;
+  const FONT_MIN_PX = 14;
+  const FONT_MAX_PX = 56;
+  const BOTTOM_PERCENT = 5;
+  const MAX_WIDTH_PCT = 85;
 
   // ── Storage keys ──────────────────────────────────────────────────────────
-  // NOTE: v1.1 から .lrc もサポート。キー名は互換性のため据え置き（値は .srt/.lrc どちらも格納）。
-  const CAPTION_KEY_PREFIX        = "ytsrt:srt:"; // + videoId → 字幕ファイル本文（.srt or .lrc）
-  const ENABLED_KEY               = "ytsrt:enabled";
-  const LAST_LRC_DEFAULT_DURATION = 5;            // .lrc は最後の cue の長さをこの秒数とする
+  const CAPTION_KEY_PREFIX = "ytsrt:srt:";
+  const CUSTOM_MODE_KEY = "ytsrt:customMode";
+  const LAST_LRC_DEFAULT_DURATION = 5;
 
   // ── DOM ids / selectors ───────────────────────────────────────────────────
-  const OVERLAY_ID      = "ytsrt-overlay";
-  const STYLE_ID        = "ytsrt-style";
-  const NOTIFY_ID       = "ytsrt-notify";
+  const OVERLAY_ID = "ytsrt-overlay";
+  const STYLE_ID = "ytsrt-style";
+  const LOAD_BUTTON_ID = "ytsrt-load-button";
+  const CUSTOM_PANEL_ID = "ytsrt-custom-captions-panel";
+  const CUSTOM_TOP_ROW_ID = "ytsrt-custom-captions-row";
+  const CUSTOM_NATIVE_ROW_ID = "ytsrt-native-custom-row";
   const PLAYER_SELECTOR = "#movie_player";
-  const VIDEO_SELECTOR  = "video.html5-main-video";
+  const VIDEO_SELECTOR = "video.html5-main-video";
+  const RIGHT_CONTROLS_SELECTOR = `${PLAYER_SELECTOR} .ytp-right-controls`;
+  const SUBTITLES_BUTTON_SELECTOR = ".ytp-subtitles-button";
+  const SETTINGS_BUTTON_SELECTOR = ".ytp-settings-button";
+  const SETTINGS_POPUP_SELECTOR = `${PLAYER_SELECTOR} .ytp-popup.ytp-settings-menu`;
+  const MENU_ITEM_SELECTOR = ".ytp-menuitem";
+  const LOAD_BUTTON_SHORTCUT = "Alt+C";
+  const LOAD_BUTTON_PATH_SCALE = 1.25;
+  const MISSING_ATTRIBUTE_VALUE = "__ytsrt_missing__";
+  const LOAD_BUTTON_SVG_PATH = "M480-480Zm120 288H216q-29.7 0-50.85-21.16Q144-234.32 144-264.04v-432.24Q144-726 165.15-747T216-768h528q29.7 0 50.85 21.15Q816-725.7 816-696v288h-72v-288H216v432h384v72Zm144 72v-72h-72v-72h72v-72h72v72h72v72h-72v72h-72ZM293.29-368h111.86Q421-368 432-378.78q11-10.78 11-26.72V-443h-56.14v19H312v-112h75v19h56v-37.89q0-16.11-10.64-26.61Q421.73-592 406-592H293.01q-16.01 0-26.51 10.71-10.5 10.7-10.5 26.52v148.95Q256-390 266.72-379t26.57 11Zm261.22 0h112.55q15.94 0 26.44-10.78Q704-389.56 704-405.5V-443h-56.14v19H573v-112h75v19h56v-37.89q0-16.11-10.72-26.61T666.71-592H554.85Q539-592 528-581.29q-11 10.7-11 26.52v148.95Q517-390 527.79-379q10.78 11 26.72 11Z";
+  const ACTIVE_SUBTITLE_ICON_PATH = "M168-192q-29.7 0-50.85-21.16Q96-234.32 96-264.04v-432.24Q96-726 117.15-747T168-768h624q29.7 0 50.85 21.16Q864-725.68 864-695.96v432.24Q864-234 842.85-213T792-192H168Z M168-264h624v-432H168v432Z M168-264h624v-432H168v432Z M240-336h336v-72H240v72Z M648-336h72v-72h-72v72Z M240-480h72v-72h-72v72Z M384-480h336v-72H384v72Z";
+  const BACK_ICON_PATH = "m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z";
 
-  // ── Notification（iOS 風バナー） ─────────────────────────────────────────
-  const NOTIFY_TITLE = "YouTubeに字幕を表示する";
-  const NOTIFY_ICON  = "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/icon_128.png";
+  const CAPTION_MODE = {
+    OFF: "off",
+    CUSTOM: "custom",
+    NATIVE: "native",
+  };
+
+  const STRINGS = {
+    ja: {
+      captions: "字幕",
+      captionsMenu: "字幕",
+      captionsRow: "字幕 (1)",
+      customTrack: "ユーザー作成字幕",
+      off: "オフ",
+      on: "オン",
+      loadCaptions: "字幕を読み込む",
+      reloadCaptions: "字幕を再読み込む",
+      unavailable: "利用不可",
+    },
+    en: {
+      captions: "Subtitles/CC",
+      captionsMenu: "Subtitles/CC",
+      captionsRow: "Subtitles/CC (1)",
+      customTrack: "User-created subtitles",
+      off: "Off",
+      on: "On",
+      loadCaptions: "Load captions",
+      reloadCaptions: "Reload captions",
+      unavailable: "Unavailable",
+    },
+  };
 
   // ── State ─────────────────────────────────────────────────────────────────
   const state = {
     cues: [],
-    enabled: true,
+    captionMode: CAPTION_MODE.OFF,
     currentVideoId: "",
+    nativeCaptionsAvailable: false,
     lastCueIdx: -1,
     renderedBody: null,
     resizeObs: null,
-    notifyTimer: 0,
+    controlsObs: null,
+    controlsObsTarget: null,
+    controlsSyncFrame: 0,
+    menuSyncFrame: 0,
     boundVideo: null,
     routeToken: 0,
+    ignoreNextSubtitlesButtonClick: false,
+    customTopRowMounted: false,
+    customNativeRowMounted: false,
   };
+  const originalSubtitlesButtonIcons = new WeakMap();
 
   // ── Utilities ─────────────────────────────────────────────────────────────
   const isVideoPage = () =>
     location.pathname.startsWith("/watch") || location.pathname.startsWith("/live/");
+
+  function getLocale() {
+    const lang = (
+      document.documentElement.lang ||
+      document.body?.lang ||
+      navigator.language ||
+      "en"
+    ).toLowerCase();
+    return lang.startsWith("ja") ? "ja" : "en";
+  }
+
+  function t(key) {
+    return STRINGS[getLocale()][key];
+  }
 
   function getVideoId() {
     const q = new URLSearchParams(location.search).get("v");
@@ -75,6 +137,39 @@
     return document.getElementById(OVERLAY_ID);
   }
 
+  function getRightControls() {
+    return document.querySelector(RIGHT_CONTROLS_SELECTOR);
+  }
+
+  function getSubtitlesButton() {
+    return getRightControls()?.querySelector(SUBTITLES_BUTTON_SELECTOR) || null;
+  }
+
+  function getSettingsButton() {
+    return document.querySelector(`${PLAYER_SELECTOR} ${SETTINGS_BUTTON_SELECTOR}`);
+  }
+
+  function getLoadButton() {
+    return document.getElementById(LOAD_BUTTON_ID);
+  }
+
+  function getSettingsPopup() {
+    return Array.from(document.querySelectorAll(SETTINGS_POPUP_SELECTOR)).find(isVisibleElement) ||
+      document.querySelector(SETTINGS_POPUP_SELECTOR);
+  }
+
+  function getCustomPanel() {
+    return document.getElementById(CUSTOM_PANEL_ID);
+  }
+
+  function hasCustomCaptions() {
+    return state.cues.length > 0;
+  }
+
+  function isVisibleElement(el) {
+    return !!el && el.isConnected && !el.hidden && el.getClientRects().length > 0;
+  }
+
   function normalizeCaptionText(raw) {
     return raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   }
@@ -91,16 +186,45 @@
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
-  function resetCueState() {
-    state.cues = [];
-    state.lastCueIdx = -1;
-    state.renderedBody = null;
+  function stashAttribute(node, attributeName, datasetKey) {
+    if (datasetKey in node.dataset) return;
+    node.dataset[datasetKey] = node.getAttribute(attributeName) ?? MISSING_ATTRIBUTE_VALUE;
   }
 
-  function setCueState(cues) {
+  function restoreStashedAttribute(node, attributeName, datasetKey) {
+    if (!(datasetKey in node.dataset)) return;
+    const originalValue = node.dataset[datasetKey];
+    if (originalValue === MISSING_ATTRIBUTE_VALUE) {
+      node.removeAttribute(attributeName);
+    } else {
+      node.setAttribute(attributeName, originalValue);
+    }
+    delete node.dataset[datasetKey];
+  }
+
+  function normalizeLabelText(text) {
+    return (text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  function getStoredCustomMode() {
+    return gmGet(CUSTOM_MODE_KEY, CAPTION_MODE.CUSTOM) === CAPTION_MODE.CUSTOM
+      ? CAPTION_MODE.CUSTOM
+      : CAPTION_MODE.OFF;
+  }
+
+  function persistCustomMode(mode) {
+    gmSet(
+      CUSTOM_MODE_KEY,
+      mode === CAPTION_MODE.CUSTOM ? CAPTION_MODE.CUSTOM : CAPTION_MODE.OFF
+    );
+  }
+
+  function applyCueState(cues = []) {
     state.cues = cues;
     state.lastCueIdx = -1;
     state.renderedBody = null;
+    syncLoadButtonState();
+    scheduleSyncSettingsUi();
   }
 
   function isEditableTarget(el = document.activeElement) {
@@ -108,16 +232,125 @@
     return tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable;
   }
 
-  function createNotifyFallbackIcon() {
-    const fallback = document.createElement("div");
-    fallback.className = "ytsrt-notify__icon-fallback";
-    fallback.textContent = "\u5B57";
-    return fallback;
+  function getLoadButtonLabel() {
+    return hasCustomCaptions() ? t("reloadCaptions") : t("loadCaptions");
+  }
+
+  function getCustomRowSummary() {
+    if (!hasCustomCaptions()) return t("unavailable");
+    return state.captionMode === CAPTION_MODE.CUSTOM ? t("customTrack") : t("off");
+  }
+
+  function applyCaptionMode(mode, { persist = true } = {}) {
+    if (mode === CAPTION_MODE.CUSTOM && !hasCustomCaptions()) {
+      mode = getNativeCaptionsActive() ? CAPTION_MODE.NATIVE : CAPTION_MODE.OFF;
+    }
+
+    state.captionMode = mode;
+    if (persist) persistCustomMode(mode);
+
+    if (mode === CAPTION_MODE.CUSTOM) {
+      disableNativeCaptionsIfNeeded();
+      renderCurrentCue();
+    } else {
+      renderOverlay("");
+      if (mode !== CAPTION_MODE.CUSTOM) state.renderedBody = "";
+    }
+
+    syncSubtitlesButtonState();
+    syncLoadButtonState();
+    scheduleSyncSettingsUi();
+  }
+
+  function syncCaptionModeFromPlayer({ persist = false } = {}) {
+    if (state.captionMode === CAPTION_MODE.CUSTOM) return;
+    state.captionMode = getNativeCaptionsActive() ? CAPTION_MODE.NATIVE : CAPTION_MODE.OFF;
+    if (persist) persistCustomMode(state.captionMode);
+    syncSubtitlesButtonState();
+    scheduleSyncSettingsUi();
+  }
+
+  function getNativeCaptionsAvailability() {
+    const button = getSubtitlesButton();
+    const label = normalizeLabelText(
+      button?.getAttribute("aria-label") ||
+      button?.getAttribute("title") ||
+      ""
+    );
+    if (label && !label.includes("unavailable") && !label.includes("利用不可")) {
+      return true;
+    }
+
+    const captionsVisible = Array.from(
+      document.querySelectorAll(
+        `${PLAYER_SELECTOR} .caption-window, ${PLAYER_SELECTOR} .ytp-caption-segment`
+      )
+    ).some((el) => isVisibleElement(el) && normalizeLabelText(el.textContent));
+    if (captionsVisible) return true;
+
+    const popup = getSettingsPopup();
+    const menuTexts = popup
+      ? Array.from(popup.querySelectorAll(MENU_ITEM_SELECTOR))
+        .map((el) => normalizeLabelText(el.textContent))
+      : [];
+    return menuTexts.some((text) =>
+      text.includes("subtitles/cc") ||
+      text.includes("subtitles") ||
+      text.startsWith(normalizeLabelText(t("captionsMenu")))
+    );
+  }
+
+  function syncNativeAvailability() {
+    state.nativeCaptionsAvailable = getNativeCaptionsAvailability();
+  }
+
+  function getNativeCaptionsActive() {
+    const button = getSubtitlesButton();
+    if (!button) return false;
+    return button.getAttribute("aria-pressed") === "true" ||
+      button.classList.contains("ytp-button-active");
+  }
+
+  function disableNativeCaptionsIfNeeded() {
+    const button = getSubtitlesButton();
+    if (!button || !getNativeCaptionsActive()) return;
+    state.ignoreNextSubtitlesButtonClick = true;
+    button.click();
+  }
+
+  function closeSettingsMenu() {
+    removeCustomPanel();
+    const settingsButton = getSettingsButton();
+    if (settingsButton?.getAttribute("aria-expanded") === "true") {
+      settingsButton.click();
+    }
+  }
+
+  function togglePrimaryCaptions() {
+    if (!hasCustomCaptions()) return;
+    if (state.captionMode === CAPTION_MODE.CUSTOM) {
+      applyCaptionMode(CAPTION_MODE.OFF);
+    } else {
+      applyCaptionMode(CAPTION_MODE.CUSTOM);
+    }
+  }
+
+  function toggleCustomShortcutMode() {
+    if (!hasCustomCaptions()) return;
+    togglePrimaryCaptions();
+  }
+
+  function removeCustomPanel() {
+    const panel = getCustomPanel();
+    if (panel) panel.remove();
+  }
+
+  function resetInjectedMenuMarkers() {
+    state.customTopRowMounted = false;
+    state.customNativeRowMounted = false;
   }
 
   // ── SRT parser ────────────────────────────────────────────────────────────
-  // 戻り値: [{ start, end, body }]。body は SRT 本文のまま（タグ含む）。
-  // レンダリング時に DOM へ安全に変換する（TrustedTypes 下でも innerHTML を使わない）。
   function parseSRT(raw) {
     if (!raw) return [];
     const text = normalizeCaptionText(raw).trim();
@@ -152,14 +385,11 @@
     return cues;
   }
 
-  // 本文中の文字列 "\n" / "\r" （バックスラッシュ + 文字）を実改行へ変換する。
-  // 単一行で書かれた字幕に明示的な改行を入れたい場合のため。
   function unescapeNewlines(s) {
     return s.replace(/\\r\\n|\\n|\\r/g, "\n");
   }
 
   // ── LRC parser ────────────────────────────────────────────────────────────
-  // LRC は end time を持たないので、各 cue の end = 次の cue の start。最後の cue は +LAST_LRC_DEFAULT_DURATION。
   function parseLRC(raw) {
     if (!raw) return [];
     const text = normalizeCaptionText(raw);
@@ -228,17 +458,16 @@
   }
 
   function parseCaption(raw) {
-    if (!raw) return { cues: [], format: null };
+    if (!raw) return [];
     const sample = raw.slice(0, 2048);
-    if (/-->/.test(sample)) return { cues: parseSRT(raw), format: "srt" };
+    if (/-->/.test(sample)) return parseSRT(raw);
     if (/^\s*\[\d+:\d+/m.test(sample) || /^\s*\[[a-z]+:/im.test(sample)) {
-      return { cues: parseLRC(raw), format: "lrc" };
+      return parseLRC(raw);
     }
-    return { cues: parseSRT(raw), format: "srt" };
+    return parseSRT(raw);
   }
 
-  // SRT 本文を DOM ノード列としてコンテナに描画する。
-  // 許可タグ: <i>/<b>/<u>（<br> はテキスト中の改行から生成、<font ...> は無視）
+  // ── Body rendering ────────────────────────────────────────────────────────
   function renderBodyInto(container, body) {
     clearChildren(container);
 
@@ -257,7 +486,7 @@
       if (token === "\n") {
         stack[stack.length - 1].appendChild(document.createElement("br"));
       } else if (/^<\/?font\b/i.test(token)) {
-        // <font ...>, </font> は無視（色指定などを落とす）
+        // ignore
       } else if (m[1] === "/") {
         const tag = m[2].toLowerCase();
         if (stack.length > 1 && stack[stack.length - 1].tagName.toLowerCase() === tag) {
@@ -279,7 +508,7 @@
     }
   }
 
-  // ── Cue 検索（現在時刻で表示すべき cue を返す） ─────────────────────────
+  // ── Cue lookup ────────────────────────────────────────────────────────────
   function findCueAt(t) {
     if (!state.cues.length) return null;
 
@@ -342,71 +571,514 @@
       }
       #${OVERLAY_ID}.--visible { display: block; }
 
-      @keyframes ytsrt-notify-in {
-        0%   { opacity: 0; transform: translate(-50%, -100%); }
-        5%   { opacity: 1; transform: translate(-50%, 0); }
-        85%  { opacity: 1; transform: translate(-50%, 0); }
-        100% { opacity: 0; transform: translate(-50%, -100%); }
-      }
-      #${NOTIFY_ID} {
-        position: absolute;
-        top: 12px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 70;
-        pointer-events: none;
-        min-width: 260px;
-        max-width: 400px;
-        padding: 10px 14px;
-        border-radius: 14px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-family: -apple-system, BlinkMacSystemFont, "Noto Sans JP", "Helvetica Neue", sans-serif;
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        animation: ytsrt-notify-in 5s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-      }
-      #${NOTIFY_ID}.--dark {
-        background: rgba(30, 30, 30, 0.88);
-        box-shadow: 0 4px 24px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(255,255,255,0.1) inset;
-      }
-      #${NOTIFY_ID}.--light {
-        background: rgba(255, 255, 255, 0.92);
-        box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06);
-      }
-      .ytsrt-notify__icon {
-        width: 36px;
-        height: 36px;
-        border-radius: 8px;
-        object-fit: cover;
-        flex-shrink: 0;
-      }
-      .ytsrt-notify__icon-fallback {
-        width: 36px;
-        height: 36px;
-        border-radius: 8px;
-        background: linear-gradient(135deg, #FF3B30, #FF6B6B);
-        display: flex;
+      #${LOAD_BUTTON_ID} {
+        position: relative;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
-        flex-shrink: 0;
-        color: #fff;
-        font-size: 18px;
-        font-weight: bold;
+        overflow: visible;
+        padding: 0;
+        line-height: 1;
+        color: var(--yt-spec-text-primary, #fff);
       }
-      .ytsrt-notify__body { display: flex; flex-direction: column; gap: 1px; }
-      .ytsrt-notify__title { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; }
-      .ytsrt-notify__msg   { font-size: 12px; font-weight: 400; }
-      .ytsrt-notify__time  { font-size: 11px; margin-left: auto; align-self: flex-start; flex-shrink: 0; }
-      #${NOTIFY_ID}.--dark .ytsrt-notify__title { color: rgba(255,255,255,0.95); }
-      #${NOTIFY_ID}.--dark .ytsrt-notify__msg   { color: rgba(255,255,255,0.6); }
-      #${NOTIFY_ID}.--dark .ytsrt-notify__time  { color: rgba(255,255,255,0.35); }
-      #${NOTIFY_ID}.--light .ytsrt-notify__title { color: rgba(0,0,0,0.88); }
-      #${NOTIFY_ID}.--light .ytsrt-notify__msg   { color: rgba(0,0,0,0.5); }
-      #${NOTIFY_ID}.--light .ytsrt-notify__time  { color: rgba(0,0,0,0.3); }
+      #${LOAD_BUTTON_ID} .ytsrt-load-button__icon {
+        width: 24px;
+        height: 24px;
+        display: block;
+        fill: currentColor;
+        opacity: 1;
+      }
+      #${LOAD_BUTTON_ID} .ytsrt-load-button__indicator {
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
+        width: 4px;
+        height: 4px;
+        border-radius: 999px;
+        background: #8ab4f8;
+        opacity: 0;
+        transition: opacity 120ms ease;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.75);
+        pointer-events: none;
+      }
+      #${LOAD_BUTTON_ID}.--loaded .ytsrt-load-button__indicator {
+        opacity: 1;
+      }
+      ${PLAYER_SELECTOR} .ytp-subtitles-button.ytsrt-subtitles-ready {
+        opacity: 1 !important;
+        filter: none !important;
+        color: #fff !important;
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      ${PLAYER_SELECTOR} .ytp-subtitles-button.ytsrt-subtitles-ready *,
+      ${PLAYER_SELECTOR} .ytp-subtitles-button.ytsrt-subtitles-ready svg,
+      ${PLAYER_SELECTOR} .ytp-subtitles-button.ytsrt-subtitles-ready path {
+        opacity: 1 !important;
+        fill-opacity: 1 !important;
+        fill: currentColor !important;
+      }
+      ${PLAYER_SELECTOR} .ytp-subtitles-button.ytsrt-subtitles-custom-active {
+        color: #fff !important;
+      }
+
+      .ytsrt-menuitem {
+        cursor: pointer;
+      }
+      .ytsrt-menuitem .ytp-menuitem-label {
+        white-space: nowrap;
+      }
+      .ytsrt-menuitem .ytsrt-menuitem-status {
+        color: #aaa;
+        font-size: 14.5px;
+      }
+      .ytsrt-menuitem.ytsrt-choice-row .ytp-menuitem-icon {
+        display: none;
+      }
+      .ytsrt-menuitem.ytsrt-choice-row .ytp-menuitem-content {
+        color: #aaa;
+        font-size: 12px;
+      }
+      .ytsrt-menuitem.ytsrt-choice-row .ytp-menuitem-label,
+      .ytsrt-menuitem.ytsrt-choice-row .ytp-menuitem-content {
+        margin-left: 0;
+      }
+      .ytsrt-menuitem svg,
+      .ytsrt-menuitem path {
+        fill: currentColor;
+        opacity: 1 !important;
+      }
+      .ytsrt-menuitem .ytsrt-subtitle-glyph {
+        opacity: 1 !important;
+      }
+      .ytsrt-menuitem.ytsrt-custom-track-row .ytp-menuitem-icon {
+        visibility: hidden;
+      }
+      #${CUSTOM_PANEL_ID} {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        border-radius: inherit;
+        background: rgba(28, 28, 28, 0.92);
+        overflow: hidden;
+      }
+      #${CUSTOM_PANEL_ID} .ytsrt-custom-panel__header {
+        display: flex;
+        align-items: center;
+        min-height: 48px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      #${CUSTOM_PANEL_ID} .ytsrt-custom-panel__back {
+        flex: 0 0 auto;
+        width: 48px;
+        height: 48px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+      }
+      #${CUSTOM_PANEL_ID} .ytsrt-custom-panel__back svg {
+        width: 18px;
+        height: 18px;
+        fill: currentColor;
+      }
+      #${CUSTOM_PANEL_ID} .ytsrt-custom-panel__title {
+        color: #fff;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      #${CUSTOM_PANEL_ID} .ytsrt-custom-panel__list {
+        padding: 8px 0;
+      }
     `;
     document.head.appendChild(style);
+  }
+
+  // ── SVG helpers ───────────────────────────────────────────────────────────
+  function createSvgIcon(pathData, viewBox = "0 -960 960 960", transform = "") {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", viewBox);
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", pathData);
+    if (transform) path.setAttribute("transform", transform);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function getLoadButtonPathTransform() {
+    return `translate(480 -480) scale(${LOAD_BUTTON_PATH_SCALE}) translate(-480 480)`;
+  }
+
+  function cloneSubtitleIcon() {
+    const button = getSubtitlesButton();
+    const currentIcon = getSubtitlesButtonIconContainer(button);
+    const sourceIcon = currentIcon?.dataset.ytsrtCustomIcon === "1"
+      ? originalSubtitlesButtonIcons.get(button) || currentIcon
+      : currentIcon;
+    const source = sourceIcon?.querySelector("svg");
+    if (source) {
+      const svg = source.cloneNode(true);
+      svg.setAttribute("fill-opacity", "1");
+      svg.querySelectorAll("[fill-opacity]").forEach((el) => {
+        el.setAttribute("fill-opacity", "1");
+      });
+      return svg;
+    }
+
+    const glyph = sourceIcon?.querySelector(".ytsrt-subtitle-glyph");
+    if (glyph) return glyph.cloneNode(true);
+
+    const span = document.createElement("span");
+    span.className = "ytsrt-subtitle-glyph";
+    span.textContent = "CC";
+    span.style.fontSize = "11px";
+    span.style.fontWeight = "700";
+    span.style.letterSpacing = "0.02em";
+    span.style.opacity = "1";
+    return span;
+  }
+
+  function createActiveSubtitleIcon() {
+    const svg = createSvgIcon(
+      ACTIVE_SUBTITLE_ICON_PATH,
+      "0 -960 960 960",
+      getLoadButtonPathTransform()
+    );
+    svg.setAttribute("width", "24");
+    svg.setAttribute("height", "24");
+    svg.setAttribute("fill", "currentColor");
+    const path = svg.querySelector("path");
+    if (path) {
+      path.setAttribute("fill", "currentColor");
+      path.setAttribute("fill-rule", "evenodd");
+    }
+    return svg;
+  }
+
+  function createCustomSubtitlesButtonIcon(template = null) {
+    const icon = template ? template.cloneNode(false) : document.createElement("div");
+    icon.className = template?.className || "ytp-subtitles-button-icon";
+    icon.setAttribute("fill-opacity", "1");
+    icon.dataset.ytsrtCustomIcon = "1";
+    clearChildren(icon);
+    icon.appendChild(createActiveSubtitleIcon());
+    return icon;
+  }
+
+  function getSubtitlesButtonIconContainer(button = getSubtitlesButton()) {
+    return button?.querySelector(".ytp-subtitles-button-icon") || null;
+  }
+
+  function syncSubtitlesButtonIcon(button = getSubtitlesButton(), customActive = false) {
+    const icon = getSubtitlesButtonIconContainer(button);
+    if (!button || !icon) return;
+
+    if (customActive) {
+      if (!originalSubtitlesButtonIcons.has(button)) {
+        originalSubtitlesButtonIcons.set(button, icon.cloneNode(true));
+      }
+      if (icon.dataset.ytsrtCustomIcon === "1") return;
+      icon.replaceWith(createCustomSubtitlesButtonIcon(icon));
+      return;
+    }
+
+    if (icon.dataset.ytsrtCustomIcon !== "1") return;
+
+    const originalIcon = originalSubtitlesButtonIcons.get(button);
+    if (originalIcon) icon.replaceWith(originalIcon.cloneNode(true));
+  }
+
+  function createMenuItem({
+    id = "",
+    label = "",
+    content = "",
+    checked = false,
+    iconNode = null,
+    role = "menuitemradio",
+  }) {
+    const item = document.createElement("div");
+    item.className = "ytp-menuitem ytsrt-menuitem";
+    item.setAttribute("role", role);
+    item.setAttribute("tabindex", "0");
+    if (role === "menuitemradio") {
+      item.setAttribute("aria-checked", checked ? "true" : "false");
+    }
+    if (id) item.id = id;
+
+    const icon = document.createElement("div");
+    icon.className = "ytp-menuitem-icon";
+    if (iconNode) icon.appendChild(iconNode);
+
+    const labelNode = document.createElement("div");
+    labelNode.className = "ytp-menuitem-label";
+    labelNode.textContent = label;
+
+    const contentNode = document.createElement("div");
+    contentNode.className = "ytp-menuitem-content";
+    if (content) {
+      const text = document.createElement("span");
+      text.className = "ytsrt-menuitem-status";
+      text.textContent = content;
+      contentNode.appendChild(text);
+    }
+
+    item.appendChild(icon);
+    item.appendChild(labelNode);
+    item.appendChild(contentNode);
+    return item;
+  }
+
+  function findMenuItemSummaryHost(contentNode) {
+    if (!contentNode) return null;
+
+    const directChildren = Array.from(contentNode.children);
+    const textLikeChild = directChildren.find((child) =>
+      !child.querySelector("svg, path") && normalizeLabelText(child.textContent)
+    );
+    if (textLikeChild) return textLikeChild;
+
+    return directChildren.find((child) => !child.querySelector("svg, path")) || null;
+  }
+
+  function getMenuItemSummaryText(contentNode) {
+    if (!contentNode) return "";
+    const host = findMenuItemSummaryHost(contentNode);
+    return (host?.textContent || contentNode.textContent || "").trim();
+  }
+
+  function setMenuItemSummaryText(contentNode, text) {
+    if (!contentNode) return;
+
+    const host = findMenuItemSummaryHost(contentNode);
+    if (host) {
+      host.textContent = text;
+      return;
+    }
+
+    const arrowNodes = Array.from(contentNode.children).filter((child) =>
+      child.querySelector("svg, path")
+    );
+    clearChildren(contentNode);
+
+    const summary = document.createElement("span");
+    summary.className = "ytsrt-menuitem-status";
+    summary.textContent = text;
+    contentNode.appendChild(summary);
+    arrowNodes.forEach((node) => contentNode.appendChild(node));
+  }
+
+  function replaceMenuItemIcon(item, iconNode) {
+    const icon = item?.querySelector(".ytp-menuitem-icon");
+    if (!icon) return;
+    clearChildren(icon);
+    if (iconNode) icon.appendChild(iconNode);
+  }
+
+  // ── Player controls / load button ────────────────────────────────────────
+  function createLoadButton() {
+    ensureStyle();
+
+    const button = document.createElement("button");
+    button.id = LOAD_BUTTON_ID;
+    button.className = "ytp-button";
+    button.type = "button";
+    button.setAttribute("aria-keyshortcuts", LOAD_BUTTON_SHORTCUT);
+    button.dataset.titleNoTooltip = getLoadButtonLabel();
+
+    const svg = createSvgIcon(
+      LOAD_BUTTON_SVG_PATH,
+      "0 -960 960 960",
+      getLoadButtonPathTransform()
+    );
+    svg.setAttribute("class", "ytsrt-load-button__icon");
+    button.appendChild(svg);
+
+    const indicator = document.createElement("span");
+    indicator.className = "ytsrt-load-button__indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    button.appendChild(indicator);
+
+    button.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openFilePicker();
+    });
+    syncLoadButtonState(button);
+    return button;
+  }
+
+  function syncLoadButtonState(button = getLoadButton()) {
+    if (!button) return;
+    const label = getLoadButtonLabel();
+    syncNativeAvailability();
+    button.setAttribute("aria-label", label);
+    button.dataset.titleNoTooltip = label;
+    button.classList.toggle("--loaded", hasCustomCaptions());
+    syncSubtitlesButtonState();
+
+    const topRow = document.getElementById(CUSTOM_TOP_ROW_ID);
+    if (topRow) {
+      setMenuItemSummaryText(
+        topRow.querySelector(".ytp-menuitem-content"),
+        getCustomRowSummary()
+      );
+    }
+  }
+
+  function syncSubtitlesButtonState(button = getSubtitlesButton()) {
+    if (!button) return;
+
+    const ready = hasCustomCaptions();
+    const customActive = ready && state.captionMode === CAPTION_MODE.CUSTOM;
+    button.classList.toggle("ytsrt-subtitles-ready", ready);
+    button.classList.toggle("ytsrt-subtitles-custom-active", customActive);
+
+    if (ready) {
+      stashAttribute(button, "aria-label", "ytsrtOriginalAriaLabel");
+      stashAttribute(button, "aria-pressed", "ytsrtOriginalAriaPressed");
+      stashAttribute(button, "title", "ytsrtOriginalTitle");
+      stashAttribute(button, "data-title-no-tooltip", "ytsrtOriginalDataTitle");
+      stashAttribute(button, "data-tooltip-title", "ytsrtOriginalTooltipTitle");
+      button.setAttribute("aria-label", t("captions"));
+      button.setAttribute("title", t("captions"));
+      button.setAttribute("data-title-no-tooltip", t("captions"));
+      button.setAttribute("data-tooltip-title", t("captions"));
+      button.disabled = false;
+      button.removeAttribute("disabled");
+      button.setAttribute("aria-disabled", "false");
+      button.removeAttribute("aria-hidden");
+      button.setAttribute(
+        "aria-pressed",
+        state.captionMode === CAPTION_MODE.OFF ? "false" : "true"
+      );
+      button.classList.remove("ytp-button-disabled");
+      button.tabIndex = 0;
+      syncSubtitlesButtonIcon(button, customActive);
+      button.querySelectorAll("[fill-opacity]").forEach((el) => {
+        if (!el.dataset.ytsrtOriginalFillOpacity) {
+          el.dataset.ytsrtOriginalFillOpacity = el.getAttribute("fill-opacity") || "";
+        }
+        el.setAttribute("fill-opacity", "1");
+      });
+      if (customActive && !button.classList.contains("ytp-button-active")) {
+        button.dataset.ytsrtForcedActive = "1";
+        button.classList.add("ytp-button-active");
+      }
+    }
+
+    if (
+      !customActive &&
+      state.captionMode === CAPTION_MODE.OFF &&
+      button.dataset.ytsrtForcedActive === "1"
+    ) {
+      button.classList.remove("ytp-button-active");
+      delete button.dataset.ytsrtForcedActive;
+    }
+
+    if (!ready) {
+      syncSubtitlesButtonIcon(button, false);
+      button.removeAttribute("aria-disabled");
+      restoreStashedAttribute(button, "aria-label", "ytsrtOriginalAriaLabel");
+      restoreStashedAttribute(button, "aria-pressed", "ytsrtOriginalAriaPressed");
+      restoreStashedAttribute(button, "title", "ytsrtOriginalTitle");
+      restoreStashedAttribute(button, "data-title-no-tooltip", "ytsrtOriginalDataTitle");
+      restoreStashedAttribute(button, "data-tooltip-title", "ytsrtOriginalTooltipTitle");
+      button.querySelectorAll("[data-ytsrt-original-fill-opacity]").forEach((el) => {
+        const original = el.dataset.ytsrtOriginalFillOpacity;
+        if (original) el.setAttribute("fill-opacity", original);
+        else el.removeAttribute("fill-opacity");
+        delete el.dataset.ytsrtOriginalFillOpacity;
+      });
+    }
+  }
+
+  function ensureLoadButton() {
+    if (!isVideoPage()) return null;
+
+    const player = getPlayer();
+    if (!player) return null;
+
+    observeControls(player);
+
+    const subtitlesButton = getSubtitlesButton();
+    if (!subtitlesButton?.parentNode) return null;
+
+    let button = getLoadButton();
+    if (!button) button = createLoadButton();
+
+    if (button.parentElement !== subtitlesButton.parentNode || button.previousSibling !== subtitlesButton) {
+      subtitlesButton.parentNode.insertBefore(button, subtitlesButton.nextSibling);
+    }
+
+    syncLoadButtonState(button);
+    return button;
+  }
+
+  function scheduleEnsureUi() {
+    if (state.controlsSyncFrame) return;
+    state.controlsSyncFrame = requestAnimationFrame(() => {
+      state.controlsSyncFrame = 0;
+      ensureLoadButton();
+      scheduleSyncSettingsUi();
+    });
+  }
+
+  function observeControls(player) {
+    if (typeof MutationObserver === "undefined") return;
+    if (state.controlsObs && state.controlsObsTarget === player) return;
+
+    disconnectControlsObserver();
+    state.controlsObs = new MutationObserver(() => scheduleEnsureUi());
+    state.controlsObs.observe(player, { childList: true, subtree: true, attributes: true });
+    state.controlsObsTarget = player;
+  }
+
+  function disconnectControlsObserver() {
+    if (state.controlsSyncFrame) {
+      cancelAnimationFrame(state.controlsSyncFrame);
+      state.controlsSyncFrame = 0;
+    }
+    if (state.menuSyncFrame) {
+      cancelAnimationFrame(state.menuSyncFrame);
+      state.menuSyncFrame = 0;
+    }
+    if (!state.controlsObs) return;
+    state.controlsObs.disconnect();
+    state.controlsObs = null;
+    state.controlsObsTarget = null;
+  }
+
+  function removePlayerControlsUi() {
+    const button = getLoadButton();
+    if (button) button.remove();
+
+    const subtitlesButton = getSubtitlesButton();
+    if (subtitlesButton) {
+      syncSubtitlesButtonIcon(subtitlesButton, false);
+      subtitlesButton.classList.remove(
+        "ytsrt-subtitles-ready",
+        "ytsrt-subtitles-custom-active"
+      );
+      if (subtitlesButton.dataset.ytsrtForcedActive === "1") {
+        subtitlesButton.classList.remove("ytp-button-active");
+        delete subtitlesButton.dataset.ytsrtForcedActive;
+      }
+      restoreStashedAttribute(subtitlesButton, "aria-label", "ytsrtOriginalAriaLabel");
+      restoreStashedAttribute(subtitlesButton, "aria-pressed", "ytsrtOriginalAriaPressed");
+      restoreStashedAttribute(subtitlesButton, "title", "ytsrtOriginalTitle");
+      restoreStashedAttribute(subtitlesButton, "data-title-no-tooltip", "ytsrtOriginalDataTitle");
+      restoreStashedAttribute(subtitlesButton, "data-tooltip-title", "ytsrtOriginalTooltipTitle");
+      subtitlesButton.querySelectorAll("[data-ytsrt-original-fill-opacity]").forEach((el) => {
+        const original = el.dataset.ytsrtOriginalFillOpacity;
+        if (original) el.setAttribute("fill-opacity", original);
+        else el.removeAttribute("fill-opacity");
+        delete el.dataset.ytsrtOriginalFillOpacity;
+      });
+    }
   }
 
   // ── Overlay lifecycle ─────────────────────────────────────────────────────
@@ -476,9 +1148,405 @@
     state.renderedBody = nextBody;
   }
 
+  // ── Settings menu integration ─────────────────────────────────────────────
+  function scheduleSyncSettingsUi() {
+    if (state.menuSyncFrame) return;
+    state.menuSyncFrame = requestAnimationFrame(() => {
+      state.menuSyncFrame = 0;
+      syncNativeAvailability();
+      syncSettingsUi();
+    });
+  }
+
+  function burstSyncSettingsUi() {
+    scheduleSyncSettingsUi();
+    setTimeout(() => scheduleSyncSettingsUi(), 0);
+    setTimeout(() => scheduleSyncSettingsUi(), 120);
+    setTimeout(() => scheduleSyncSettingsUi(), 320);
+  }
+
+  function getVisibleMenuItems(popup = getSettingsPopup()) {
+    if (!popup || !isVisibleElement(popup)) return [];
+    return Array.from(popup.querySelectorAll(MENU_ITEM_SELECTOR)).filter(isVisibleElement);
+  }
+
+  function findTopLevelMenuContainer(popup = getSettingsPopup()) {
+    const direct = Array.from(popup?.querySelectorAll(".ytp-panel-menu") || []).find((el) =>
+      isVisibleElement(el) && !el.closest(`#${CUSTOM_PANEL_ID}`)
+    );
+    if (direct) return direct;
+
+    const items = getVisibleMenuItems(popup);
+    if (!items.length) return null;
+
+    const containers = new Map();
+    for (const item of items) {
+      if (
+        item.id === CUSTOM_TOP_ROW_ID ||
+        item.id === CUSTOM_NATIVE_ROW_ID ||
+        item.closest(`#${CUSTOM_PANEL_ID}`)
+      ) continue;
+      const parent = item.parentElement;
+      if (!parent) continue;
+      const current = containers.get(parent) || [];
+      current.push(item);
+      containers.set(parent, current);
+    }
+
+    let best = null;
+    let bestScore = -1;
+    for (const [container, menuItems] of containers) {
+      const hasToggle = menuItems.some((item) =>
+        item.querySelector(".ytp-menuitem-toggle-checkbox")
+      );
+      const hasBack = menuItems.some((item) =>
+        normalizeLabelText(item.textContent).includes(normalizeLabelText(t("captionsMenu")))
+      );
+      let score = menuItems.length;
+      if (hasToggle) score += 20;
+      if (hasBack) score -= 10;
+      if (score > bestScore) {
+        bestScore = score;
+        best = container;
+      }
+    }
+    return best;
+  }
+
+  function isCaptionMenuContext(popup = getSettingsPopup()) {
+    if (!popup || !isVisibleElement(popup)) return false;
+    const text = normalizeLabelText(popup.textContent);
+    return text.includes(normalizeLabelText(t("captionsMenu"))) ||
+      text.includes("subtitles/cc") ||
+      text.includes("subtitles") ||
+      text.includes("captions");
+  }
+
+  function findCaptionMenuContainer(popup = getSettingsPopup()) {
+    if (!isCaptionMenuContext(popup)) return null;
+    const items = getVisibleMenuItems(popup).filter((item) =>
+      item.id !== CUSTOM_TOP_ROW_ID &&
+      item.id !== CUSTOM_NATIVE_ROW_ID &&
+      !item.closest(`#${CUSTOM_PANEL_ID}`)
+    );
+    if (!items.length) return null;
+
+    const counts = new Map();
+    for (const item of items) {
+      const parent = item.parentElement;
+      if (!parent) continue;
+      counts.set(parent, (counts.get(parent) || 0) + 1);
+    }
+
+    let best = null;
+    let bestCount = -1;
+    for (const [container, count] of counts) {
+      if (count > bestCount) {
+        best = container;
+        bestCount = count;
+      }
+    }
+    return best;
+  }
+
+  function isNativeCaptionSelectionMenu(popup = getSettingsPopup()) {
+    if (!isCaptionMenuContext(popup)) return false;
+    return getVisibleMenuItems(popup).some((item) =>
+      item.id !== CUSTOM_TOP_ROW_ID &&
+      item.id !== CUSTOM_NATIVE_ROW_ID &&
+      item.getAttribute("role") === "menuitemradio"
+    );
+  }
+
+  function renderCustomSubmenu() {
+    removeCustomPanel();
+    const popup = getSettingsPopup();
+    if (!popup || !isVisibleElement(popup)) return;
+    ensureStyle();
+
+    const panel = document.createElement("div");
+    panel.id = CUSTOM_PANEL_ID;
+
+    const header = document.createElement("div");
+    header.className = "ytsrt-custom-panel__header";
+
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "ytsrt-custom-panel__back";
+    back.setAttribute("aria-label", t("captionsMenu"));
+    back.appendChild(createSvgIcon(BACK_ICON_PATH));
+    back.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      removeCustomPanel();
+      scheduleSyncSettingsUi();
+    });
+
+    const title = document.createElement("div");
+    title.className = "ytsrt-custom-panel__title";
+    title.textContent = t("captionsMenu");
+
+    header.appendChild(back);
+    header.appendChild(title);
+    panel.appendChild(header);
+
+    const list = document.createElement("div");
+    list.className = "ytsrt-custom-panel__list";
+
+    const offItem = createMenuItem({
+      label: t("off"),
+      checked: state.captionMode === CAPTION_MODE.OFF,
+      iconNode: document.createTextNode(""),
+    });
+    offItem.classList.add("ytsrt-choice-row");
+    offItem.dataset.ytsrtChoice = CAPTION_MODE.OFF;
+    offItem.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      applyCaptionMode(CAPTION_MODE.OFF);
+      closeSettingsMenu();
+    });
+
+    const customItem = createMenuItem({
+      label: t("customTrack"),
+      checked: state.captionMode === CAPTION_MODE.CUSTOM,
+      iconNode: document.createTextNode(""),
+      content: state.captionMode === CAPTION_MODE.CUSTOM ? t("customTrack") : "",
+    });
+    customItem.classList.add("ytsrt-choice-row");
+    customItem.dataset.ytsrtChoice = CAPTION_MODE.CUSTOM;
+    customItem.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      applyCaptionMode(CAPTION_MODE.CUSTOM);
+      closeSettingsMenu();
+    });
+
+    list.appendChild(offItem);
+    list.appendChild(customItem);
+    panel.appendChild(list);
+    popup.appendChild(panel);
+  }
+
+  function cloneTopLevelMenuRowTemplate(container = findTopLevelMenuContainer()) {
+    if (!container) return null;
+
+    const candidates = Array.from(container.querySelectorAll(MENU_ITEM_SELECTOR)).filter((item) =>
+      item.id !== CUSTOM_TOP_ROW_ID &&
+      item.id !== CUSTOM_NATIVE_ROW_ID &&
+      !item.closest(`#${CUSTOM_PANEL_ID}`) &&
+      !item.querySelector(".ytp-menuitem-toggle-checkbox") &&
+      item.querySelector(".ytp-menuitem-content")
+    );
+    const template = candidates.find((item) => !isNativeCaptionsTopRow(item)) || candidates[0];
+    return template ? template.cloneNode(true) : null;
+  }
+
+  function buildTopLevelCustomRow(container = findTopLevelMenuContainer()) {
+    const row = cloneTopLevelMenuRowTemplate(container) || createMenuItem({
+      label: t("captionsRow"),
+      content: getCustomRowSummary(),
+      checked: false,
+      iconNode: cloneSubtitleIcon(),
+      role: "menuitem",
+    });
+
+    row.id = CUSTOM_TOP_ROW_ID;
+    row.classList.add("ytsrt-menuitem");
+    row.dataset.ytsrtTopRow = "1";
+    row.setAttribute("role", "menuitem");
+    row.setAttribute("tabindex", "0");
+    row.removeAttribute("aria-checked");
+    replaceMenuItemIcon(row, cloneSubtitleIcon());
+
+    const labelNode = row.querySelector(".ytp-menuitem-label");
+    if (labelNode) labelNode.textContent = t("captionsRow");
+    setMenuItemSummaryText(row.querySelector(".ytp-menuitem-content"), getCustomRowSummary());
+
+    row.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      renderCustomSubmenu();
+    });
+    return row;
+  }
+
+  function buildNativeCustomRow() {
+    const row = createMenuItem({
+      id: CUSTOM_NATIVE_ROW_ID,
+      label: t("customTrack"),
+      checked: state.captionMode === CAPTION_MODE.CUSTOM,
+      iconNode: document.createTextNode(""),
+    });
+    row.classList.add("ytsrt-custom-track-row");
+    row.classList.add("ytsrt-choice-row");
+    row.dataset.ytsrtChoice = CAPTION_MODE.CUSTOM;
+    row.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      applyCaptionMode(CAPTION_MODE.CUSTOM);
+      closeSettingsMenu();
+    });
+    return row;
+  }
+
+  function mountTopLevelCustomRow(container) {
+    if (!container || document.getElementById(CUSTOM_TOP_ROW_ID)) return;
+    const row = buildTopLevelCustomRow(container);
+    const items = Array.from(container.querySelectorAll(MENU_ITEM_SELECTOR));
+    const before = items.find((item) =>
+      !item.querySelector(".ytp-menuitem-toggle-checkbox")
+    );
+    if (before) container.insertBefore(row, before);
+    else container.appendChild(row);
+    state.customTopRowMounted = true;
+  }
+
+  function mountNativeCustomRow(container) {
+    if (!container || document.getElementById(CUSTOM_NATIVE_ROW_ID)) return;
+    const row = buildNativeCustomRow();
+    container.appendChild(row);
+    state.customNativeRowMounted = true;
+    syncCaptionMenuChecks(container);
+  }
+
+  function getMenuItemLabel(item) {
+    return normalizeLabelText(item?.querySelector(".ytp-menuitem-label")?.textContent || "");
+  }
+
+  function isNativeCaptionsTopRow(item) {
+    const label = getMenuItemLabel(item);
+    return label === normalizeLabelText(t("captionsMenu")) ||
+      label.includes("subtitles/cc") ||
+      label === "subtitles" ||
+      label === "captions";
+  }
+
+  function findNativeCaptionsTopRow(popup = getSettingsPopup()) {
+    const container = findTopLevelMenuContainer(popup);
+    if (!container) return null;
+    return Array.from(container.querySelectorAll(MENU_ITEM_SELECTOR))
+      .find((item) =>
+        item.id !== CUSTOM_TOP_ROW_ID &&
+        item.id !== CUSTOM_NATIVE_ROW_ID &&
+        !item.closest(`#${CUSTOM_PANEL_ID}`) &&
+        isNativeCaptionsTopRow(item)
+      ) || null;
+  }
+
+  function syncTopLevelCaptionsSummary(popup = getSettingsPopup()) {
+    if (!popup || !isVisibleElement(popup)) return;
+    const row = findNativeCaptionsTopRow(popup);
+    const content = row?.querySelector(".ytp-menuitem-content");
+    if (!content) return;
+
+    if (
+      !content.dataset.ytsrtOriginalText &&
+      !(hasCustomCaptions() && state.captionMode === CAPTION_MODE.CUSTOM)
+    ) {
+      content.dataset.ytsrtOriginalText = getMenuItemSummaryText(content);
+    }
+
+    if (hasCustomCaptions() && state.captionMode === CAPTION_MODE.CUSTOM) {
+      setMenuItemSummaryText(content, t("customTrack"));
+    } else if (content.dataset.ytsrtOriginalText) {
+      setMenuItemSummaryText(content, content.dataset.ytsrtOriginalText);
+      delete content.dataset.ytsrtOriginalText;
+    }
+  }
+
+  function syncCaptionMenuChecks(container = findCaptionMenuContainer()) {
+    if (!container) return;
+    const customActive = state.captionMode === CAPTION_MODE.CUSTOM;
+    const customRow = document.getElementById(CUSTOM_NATIVE_ROW_ID);
+
+    for (const item of Array.from(container.querySelectorAll(MENU_ITEM_SELECTOR))) {
+      if (item.closest(`#${CUSTOM_PANEL_ID}`)) continue;
+      if (item === customRow) {
+        item.setAttribute("aria-checked", customActive ? "true" : "false");
+        continue;
+      }
+      if (customActive) item.setAttribute("aria-checked", "false");
+    }
+  }
+
+  function syncSettingsUi() {
+    const popup = getSettingsPopup();
+    removeStaleInjectedRows();
+    if (!popup || !isVisibleElement(popup)) {
+      removeCustomPanel();
+      resetInjectedMenuMarkers();
+      return;
+    }
+
+    const nativeTopRow = findNativeCaptionsTopRow(popup);
+    const nativeCaptionContainer = hasCustomCaptions() &&
+      (nativeTopRow || isNativeCaptionSelectionMenu(popup))
+      ? findCaptionMenuContainer(popup)
+      : null;
+
+    if (hasCustomCaptions() && !nativeCaptionContainer) {
+      const container = findTopLevelMenuContainer(popup);
+      if (container) mountTopLevelCustomRow(container);
+    }
+
+    if (nativeCaptionContainer) {
+      mountNativeCustomRow(nativeCaptionContainer);
+      syncCaptionMenuChecks(nativeCaptionContainer);
+    }
+
+    syncTopLevelCaptionsSummary(popup);
+  }
+
+  function removeStaleInjectedRows() {
+    const top = document.getElementById(CUSTOM_TOP_ROW_ID);
+    if (top && !hasCustomCaptions()) top.remove();
+
+    const nativeRow = document.getElementById(CUSTOM_NATIVE_ROW_ID);
+    if (nativeRow && (!hasCustomCaptions() || !findNativeCaptionsTopRow())) nativeRow.remove();
+
+    state.customTopRowMounted = !!document.getElementById(CUSTOM_TOP_ROW_ID);
+    state.customNativeRowMounted = !!document.getElementById(CUSTOM_NATIVE_ROW_ID);
+  }
+
+  function onMenuItemActivated(item) {
+    if (!item) return;
+
+    if (item.id === CUSTOM_TOP_ROW_ID) {
+      renderCustomSubmenu();
+      return;
+    }
+
+    if (item.dataset.ytsrtChoice === CAPTION_MODE.CUSTOM) {
+      applyCaptionMode(CAPTION_MODE.CUSTOM);
+      closeSettingsMenu();
+      return;
+    }
+
+    if (item.dataset.ytsrtChoice === CAPTION_MODE.OFF) {
+      applyCaptionMode(CAPTION_MODE.OFF);
+      closeSettingsMenu();
+      return;
+    }
+
+    if (hasCustomCaptions() && state.nativeCaptionsAvailable && isCaptionMenuContext()) {
+      const text = normalizeLabelText(item.textContent);
+      setTimeout(() => {
+        if (text === normalizeLabelText(t("off"))) {
+          applyCaptionMode(CAPTION_MODE.OFF, { persist: false });
+        } else if (!text.includes(normalizeLabelText(t("customTrack")))) {
+          state.captionMode = CAPTION_MODE.NATIVE;
+          renderOverlay("");
+          syncSubtitlesButtonState();
+          scheduleSyncSettingsUi();
+        }
+      }, 0);
+    }
+  }
+
   // ── Time update → render cue ──────────────────────────────────────────────
   function renderCurrentCue() {
-    if (!state.enabled) {
+    if (state.captionMode !== CAPTION_MODE.CUSTOM) {
       renderOverlay("");
       return;
     }
@@ -512,80 +1580,7 @@
     return true;
   }
 
-  // ── Notification（iOS 風バナー） ───────────────────────────────────────
-  function notify(msg) {
-    ensureStyle();
-
-    const player = getPlayer();
-    if (!player) return;
-
-    const existing = document.getElementById(NOTIFY_ID);
-    if (existing) existing.remove();
-    if (state.notifyTimer) {
-      clearTimeout(state.notifyTimer);
-      state.notifyTimer = 0;
-    }
-
-    const isDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-
-    const banner = document.createElement("div");
-    banner.id = NOTIFY_ID;
-    banner.classList.add(isDark ? "--dark" : "--light");
-
-    if (NOTIFY_ICON) {
-      const img = document.createElement("img");
-      img.className = "ytsrt-notify__icon";
-      img.src = NOTIFY_ICON;
-      img.alt = "";
-      img.onerror = () => img.replaceWith(createNotifyFallbackIcon());
-      banner.appendChild(img);
-    } else {
-      banner.appendChild(createNotifyFallbackIcon());
-    }
-
-    const body = document.createElement("div");
-    body.className = "ytsrt-notify__body";
-
-    const title = document.createElement("div");
-    title.className = "ytsrt-notify__title";
-    title.textContent = NOTIFY_TITLE;
-
-    const message = document.createElement("div");
-    message.className = "ytsrt-notify__msg";
-    message.textContent = msg;
-
-    body.appendChild(title);
-    body.appendChild(message);
-    banner.appendChild(body);
-
-    const time = document.createElement("div");
-    time.className = "ytsrt-notify__time";
-    time.textContent = "\u4ECA";
-    banner.appendChild(time);
-
-    player.appendChild(banner);
-    state.notifyTimer = setTimeout(() => {
-      if (banner.parentNode) banner.remove();
-      state.notifyTimer = 0;
-    }, 3500);
-  }
-
-  // ── Toggle / Load ─────────────────────────────────────────────────────────
-  function setEnabled(on) {
-    state.enabled = !!on;
-    gmSet(ENABLED_KEY, state.enabled);
-    renderCurrentCue();
-  }
-
-  function toggleEnabled() {
-    if (!state.cues.length) {
-      notify("字幕が読み込まれていません（Alt+Shift+C）");
-      return;
-    }
-    setEnabled(!state.enabled);
-    notify(state.enabled ? "字幕: ON" : "字幕: OFF");
-  }
-
+  // ── Load / route handling ─────────────────────────────────────────────────
   function waitForPlayer(timeoutMs = 10000) {
     return new Promise((resolve) => {
       const deadline = Date.now() + timeoutMs;
@@ -604,36 +1599,31 @@
     enableAfterLoad = false,
     routeToken = state.routeToken,
   } = {}) {
-    const { cues, format } = parseCaption(raw);
-    if (!cues.length) return { ok: false, reason: "parse" };
+    const cues = parseCaption(raw);
+    if (!cues.length) return false;
 
-    setCueState(cues);
+    applyCueState(cues);
 
     if (persist && persistVideoId) {
       gmSet(CAPTION_KEY_PREFIX + persistVideoId, raw);
     }
-    if (enableAfterLoad) {
-      state.enabled = true;
-      gmSet(ENABLED_KEY, true);
-    }
 
-    const ready = await waitForPlayer();
-    if (!ready || routeToken !== state.routeToken) {
-      return { ok: true, format, cueCount: cues.length, ready: false };
-    }
+    if (!await waitForPlayer() || routeToken !== state.routeToken) return true;
 
+    ensureLoadButton();
     ensureOverlay();
     bindVideoListeners();
+    syncNativeAvailability();
+    applyCaptionMode(enableAfterLoad ? CAPTION_MODE.CUSTOM : getStoredCustomMode(), {
+      persist: false,
+    });
     renderCurrentCue();
-    return { ok: true, format, cueCount: cues.length, ready: true };
+    return true;
   }
 
   function openFilePicker() {
     const videoId = state.currentVideoId;
-    if (!videoId) {
-      notify("動画IDを取得できません");
-      return;
-    }
+    if (!videoId) return;
 
     const routeToken = state.routeToken;
     const input = document.createElement("input");
@@ -650,21 +1640,18 @@
         const text = await file.text();
         if (routeToken !== state.routeToken || videoId !== state.currentVideoId) return;
 
-        const result = await loadCaptionText(text, {
+        const loaded = await loadCaptionText(text, {
           persist: true,
           persistVideoId: videoId,
           enableAfterLoad: true,
           routeToken,
         });
-        if (!result.ok) {
-          notify("字幕ファイルを解析できませんでした");
+        if (!loaded) {
+          console.warn("[ytsrt] failed to parse caption file");
           return;
         }
-
-        notify(`字幕を読み込みました（${result.format?.toUpperCase() ?? ""} / ${result.cueCount}行）`);
       } catch (e) {
         console.warn("[ytsrt] load failed:", e);
-        notify("読み込みに失敗しました");
       } finally {
         input.remove();
       }
@@ -673,23 +1660,21 @@
     input.click();
   }
 
-  // ── Route handling ────────────────────────────────────────────────────────
   function detach() {
     unbindVideoListeners();
     disconnectResizeObserver();
+    disconnectControlsObserver();
+    removePlayerControlsUi();
+    removeCustomPanel();
 
     const overlay = getOverlay();
     if (overlay) overlay.remove();
 
-    const banner = document.getElementById(NOTIFY_ID);
-    if (banner) banner.remove();
-    if (state.notifyTimer) {
-      clearTimeout(state.notifyTimer);
-      state.notifyTimer = 0;
-    }
-
-    resetCueState();
+    applyCueState();
+    state.captionMode = CAPTION_MODE.OFF;
     state.currentVideoId = "";
+    state.nativeCaptionsAvailable = false;
+    resetInjectedMenuMarkers();
   }
 
   async function handleRouteChange() {
@@ -702,10 +1687,21 @@
     if (!videoId) return;
 
     state.currentVideoId = videoId;
+    const ready = await waitForPlayer();
+    if (!ready || routeToken !== state.routeToken) return;
+
+    ensureLoadButton();
+    bindVideoListeners();
+    syncNativeAvailability();
+    syncCaptionModeFromPlayer();
+
     const saved = gmGet(CAPTION_KEY_PREFIX + videoId, null);
     if (!saved) return;
 
-    await loadCaptionText(saved, { routeToken });
+    await loadCaptionText(saved, {
+      enableAfterLoad: getStoredCustomMode() === CAPTION_MODE.CUSTOM,
+      routeToken,
+    });
   }
 
   // ── Caption export ────────────────────────────────────────────────────────
@@ -780,55 +1776,88 @@
   }
 
   function exportCaption(withTimestamps) {
-    if (!state.cues.length) {
-      notify("字幕が読み込まれていません");
-      return;
-    }
+    if (!state.cues.length) return;
     try {
       const text = buildTranscriptText(state.cues, { withTimestamps });
-      if (!text) {
-        notify("字幕が読み込まれていません");
-        return;
-      }
+      if (!text) return;
       const title = sanitizeFilename(getVideoTitle());
       const suffix = withTimestamps ? " - transcript (with timestamp).txt" : " - transcript.txt";
       const filename = title + suffix;
       downloadTextFile(filename, text);
-      notify(`字幕を ${filename} として保存しました`);
     } catch (e) {
       console.error("[ytsrt] export failed:", e);
-      notify("字幕の保存に失敗しました");
     }
   }
 
-  // ── Shortcuts ─────────────────────────────────────────────────────────────
+  // ── Events / shortcuts ────────────────────────────────────────────────────
+  function onDocumentClick(e) {
+    if (!isVideoPage()) return;
+
+    const subtitlesButton = e.target.closest(SUBTITLES_BUTTON_SELECTOR);
+    if (subtitlesButton) {
+      if (state.ignoreNextSubtitlesButtonClick) {
+        state.ignoreNextSubtitlesButtonClick = false;
+        return;
+      }
+      syncNativeAvailability();
+      if (hasCustomCaptions()) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+        togglePrimaryCaptions();
+      }
+      return;
+    }
+
+    if (e.target.closest(SETTINGS_BUTTON_SELECTOR)) {
+      burstSyncSettingsUi();
+      return;
+    }
+
+    const menuItem = e.target.closest(MENU_ITEM_SELECTOR);
+    if (menuItem) {
+      onMenuItemActivated(menuItem);
+      burstSyncSettingsUi();
+      return;
+    }
+  }
+
   function registerShortcuts() {
+    document.addEventListener("click", onDocumentClick, true);
+
     document.addEventListener("keydown", (e) => {
       if (!isVideoPage() || isEditableTarget()) return;
 
       const altOnly = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey;
       const altShift = e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey;
+      const plainC = !e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyC";
+
+      if (plainC && hasCustomCaptions()) {
+        e.preventDefault();
+        e.stopPropagation();
+        togglePrimaryCaptions();
+        return;
+      }
+
       if (!altOnly && !altShift) return;
 
       if (e.code === "KeyC") {
         e.preventDefault();
         e.stopPropagation();
-        if (altOnly) toggleEnabled();
-        else openFilePicker();
+        if (altOnly) openFilePicker();
+        else toggleCustomShortcutMode();
         return;
       }
       if (e.code === "KeyS") {
         e.preventDefault();
         e.stopPropagation();
         exportCaption(altOnly);
-        return;
       }
     }, true);
   }
 
   // ── Startup ───────────────────────────────────────────────────────────────
   function start() {
-    state.enabled = gmGet(ENABLED_KEY, true);
     registerShortcuts();
     handleRouteChange();
     window.addEventListener("yt-navigate-finish", handleRouteChange);
