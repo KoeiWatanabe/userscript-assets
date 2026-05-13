@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにメモ帳を作成する
 // @namespace    http://tampermonkey.net/
-// @version      8.6
+// @version      8.8
 // @description  自分専用のMarkdown対応タイムスタンプメモ（OSテーマ追従）+ GeminiWebタイムスタンプ生成
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -204,14 +204,8 @@
         .yt-rz {
             position: absolute;
             z-index: 10;
-            transition: background 0.1s;
             touch-action: none;
             user-select: none;
-        }
-
-        .yt-rz:hover,
-        .yt-rz.dragging {
-            background: rgba(255, 255, 255, 0.10);
         }
 
         #yt-rz-n, #yt-rz-s { left: 18px; right: 18px; height: 8px; cursor: ns-resize; }
@@ -759,6 +753,10 @@
 
     tsBtn.innerHTML = _html.createHTML(ICON_TIMESTAMP);
 
+    tsBtn.addEventListener('pointerdown', e => {
+        e.preventDefault();
+    });
+
     function formatVideoTimestamp(seconds) {
         const t = Math.max(0, Math.floor(seconds));
         const h = Math.floor(t / 3600);
@@ -775,12 +773,23 @@
         if (!video) return;
         const ts = `${formatVideoTimestamp(video.currentTime)} `;
         const current = textarea.value;
-        const prefix = current.length === 0 || current.endsWith('\n') ? '' : '\n';
-        textarea.value = current + prefix + ts;
-        const caret = textarea.value.length;
+        const isTextareaFocused = document.activeElement === textarea;
+        let caret;
+
+        if (isTextareaFocused) {
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            textarea.value = current.slice(0, start) + ts + current.slice(end);
+            caret = start + ts.length;
+        } else {
+            const prefix = current.length === 0 || current.endsWith('\n') ? '' : '\n';
+            textarea.value = current + prefix + ts;
+            caret = textarea.value.length;
+            textarea.scrollTop = textarea.scrollHeight;
+        }
+
         textarea.focus();
         textarea.setSelectionRange(caret, caret);
-        textarea.scrollTop = textarea.scrollHeight;
         onTextInput();
     });
 
