@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      1.7.9
-// @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み, Alt+Shift+C: カスタム字幕オン/オフ, Alt+S: 字幕保存（タイムスタンプ付き）, Alt+Shift+S: 字幕保存。
+// @version      1.7.13
+// @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_setValue
@@ -247,15 +247,20 @@
   }
 
   function applyCaptionMode(mode, { persist = true } = {}) {
+    const previousMode = state.captionMode;
+
     if (mode === CAPTION_MODE.CUSTOM && !hasCustomCaptions()) {
-      mode = getNativeCaptionsActive() ? CAPTION_MODE.NATIVE : CAPTION_MODE.OFF;
+      mode = previousMode === CAPTION_MODE.NATIVE ? CAPTION_MODE.NATIVE : CAPTION_MODE.OFF;
+    }
+
+    if (previousMode === CAPTION_MODE.NATIVE && mode !== CAPTION_MODE.NATIVE) {
+      disableNativeCaptionsFromKnownNativeMode();
     }
 
     state.captionMode = mode;
     if (persist) persistCustomMode(mode);
 
     if (mode === CAPTION_MODE.CUSTOM) {
-      disableNativeCaptionsIfNeeded();
       renderCurrentCue();
     } else {
       renderOverlay("");
@@ -264,6 +269,7 @@
 
     syncSubtitlesButtonState();
     syncLoadButtonState();
+    if (mode === CAPTION_MODE.CUSTOM) syncCaptionMenuChecks();
     scheduleSyncSettingsUi();
   }
 
@@ -312,13 +318,21 @@
   function getNativeCaptionsActive() {
     const button = getSubtitlesButton();
     if (!button) return false;
+    if (isScriptManagedSubtitlesActive(button)) return false;
     return button.getAttribute("aria-pressed") === "true" ||
       button.classList.contains("ytp-button-active");
   }
 
-  function disableNativeCaptionsIfNeeded() {
+  function isScriptManagedSubtitlesActive(button = getSubtitlesButton()) {
+    if (!button) return false;
+    return button.dataset.ytsrtForcedActive === "1" ||
+      button.classList.contains("ytsrt-subtitles-custom-active") ||
+      getSubtitlesButtonIconContainer(button)?.dataset.ytsrtCustomIcon === "1";
+  }
+
+  function disableNativeCaptionsFromKnownNativeMode() {
     const button = getSubtitlesButton();
-    if (!button || !getNativeCaptionsActive()) return;
+    if (!button) return;
     state.ignoreNextSubtitlesButtonClick = true;
     button.click();
   }
@@ -338,11 +352,6 @@
     } else {
       applyCaptionMode(CAPTION_MODE.CUSTOM);
     }
-  }
-
-  function toggleCustomShortcutMode() {
-    if (!hasCustomCaptions()) return;
-    togglePrimaryCaptions();
   }
 
   function removeCustomPanel() {
@@ -1099,12 +1108,10 @@
       }
     }
 
-    if (
-      !customActive &&
-      state.captionMode === CAPTION_MODE.OFF &&
-      button.dataset.ytsrtForcedActive === "1"
-    ) {
-      button.classList.remove("ytp-button-active");
+    if (!customActive && button.dataset.ytsrtForcedActive === "1") {
+      if (state.captionMode === CAPTION_MODE.OFF) {
+        button.classList.remove("ytp-button-active");
+      }
       delete button.dataset.ytsrtForcedActive;
     }
 
@@ -1537,6 +1544,13 @@
       ) || null;
   }
 
+  function isNativeCaptionMenuItem(item, container = findNativeCaptionMenuContainer()) {
+    return !!container &&
+      item?.parentElement === container &&
+      item.getAttribute("role") === "menuitemradio" &&
+      isVisibleElement(item);
+  }
+
   function syncTopLevelCaptionsSummary(popup = getSettingsPopup()) {
     if (!popup || !isVisibleElement(popup)) return;
     const row = findNativeCaptionsTopRow(popup);
@@ -1569,7 +1583,9 @@
         item.setAttribute("aria-checked", customActive ? "true" : "false");
         continue;
       }
-      if (customActive) item.setAttribute("aria-checked", "false");
+      if (customActive) {
+        item.setAttribute("aria-checked", "false");
+      }
     }
   }
 
@@ -1627,38 +1643,37 @@
   }
 
   function onMenuItemActivated(item) {
-    if (!item) return;
+    if (!item) return false;
 
     if (item.id === CUSTOM_TOP_ROW_ID) {
       renderCustomSubmenu();
-      return;
+      return true;
     }
 
     if (item.dataset.ytsrtChoice === CAPTION_MODE.CUSTOM) {
       applyCaptionMode(CAPTION_MODE.CUSTOM);
       closeSettingsMenu();
-      return;
+      return true;
     }
 
     if (item.dataset.ytsrtChoice === CAPTION_MODE.OFF) {
       applyCaptionMode(CAPTION_MODE.OFF);
       closeSettingsMenu();
-      return;
+      return true;
     }
 
-    if (hasCustomCaptions() && state.nativeCaptionsAvailable && findNativeCaptionMenuContainer()) {
-      const text = normalizeLabelText(item.textContent);
-      setTimeout(() => {
-        if (text === normalizeLabelText(t("off"))) {
-          applyCaptionMode(CAPTION_MODE.OFF, { persist: false });
-        } else if (!text.includes(normalizeLabelText(t("customTrack")))) {
-          state.captionMode = CAPTION_MODE.NATIVE;
-          renderOverlay("");
-          syncSubtitlesButtonState();
-          scheduleSyncSettingsUi();
-        }
-      }, 0);
+    const nativeCaptionContainer = findNativeCaptionMenuContainer();
+    if (
+      hasCustomCaptions() &&
+      state.nativeCaptionsAvailable &&
+      isNativeCaptionMenuItem(item, nativeCaptionContainer)
+    ) {
+      if (state.captionMode === CAPTION_MODE.CUSTOM) {
+        applyCaptionMode(CAPTION_MODE.OFF, { persist: false });
+      }
+      setTimeout(() => syncCaptionModeFromPlayer({ persist: false }), 0);
     }
+    return false;
   }
 
   // ── Time update → render cue ──────────────────────────────────────────────
@@ -1821,91 +1836,6 @@
     });
   }
 
-  // ── Caption export ────────────────────────────────────────────────────────
-  function stripInlineTags(body) {
-    return body.replace(/<\/?(?:i|b|u)\s*>|<\/?font\b[^>]*>/gi, "");
-  }
-
-  function normalizeCueText(body) {
-    return stripInlineTags(body)
-      .replace(/[\r\n]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  function formatTimestamp(seconds, useHours) {
-    const total = Math.max(0, Math.floor(seconds));
-    const s = total % 60;
-    const m = Math.floor(total / 60) % 60;
-    const h = Math.floor(total / 3600);
-    const pad = (n) => String(n).padStart(2, "0");
-    return useHours ? `${h}:${pad(m)}:${pad(s)}` : `${pad(Math.floor(total / 60))}:${pad(s)}`;
-  }
-
-  function getVideoTitle() {
-    const candidates = [
-      () => document.querySelector("h1.ytd-watch-metadata yt-formatted-string")?.textContent,
-      () => document.querySelector("h1.title yt-formatted-string")?.textContent,
-      () => document.querySelector('meta[name="title"]')?.content,
-      () => document.title?.replace(/\s*-\s*YouTube\s*$/, ""),
-      () => state.currentVideoId,
-    ];
-    for (const get of candidates) {
-      const v = (get() || "").trim();
-      if (v) return v;
-    }
-    return "";
-  }
-
-  function sanitizeFilename(name) {
-    let s = (name || "")
-      .replace(/[\x00-\x1f]/g, "_")
-      .replace(/[\\/:*?"<>|]/g, "_")
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(/[.\s]+$/, "");
-    if (s.length > 120) s = s.slice(0, 120).replace(/[.\s]+$/, "");
-    return s || "transcript";
-  }
-
-  function buildTranscriptText(cues, { withTimestamps }) {
-    const useHours = cues.some((c) => c.start >= 3600);
-    const lines = [];
-    for (const cue of cues) {
-      const text = normalizeCueText(cue.body);
-      if (!text) continue;
-      lines.push(withTimestamps ? `${formatTimestamp(cue.start, useHours)} ${text}` : text);
-    }
-    return lines.join("\r\n");
-  }
-
-  function downloadTextFile(filename, contents) {
-    const blob = new Blob(["\uFEFF" + contents], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
-
-  function exportCaption(withTimestamps) {
-    if (!state.cues.length) return;
-    try {
-      const text = buildTranscriptText(state.cues, { withTimestamps });
-      if (!text) return;
-      const title = sanitizeFilename(getVideoTitle());
-      const suffix = withTimestamps ? " - transcript (with timestamp).txt" : " - transcript.txt";
-      const filename = title + suffix;
-      downloadTextFile(filename, text);
-    } catch (e) {
-      console.error("[ytsrt] export failed:", e);
-    }
-  }
-
   // ── Events / shortcuts ────────────────────────────────────────────────────
   function onDocumentClick(e) {
     if (!isVideoPage()) return;
@@ -1933,7 +1863,12 @@
 
     const menuItem = e.target.closest(MENU_ITEM_SELECTOR);
     if (menuItem) {
-      onMenuItemActivated(menuItem);
+      const consumed = onMenuItemActivated(menuItem);
+      if (consumed) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+      }
       burstSyncSettingsUi();
       return;
     }
@@ -1946,7 +1881,6 @@
       if (!isVideoPage() || isEditableTarget()) return;
 
       const altOnly = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey;
-      const altShift = e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey;
       const plainC = !e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyC";
 
       if (plainC && hasCustomCaptions()) {
@@ -1956,19 +1890,12 @@
         return;
       }
 
-      if (!altOnly && !altShift) return;
+      if (!altOnly) return;
 
-      if (e.code === "KeyC") {
+      if (altOnly && e.code === "KeyC") {
         e.preventDefault();
         e.stopPropagation();
-        if (altOnly) openFilePicker();
-        else toggleCustomShortcutMode();
-        return;
-      }
-      if (e.code === "KeyS") {
-        e.preventDefault();
-        e.stopPropagation();
-        exportCaption(altOnly);
+        openFilePicker();
       }
     }, true);
   }
