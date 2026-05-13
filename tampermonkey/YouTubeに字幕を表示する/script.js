@@ -86,11 +86,14 @@
     captionMode: CAPTION_MODE.OFF,
     currentVideoId: "",
     nativeCaptionsAvailable: false,
+    lastKnownNativeTrackLabel: "",
     lastCueIdx: -1,
+    pendingCaptionSelection: null,
     renderedBody: null,
     resizeObs: null,
     controlsObs: null,
     controlsObsTarget: null,
+    captionTransitionToken: 0,
     controlsSyncFrame: 0,
     menuSyncFrame: 0,
     boundVideo: null,
@@ -207,6 +210,15 @@
     delete node.dataset[datasetKey];
   }
 
+  function getStashedAttribute(node, attributeName, datasetKey) {
+    if (!node) return null;
+    if (datasetKey in node.dataset) {
+      const value = node.dataset[datasetKey];
+      return value === MISSING_ATTRIBUTE_VALUE ? null : value;
+    }
+    return node.getAttribute(attributeName);
+  }
+
   function normalizeLabelText(text) {
     return (text || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
@@ -253,10 +265,6 @@
       mode = previousMode === CAPTION_MODE.NATIVE ? CAPTION_MODE.NATIVE : CAPTION_MODE.OFF;
     }
 
-    if (previousMode === CAPTION_MODE.NATIVE && mode !== CAPTION_MODE.NATIVE) {
-      disableNativeCaptionsFromKnownNativeMode();
-    }
-
     state.captionMode = mode;
     if (persist) persistCustomMode(mode);
 
@@ -269,58 +277,176 @@
 
     syncSubtitlesButtonState();
     syncLoadButtonState();
-    if (mode === CAPTION_MODE.CUSTOM) syncCaptionMenuChecks();
+    syncCaptionMenuChecks();
     scheduleSyncSettingsUi();
   }
 
   function syncCaptionModeFromPlayer({ persist = false } = {}) {
-    if (state.captionMode === CAPTION_MODE.CUSTOM) return;
-    state.captionMode = getNativeCaptionsActive() ? CAPTION_MODE.NATIVE : CAPTION_MODE.OFF;
+    if (
+      state.captionMode === CAPTION_MODE.CUSTOM &&
+      state.pendingCaptionSelection !== CAPTION_MODE.NATIVE &&
+      state.pendingCaptionSelection !== CAPTION_MODE.OFF
+    ) {
+      return;
+    }
+
+    const selection = syncNativeCaptionTrackLabelFromMenu();
+    let nextMode = CAPTION_MODE.OFF;
+
+    if (selection.mode === CAPTION_MODE.CUSTOM) {
+      nextMode = CAPTION_MODE.CUSTOM;
+    } else if (
+      selection.mode === CAPTION_MODE.NATIVE ||
+      hasVisibleNativeCaptions() ||
+      getNativeCaptionsActive()
+    ) {
+      nextMode = CAPTION_MODE.NATIVE;
+    }
+
+    state.captionMode = nextMode;
+    state.pendingCaptionSelection = null;
     if (persist) persistCustomMode(state.captionMode);
+
+    if (nextMode !== CAPTION_MODE.CUSTOM) {
+      renderOverlay("");
+      state.renderedBody = "";
+    }
+
     syncSubtitlesButtonState();
+    syncCaptionMenuChecks();
     scheduleSyncSettingsUi();
   }
 
-  function getNativeCaptionsAvailability() {
-    const button = getSubtitlesButton();
-    const label = normalizeLabelText(
-      button?.getAttribute("aria-label") ||
-      button?.getAttribute("title") ||
-      ""
-    );
-    if (label && !label.includes("unavailable") && !label.includes("利用不可")) {
-      return true;
-    }
-
-    const captionsVisible = Array.from(
+  function hasVisibleNativeCaptions() {
+    return Array.from(
       document.querySelectorAll(
         `${PLAYER_SELECTOR} .caption-window, ${PLAYER_SELECTOR} .ytp-caption-segment`
       )
     ).some((el) => isVisibleElement(el) && normalizeLabelText(el.textContent));
-    if (captionsVisible) return true;
+  }
+
+  function getCaptionMenuItemLabelText(item) {
+    return item?.querySelector(".ytp-menuitem-label")?.textContent?.trim() || "";
+  }
+
+  function isCaptionOffMenuItem(item) {
+    return normalizeLabelText(getCaptionMenuItemLabelText(item)) === normalizeLabelText(t("off"));
+  }
+
+  function isAutoTranslateMenuItem(item) {
+    return normalizeLabelText(getCaptionMenuItemLabelText(item)) === "auto-translate";
+  }
+
+  function isCustomCaptionMenuItem(item) {
+    return !!item && (
+      item.id === CUSTOM_NATIVE_ROW_ID ||
+      item.dataset.ytsrtChoice === CAPTION_MODE.CUSTOM
+    );
+  }
+
+  function getNativeCaptionsAvailability() {
+    const button = getSubtitlesButton();
+    if (hasVisibleNativeCaptions()) return true;
 
     const popup = getSettingsPopup();
     const menuTexts = popup
       ? Array.from(popup.querySelectorAll(MENU_ITEM_SELECTOR))
         .map((el) => normalizeLabelText(el.textContent))
       : [];
-    return menuTexts.some((text) =>
+    if (menuTexts.some((text) =>
       text.includes("subtitles/cc") ||
       text.includes("subtitles") ||
       text.startsWith(normalizeLabelText(t("captionsMenu")))
+    )) {
+      return true;
+    }
+
+    const label = normalizeLabelText(
+      getStashedAttribute(button, "aria-label", "ytsrtOriginalAriaLabel") ||
+      getStashedAttribute(button, "title", "ytsrtOriginalTitle") ||
+      ""
     );
+    if (!label) return false;
+    if (label.includes("unavailable") || label.includes("利用不可")) return false;
+    return true;
   }
 
   function syncNativeAvailability() {
     state.nativeCaptionsAvailable = getNativeCaptionsAvailability();
   }
 
+  function getNativeCaptionMenuItems(container = findNativeCaptionMenuContainer()) {
+    if (!container) return [];
+    return Array.from(container.querySelectorAll(MENU_ITEM_SELECTOR)).filter((item) =>
+      !item.closest(`#${CUSTOM_PANEL_ID}`) && isNativeCaptionMenuItem(item, container)
+    );
+  }
+
+  function getCheckedNativeCaptionMenuItem(container = findNativeCaptionMenuContainer()) {
+    return getNativeCaptionMenuItems(container).find((item) =>
+      item.getAttribute("aria-checked") === "true"
+    ) || null;
+  }
+
+  function rememberNativeCaptionTrackLabel(label) {
+    const normalized = normalizeLabelText(label);
+    if (
+      !normalized ||
+      normalized === normalizeLabelText(t("off")) ||
+      normalized === normalizeLabelText(t("customTrack")) ||
+      normalized === "auto-translate"
+    ) {
+      return;
+    }
+
+    state.lastKnownNativeTrackLabel = label.trim();
+  }
+
+  function getNativeCaptionSelection(container = findNativeCaptionMenuContainer()) {
+    const checkedItem = getCheckedNativeCaptionMenuItem(container);
+    if (!checkedItem) return { mode: null, label: "" };
+    if (isCustomCaptionMenuItem(checkedItem)) {
+      return { mode: CAPTION_MODE.CUSTOM, label: t("customTrack") };
+    }
+    if (isCaptionOffMenuItem(checkedItem)) {
+      return { mode: CAPTION_MODE.OFF, label: t("off") };
+    }
+
+    const label = getCaptionMenuItemLabelText(checkedItem);
+    if (label && !isAutoTranslateMenuItem(checkedItem)) {
+      return { mode: CAPTION_MODE.NATIVE, label };
+    }
+    return { mode: null, label };
+  }
+
+  function syncNativeCaptionTrackLabelFromMenu(container = findNativeCaptionMenuContainer()) {
+    const selection = getNativeCaptionSelection(container);
+    if (selection.mode === CAPTION_MODE.NATIVE) {
+      rememberNativeCaptionTrackLabel(selection.label);
+    }
+    return selection;
+  }
+
   function getNativeCaptionsActive() {
+    const selection = syncNativeCaptionTrackLabelFromMenu();
+    if (selection.mode === CAPTION_MODE.NATIVE) return true;
+    if (selection.mode === CAPTION_MODE.OFF || selection.mode === CAPTION_MODE.CUSTOM) {
+      return false;
+    }
+    if (hasVisibleNativeCaptions()) return true;
+    if (state.pendingCaptionSelection === CAPTION_MODE.NATIVE && state.lastKnownNativeTrackLabel) {
+      return true;
+    }
+
     const button = getSubtitlesButton();
     if (!button) return false;
-    if (isScriptManagedSubtitlesActive(button)) return false;
-    return button.getAttribute("aria-pressed") === "true" ||
-      button.classList.contains("ytp-button-active");
+    if (!(state.nativeCaptionsAvailable || getNativeCaptionsAvailability())) return false;
+
+    const ariaPressed = button.getAttribute("aria-pressed");
+    if (ariaPressed === "true") return true;
+    if (ariaPressed === "false") return false;
+
+    return button.classList.contains("ytp-button-active");
   }
 
   function isScriptManagedSubtitlesActive(button = getSubtitlesButton()) {
@@ -332,9 +458,50 @@
 
   function disableNativeCaptionsFromKnownNativeMode() {
     const button = getSubtitlesButton();
-    if (!button) return;
+    if (!button) return false;
     state.ignoreNextSubtitlesButtonClick = true;
     button.click();
+    return true;
+  }
+
+  function waitForCondition(predicate, timeoutMs = 1500, intervalMs = 50) {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      const tick = () => {
+        if (predicate()) return resolve(true);
+        if (Date.now() >= deadline) return resolve(false);
+        setTimeout(tick, intervalMs);
+      };
+      tick();
+    });
+  }
+
+  async function requestCustomCaptionMode({ persist = true } = {}) {
+    if (!hasCustomCaptions()) return;
+
+    const transitionToken = ++state.captionTransitionToken;
+    state.pendingCaptionSelection = CAPTION_MODE.CUSTOM;
+    scheduleSyncSettingsUi();
+
+    const nativeWasActive = state.captionMode === CAPTION_MODE.NATIVE || getNativeCaptionsActive();
+    if (nativeWasActive) {
+      disableNativeCaptionsFromKnownNativeMode();
+      const disabled = await waitForCondition(() => {
+        if (transitionToken !== state.captionTransitionToken) return true;
+        const selection = syncNativeCaptionTrackLabelFromMenu();
+        return !hasVisibleNativeCaptions() && selection.mode !== CAPTION_MODE.NATIVE;
+      }, 2000, 50);
+
+      if (!disabled) {
+        console.warn("[ytsrt] native captions remained active while switching to custom");
+      }
+    }
+
+    if (transitionToken !== state.captionTransitionToken) return;
+
+    applyCaptionMode(CAPTION_MODE.CUSTOM, { persist });
+    state.pendingCaptionSelection = null;
+    scheduleSyncSettingsUi();
   }
 
   function closeSettingsMenu() {
@@ -348,9 +515,11 @@
   function togglePrimaryCaptions() {
     if (!hasCustomCaptions()) return;
     if (state.captionMode === CAPTION_MODE.CUSTOM) {
+      state.captionTransitionToken += 1;
+      state.pendingCaptionSelection = null;
       applyCaptionMode(CAPTION_MODE.OFF);
     } else {
-      applyCaptionMode(CAPTION_MODE.CUSTOM);
+      void requestCustomCaptionMode();
     }
   }
 
@@ -1413,6 +1582,8 @@
     offItem.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
+      state.captionTransitionToken += 1;
+      state.pendingCaptionSelection = CAPTION_MODE.OFF;
       applyCaptionMode(CAPTION_MODE.OFF);
       closeSettingsMenu();
     });
@@ -1428,7 +1599,7 @@
     customItem.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      applyCaptionMode(CAPTION_MODE.CUSTOM);
+      void requestCustomCaptionMode();
       closeSettingsMenu();
     });
 
@@ -1494,7 +1665,7 @@
     row.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      applyCaptionMode(CAPTION_MODE.CUSTOM);
+      void requestCustomCaptionMode();
       closeSettingsMenu();
     });
     return row;
@@ -1557,35 +1728,71 @@
     const content = row?.querySelector(".ytp-menuitem-content");
     if (!content) return;
 
-    if (
-      !content.dataset.ytsrtOriginalText &&
-      !(hasCustomCaptions() && state.captionMode === CAPTION_MODE.CUSTOM)
-    ) {
-      content.dataset.ytsrtOriginalText = getMenuItemSummaryText(content);
+    const customSummary = normalizeLabelText(t("customTrack"));
+    const liveSummary = getMenuItemSummaryText(content);
+    if (liveSummary && normalizeLabelText(liveSummary) !== customSummary) {
+      content.dataset.ytsrtOriginalText = liveSummary;
     }
 
-    if (hasCustomCaptions() && state.captionMode === CAPTION_MODE.CUSTOM) {
+    const desiredMode = state.pendingCaptionSelection || state.captionMode;
+    const selection = syncNativeCaptionTrackLabelFromMenu();
+
+    if (hasCustomCaptions() && desiredMode === CAPTION_MODE.CUSTOM) {
       setMenuItemSummaryText(content, t("customTrack"));
-    } else if (content.dataset.ytsrtOriginalText) {
+      return;
+    }
+
+    if (selection.mode === CAPTION_MODE.NATIVE) {
+      setMenuItemSummaryText(content, selection.label);
+      content.dataset.ytsrtOriginalText = selection.label;
+      return;
+    }
+
+    if (desiredMode === CAPTION_MODE.NATIVE && state.lastKnownNativeTrackLabel) {
+      setMenuItemSummaryText(content, state.lastKnownNativeTrackLabel);
+      content.dataset.ytsrtOriginalText = state.lastKnownNativeTrackLabel;
+      return;
+    }
+
+    if (selection.mode === CAPTION_MODE.OFF) {
+      setMenuItemSummaryText(content, t("off"));
+      content.dataset.ytsrtOriginalText = t("off");
+      return;
+    }
+
+    if (
+      content.dataset.ytsrtOriginalText &&
+      normalizeLabelText(content.dataset.ytsrtOriginalText) !== customSummary
+    ) {
       setMenuItemSummaryText(content, content.dataset.ytsrtOriginalText);
-      delete content.dataset.ytsrtOriginalText;
     }
   }
 
   function syncCaptionMenuChecks(container = findNativeCaptionMenuContainer()) {
     if (!container) return;
-    const customActive = state.captionMode === CAPTION_MODE.CUSTOM;
-    const customRow = document.getElementById(CUSTOM_NATIVE_ROW_ID);
+    const desiredMode = state.pendingCaptionSelection || state.captionMode;
+    const selection = syncNativeCaptionTrackLabelFromMenu(container);
+    const desiredNativeLabel = selection.mode === CAPTION_MODE.NATIVE
+      ? selection.label
+      : state.lastKnownNativeTrackLabel;
 
-    for (const item of Array.from(container.querySelectorAll(MENU_ITEM_SELECTOR))) {
-      if (item.closest(`#${CUSTOM_PANEL_ID}`)) continue;
-      if (item === customRow) {
-        item.setAttribute("aria-checked", customActive ? "true" : "false");
-        continue;
+    for (const item of getNativeCaptionMenuItems(container)) {
+      let checked = false;
+
+      if (isCustomCaptionMenuItem(item)) {
+        checked = desiredMode === CAPTION_MODE.CUSTOM;
+      } else if (desiredMode === CAPTION_MODE.OFF) {
+        checked = isCaptionOffMenuItem(item);
+      } else if (desiredMode === CAPTION_MODE.NATIVE && desiredNativeLabel) {
+        checked = (
+          !isCaptionOffMenuItem(item) &&
+          !isAutoTranslateMenuItem(item) &&
+          normalizeLabelText(getCaptionMenuItemLabelText(item)) ===
+            normalizeLabelText(desiredNativeLabel)
+        );
       }
-      if (customActive) {
-        item.setAttribute("aria-checked", "false");
-      }
+
+      item.setAttribute("aria-checked", checked ? "true" : "false");
     }
   }
 
@@ -1651,12 +1858,14 @@
     }
 
     if (item.dataset.ytsrtChoice === CAPTION_MODE.CUSTOM) {
-      applyCaptionMode(CAPTION_MODE.CUSTOM);
+      void requestCustomCaptionMode();
       closeSettingsMenu();
       return true;
     }
 
     if (item.dataset.ytsrtChoice === CAPTION_MODE.OFF) {
+      state.captionTransitionToken += 1;
+      state.pendingCaptionSelection = CAPTION_MODE.OFF;
       applyCaptionMode(CAPTION_MODE.OFF);
       closeSettingsMenu();
       return true;
@@ -1668,10 +1877,24 @@
       state.nativeCaptionsAvailable &&
       isNativeCaptionMenuItem(item, nativeCaptionContainer)
     ) {
-      if (state.captionMode === CAPTION_MODE.CUSTOM) {
-        applyCaptionMode(CAPTION_MODE.OFF, { persist: false });
+      if (isAutoTranslateMenuItem(item)) {
+        return false;
       }
-      setTimeout(() => syncCaptionModeFromPlayer({ persist: false }), 0);
+
+      state.captionTransitionToken += 1;
+      if (isCaptionOffMenuItem(item)) {
+        state.pendingCaptionSelection = CAPTION_MODE.OFF;
+        applyCaptionMode(CAPTION_MODE.OFF, { persist: false });
+      } else {
+        rememberNativeCaptionTrackLabel(getCaptionMenuItemLabelText(item));
+        state.pendingCaptionSelection = CAPTION_MODE.NATIVE;
+        applyCaptionMode(CAPTION_MODE.NATIVE, { persist: false });
+      }
+
+      setTimeout(() => {
+        syncCaptionModeFromPlayer({ persist: false });
+        burstSyncSettingsUi();
+      }, 0);
     }
     return false;
   }
@@ -1746,9 +1969,16 @@
     ensureOverlay();
     bindVideoListeners();
     syncNativeAvailability();
-    applyCaptionMode(enableAfterLoad ? CAPTION_MODE.CUSTOM : getStoredCustomMode(), {
+    applyCaptionMode(
+      enableAfterLoad
+        ? CAPTION_MODE.CUSTOM
+        : state.captionMode === CAPTION_MODE.NATIVE
+          ? CAPTION_MODE.NATIVE
+          : getStoredCustomMode(),
+      {
       persist: false,
-    });
+      }
+    );
     renderCurrentCue();
     return true;
   }
@@ -1804,8 +2034,11 @@
 
     applyCueState();
     state.captionMode = CAPTION_MODE.OFF;
+    state.captionTransitionToken += 1;
     state.currentVideoId = "";
+    state.lastKnownNativeTrackLabel = "";
     state.nativeCaptionsAvailable = false;
+    state.pendingCaptionSelection = null;
     resetInjectedMenuMarkers();
   }
 
