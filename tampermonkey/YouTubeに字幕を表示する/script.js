@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      1.7.13
+// @version      2.0.0
 // @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -62,7 +62,6 @@
       captionsRow: "字幕 (1)",
       customTrack: "ユーザー作成字幕",
       off: "オフ",
-      on: "オン",
       loadCaptions: "字幕を読み込む",
       reloadCaptions: "字幕を再読み込み",
       unavailable: "利用不可",
@@ -73,7 +72,6 @@
       captionsRow: "Subtitles/CC (1)",
       customTrack: "User-created subtitles",
       off: "Off",
-      on: "On",
       loadCaptions: "Load captions",
       reloadCaptions: "Reload captions",
       unavailable: "Unavailable",
@@ -99,10 +97,15 @@
     boundVideo: null,
     routeToken: 0,
     ignoreNextSubtitlesButtonClick: false,
-    customTopRowMounted: false,
-    customNativeRowMounted: false,
   };
   const originalSubtitlesButtonIcons = new WeakMap();
+  const SUBTITLES_BUTTON_STASHED_ATTRIBUTES = [
+    ["aria-label", "ytsrtOriginalAriaLabel"],
+    ["aria-pressed", "ytsrtOriginalAriaPressed"],
+    ["title", "ytsrtOriginalTitle"],
+    ["data-title-no-tooltip", "ytsrtOriginalDataTitle"],
+    ["data-tooltip-title", "ytsrtOriginalTooltipTitle"],
+  ];
 
   // ── Utilities ─────────────────────────────────────────────────────────────
   const isVideoPage = () =>
@@ -449,13 +452,6 @@
     return button.classList.contains("ytp-button-active");
   }
 
-  function isScriptManagedSubtitlesActive(button = getSubtitlesButton()) {
-    if (!button) return false;
-    return button.dataset.ytsrtForcedActive === "1" ||
-      button.classList.contains("ytsrt-subtitles-custom-active") ||
-      getSubtitlesButtonIconContainer(button)?.dataset.ytsrtCustomIcon === "1";
-  }
-
   function disableNativeCaptionsFromKnownNativeMode() {
     const button = getSubtitlesButton();
     if (!button) return false;
@@ -476,12 +472,43 @@
     });
   }
 
-  async function requestCustomCaptionMode({ persist = true } = {}) {
-    if (!hasCustomCaptions()) return;
-
+  function beginCaptionTransition(mode) {
     const transitionToken = ++state.captionTransitionToken;
-    state.pendingCaptionSelection = CAPTION_MODE.CUSTOM;
+    state.pendingCaptionSelection = mode;
     scheduleSyncSettingsUi();
+    return transitionToken;
+  }
+
+  function scheduleCaptionModeSyncFromPlayer({ persist = false, transitionToken = 0 } = {}) {
+    setTimeout(() => {
+      if (transitionToken && transitionToken !== state.captionTransitionToken) return;
+      syncCaptionModeFromPlayer({ persist });
+      burstSyncSettingsUi();
+    }, 0);
+  }
+
+  async function requestCaptionMode(mode, {
+    persist = true,
+    closeMenu = false,
+    syncFromPlayer = false,
+    nativeTrackLabel = "",
+  } = {}) {
+    if (mode === CAPTION_MODE.CUSTOM && !hasCustomCaptions()) return false;
+
+    const transitionToken = beginCaptionTransition(mode);
+    if (closeMenu) closeSettingsMenu();
+
+    if (mode !== CAPTION_MODE.CUSTOM) {
+      if (mode === CAPTION_MODE.NATIVE && nativeTrackLabel) {
+        rememberNativeCaptionTrackLabel(nativeTrackLabel);
+      }
+
+      applyCaptionMode(mode, { persist });
+      if (syncFromPlayer) {
+        scheduleCaptionModeSyncFromPlayer({ persist, transitionToken });
+      }
+      return true;
+    }
 
     const nativeWasActive = state.captionMode === CAPTION_MODE.NATIVE || getNativeCaptionsActive();
     if (nativeWasActive) {
@@ -497,11 +524,12 @@
       }
     }
 
-    if (transitionToken !== state.captionTransitionToken) return;
+    if (transitionToken !== state.captionTransitionToken) return false;
 
     applyCaptionMode(CAPTION_MODE.CUSTOM, { persist });
     state.pendingCaptionSelection = null;
     scheduleSyncSettingsUi();
+    return true;
   }
 
   function closeSettingsMenu() {
@@ -514,23 +542,14 @@
 
   function togglePrimaryCaptions() {
     if (!hasCustomCaptions()) return;
-    if (state.captionMode === CAPTION_MODE.CUSTOM) {
-      state.captionTransitionToken += 1;
-      state.pendingCaptionSelection = null;
-      applyCaptionMode(CAPTION_MODE.OFF);
-    } else {
-      void requestCustomCaptionMode();
-    }
+    void requestCaptionMode(
+      state.captionMode === CAPTION_MODE.CUSTOM ? CAPTION_MODE.OFF : CAPTION_MODE.CUSTOM
+    );
   }
 
   function removeCustomPanel() {
     const panel = getCustomPanel();
     if (panel) panel.remove();
-  }
-
-  function resetInjectedMenuMarkers() {
-    state.customTopRowMounted = false;
-    state.customNativeRowMounted = false;
   }
 
   // ── SRT parser ────────────────────────────────────────────────────────────
@@ -1186,10 +1205,84 @@
     if (labelNode) labelNode.textContent = getLoadButtonLabel();
   }
 
+  function stashManagedSubtitlesButtonAttributes(button) {
+    SUBTITLES_BUTTON_STASHED_ATTRIBUTES.forEach(([attributeName, datasetKey]) => {
+      stashAttribute(button, attributeName, datasetKey);
+    });
+  }
+
+  function restoreManagedSubtitlesButtonAttributes(button) {
+    SUBTITLES_BUTTON_STASHED_ATTRIBUTES.forEach(([attributeName, datasetKey]) => {
+      restoreStashedAttribute(button, attributeName, datasetKey);
+    });
+  }
+
+  function forceSubtitlesButtonFillOpacity(button) {
+    button.querySelectorAll("[fill-opacity]").forEach((el) => {
+      if (!el.dataset.ytsrtOriginalFillOpacity) {
+        el.dataset.ytsrtOriginalFillOpacity = el.getAttribute("fill-opacity") || "";
+      }
+      el.setAttribute("fill-opacity", "1");
+    });
+  }
+
+  function restoreSubtitlesButtonFillOpacity(button) {
+    button.querySelectorAll("[data-ytsrt-original-fill-opacity]").forEach((el) => {
+      const original = el.dataset.ytsrtOriginalFillOpacity;
+      if (original) el.setAttribute("fill-opacity", original);
+      else el.removeAttribute("fill-opacity");
+      delete el.dataset.ytsrtOriginalFillOpacity;
+    });
+  }
+
+  function syncForcedSubtitlesButtonActiveState(button, customActive, resetActiveClass = false) {
+    if (customActive) {
+      if (!button.classList.contains("ytp-button-active")) {
+        button.dataset.ytsrtForcedActive = "1";
+        button.classList.add("ytp-button-active");
+      }
+      return;
+    }
+
+    if (button.dataset.ytsrtForcedActive !== "1") return;
+    if (resetActiveClass || state.captionMode === CAPTION_MODE.OFF) {
+      button.classList.remove("ytp-button-active");
+    }
+    delete button.dataset.ytsrtForcedActive;
+  }
+
+  function applyManagedSubtitlesButtonState(button, customActive) {
+    stashManagedSubtitlesButtonAttributes(button);
+    button.setAttribute("aria-label", t("captions"));
+    button.setAttribute("title", t("captions"));
+    button.setAttribute("data-title-no-tooltip", t("captions"));
+    button.setAttribute("data-tooltip-title", t("captions"));
+    button.disabled = false;
+    button.removeAttribute("disabled");
+    button.setAttribute("aria-disabled", "false");
+    button.removeAttribute("aria-hidden");
+    button.setAttribute(
+      "aria-pressed",
+      state.captionMode === CAPTION_MODE.OFF ? "false" : "true"
+    );
+    button.classList.remove("ytp-button-disabled");
+    button.tabIndex = 0;
+    syncSubtitlesButtonIcon(button, customActive);
+    forceSubtitlesButtonFillOpacity(button);
+    syncForcedSubtitlesButtonActiveState(button, customActive);
+  }
+
+  function restoreManagedSubtitlesButtonState(button, { resetActiveClass = false } = {}) {
+    syncSubtitlesButtonIcon(button, false);
+    syncForcedSubtitlesButtonActiveState(button, false, resetActiveClass);
+    restoreManagedSubtitlesButtonAttributes(button);
+    button.removeAttribute("aria-disabled");
+    restoreSubtitlesButtonFillOpacity(button);
+  }
+
   function syncLoadButtonState(button = getLoadButton()) {
     if (!button) return;
     const label = getLoadButtonLabel();
-    syncNativeAvailability();
     button.setAttribute("aria-label", label);
     button.dataset.titleNoTooltip = label;
     button.classList.toggle("--loaded", hasCustomCaptions());
@@ -1245,59 +1338,9 @@
     button.classList.toggle("ytsrt-subtitles-custom-active", customActive);
 
     if (ready) {
-      stashAttribute(button, "aria-label", "ytsrtOriginalAriaLabel");
-      stashAttribute(button, "aria-pressed", "ytsrtOriginalAriaPressed");
-      stashAttribute(button, "title", "ytsrtOriginalTitle");
-      stashAttribute(button, "data-title-no-tooltip", "ytsrtOriginalDataTitle");
-      stashAttribute(button, "data-tooltip-title", "ytsrtOriginalTooltipTitle");
-      button.setAttribute("aria-label", t("captions"));
-      button.setAttribute("title", t("captions"));
-      button.setAttribute("data-title-no-tooltip", t("captions"));
-      button.setAttribute("data-tooltip-title", t("captions"));
-      button.disabled = false;
-      button.removeAttribute("disabled");
-      button.setAttribute("aria-disabled", "false");
-      button.removeAttribute("aria-hidden");
-      button.setAttribute(
-        "aria-pressed",
-        state.captionMode === CAPTION_MODE.OFF ? "false" : "true"
-      );
-      button.classList.remove("ytp-button-disabled");
-      button.tabIndex = 0;
-      syncSubtitlesButtonIcon(button, customActive);
-      button.querySelectorAll("[fill-opacity]").forEach((el) => {
-        if (!el.dataset.ytsrtOriginalFillOpacity) {
-          el.dataset.ytsrtOriginalFillOpacity = el.getAttribute("fill-opacity") || "";
-        }
-        el.setAttribute("fill-opacity", "1");
-      });
-      if (customActive && !button.classList.contains("ytp-button-active")) {
-        button.dataset.ytsrtForcedActive = "1";
-        button.classList.add("ytp-button-active");
-      }
-    }
-
-    if (!customActive && button.dataset.ytsrtForcedActive === "1") {
-      if (state.captionMode === CAPTION_MODE.OFF) {
-        button.classList.remove("ytp-button-active");
-      }
-      delete button.dataset.ytsrtForcedActive;
-    }
-
-    if (!ready) {
-      syncSubtitlesButtonIcon(button, false);
-      button.removeAttribute("aria-disabled");
-      restoreStashedAttribute(button, "aria-label", "ytsrtOriginalAriaLabel");
-      restoreStashedAttribute(button, "aria-pressed", "ytsrtOriginalAriaPressed");
-      restoreStashedAttribute(button, "title", "ytsrtOriginalTitle");
-      restoreStashedAttribute(button, "data-title-no-tooltip", "ytsrtOriginalDataTitle");
-      restoreStashedAttribute(button, "data-tooltip-title", "ytsrtOriginalTooltipTitle");
-      button.querySelectorAll("[data-ytsrt-original-fill-opacity]").forEach((el) => {
-        const original = el.dataset.ytsrtOriginalFillOpacity;
-        if (original) el.setAttribute("fill-opacity", original);
-        else el.removeAttribute("fill-opacity");
-        delete el.dataset.ytsrtOriginalFillOpacity;
-      });
+      applyManagedSubtitlesButtonState(button, customActive);
+    } else {
+      restoreManagedSubtitlesButtonState(button);
     }
   }
 
@@ -1367,26 +1410,11 @@
 
     const subtitlesButton = getSubtitlesButton();
     if (subtitlesButton) {
-      syncSubtitlesButtonIcon(subtitlesButton, false);
       subtitlesButton.classList.remove(
         "ytsrt-subtitles-ready",
         "ytsrt-subtitles-custom-active"
       );
-      if (subtitlesButton.dataset.ytsrtForcedActive === "1") {
-        subtitlesButton.classList.remove("ytp-button-active");
-        delete subtitlesButton.dataset.ytsrtForcedActive;
-      }
-      restoreStashedAttribute(subtitlesButton, "aria-label", "ytsrtOriginalAriaLabel");
-      restoreStashedAttribute(subtitlesButton, "aria-pressed", "ytsrtOriginalAriaPressed");
-      restoreStashedAttribute(subtitlesButton, "title", "ytsrtOriginalTitle");
-      restoreStashedAttribute(subtitlesButton, "data-title-no-tooltip", "ytsrtOriginalDataTitle");
-      restoreStashedAttribute(subtitlesButton, "data-tooltip-title", "ytsrtOriginalTooltipTitle");
-      subtitlesButton.querySelectorAll("[data-ytsrt-original-fill-opacity]").forEach((el) => {
-        const original = el.dataset.ytsrtOriginalFillOpacity;
-        if (original) el.setAttribute("fill-opacity", original);
-        else el.removeAttribute("fill-opacity");
-        delete el.dataset.ytsrtOriginalFillOpacity;
-      });
+      restoreManagedSubtitlesButtonState(subtitlesButton, { resetActiveClass: true });
     }
   }
 
@@ -1472,11 +1500,6 @@
     setTimeout(() => scheduleSyncSettingsUi(), 0);
     setTimeout(() => scheduleSyncSettingsUi(), 120);
     setTimeout(() => scheduleSyncSettingsUi(), 320);
-  }
-
-  function getVisibleMenuItems(popup = getSettingsPopup()) {
-    if (!popup || !isVisibleElement(popup)) return [];
-    return Array.from(popup.querySelectorAll(MENU_ITEM_SELECTOR)).filter(isVisibleElement);
   }
 
   function findTopLevelMenuContainer(popup = getSettingsPopup()) {
@@ -1582,10 +1605,7 @@
     offItem.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      state.captionTransitionToken += 1;
-      state.pendingCaptionSelection = CAPTION_MODE.OFF;
-      applyCaptionMode(CAPTION_MODE.OFF);
-      closeSettingsMenu();
+      void requestCaptionMode(CAPTION_MODE.OFF, { closeMenu: true });
     });
 
     const customItem = createMenuItem({
@@ -1599,8 +1619,7 @@
     customItem.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      void requestCustomCaptionMode();
-      closeSettingsMenu();
+      void requestCaptionMode(CAPTION_MODE.CUSTOM, { closeMenu: true });
     });
 
     list.appendChild(offItem);
@@ -1665,8 +1684,7 @@
     row.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      void requestCustomCaptionMode();
-      closeSettingsMenu();
+      void requestCaptionMode(CAPTION_MODE.CUSTOM, { closeMenu: true });
     });
     return row;
   }
@@ -1680,14 +1698,12 @@
     );
     if (before) container.insertBefore(row, before);
     else container.appendChild(row);
-    state.customTopRowMounted = true;
   }
 
   function mountNativeCustomRow(container) {
     if (!container || document.getElementById(CUSTOM_NATIVE_ROW_ID)) return;
     const row = buildNativeCustomRow();
     container.appendChild(row);
-    state.customNativeRowMounted = true;
     syncCaptionMenuChecks(container);
   }
 
@@ -1801,7 +1817,6 @@
     removeStaleInjectedRows();
     if (!popup || !isVisibleElement(popup)) {
       removeCustomPanel();
-      resetInjectedMenuMarkers();
       return;
     }
 
@@ -1844,9 +1859,6 @@
     ) {
       nativeRow.remove();
     }
-
-    state.customTopRowMounted = !!document.getElementById(CUSTOM_TOP_ROW_ID);
-    state.customNativeRowMounted = !!document.getElementById(CUSTOM_NATIVE_ROW_ID);
   }
 
   function onMenuItemActivated(item) {
@@ -1858,43 +1870,37 @@
     }
 
     if (item.dataset.ytsrtChoice === CAPTION_MODE.CUSTOM) {
-      void requestCustomCaptionMode();
-      closeSettingsMenu();
+      void requestCaptionMode(CAPTION_MODE.CUSTOM, { closeMenu: true });
       return true;
     }
 
     if (item.dataset.ytsrtChoice === CAPTION_MODE.OFF) {
-      state.captionTransitionToken += 1;
-      state.pendingCaptionSelection = CAPTION_MODE.OFF;
-      applyCaptionMode(CAPTION_MODE.OFF);
-      closeSettingsMenu();
+      void requestCaptionMode(CAPTION_MODE.OFF, { closeMenu: true });
       return true;
     }
 
     const nativeCaptionContainer = findNativeCaptionMenuContainer();
     if (
       hasCustomCaptions() &&
-      state.nativeCaptionsAvailable &&
+      getNativeCaptionsAvailability() &&
       isNativeCaptionMenuItem(item, nativeCaptionContainer)
     ) {
       if (isAutoTranslateMenuItem(item)) {
         return false;
       }
 
-      state.captionTransitionToken += 1;
       if (isCaptionOffMenuItem(item)) {
-        state.pendingCaptionSelection = CAPTION_MODE.OFF;
-        applyCaptionMode(CAPTION_MODE.OFF, { persist: false });
+        void requestCaptionMode(CAPTION_MODE.OFF, {
+          persist: false,
+          syncFromPlayer: true,
+        });
       } else {
-        rememberNativeCaptionTrackLabel(getCaptionMenuItemLabelText(item));
-        state.pendingCaptionSelection = CAPTION_MODE.NATIVE;
-        applyCaptionMode(CAPTION_MODE.NATIVE, { persist: false });
+        void requestCaptionMode(CAPTION_MODE.NATIVE, {
+          persist: false,
+          syncFromPlayer: true,
+          nativeTrackLabel: getCaptionMenuItemLabelText(item),
+        });
       }
-
-      setTimeout(() => {
-        syncCaptionModeFromPlayer({ persist: false });
-        burstSyncSettingsUi();
-      }, 0);
     }
     return false;
   }
@@ -1968,7 +1974,6 @@
     ensureLoadButton();
     ensureOverlay();
     bindVideoListeners();
-    syncNativeAvailability();
     applyCaptionMode(
       enableAfterLoad
         ? CAPTION_MODE.CUSTOM
@@ -2039,7 +2044,6 @@
     state.lastKnownNativeTrackLabel = "";
     state.nativeCaptionsAvailable = false;
     state.pendingCaptionSelection = null;
-    resetInjectedMenuMarkers();
   }
 
   async function handleRouteChange() {
@@ -2057,7 +2061,6 @@
 
     ensureLoadButton();
     bindVideoListeners();
-    syncNativeAvailability();
     syncCaptionModeFromPlayer();
 
     const saved = gmGet(CAPTION_KEY_PREFIX + videoId, null);
@@ -2079,7 +2082,6 @@
         state.ignoreNextSubtitlesButtonClick = false;
         return;
       }
-      syncNativeAvailability();
       if (hasCustomCaptions()) {
         e.preventDefault();
         e.stopImmediatePropagation();
