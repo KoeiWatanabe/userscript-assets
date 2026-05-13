@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      1.7.8
+// @version      1.7.9
 // @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み, Alt+Shift+C: カスタム字幕オン/オフ, Alt+S: 字幕保存（タイムスタンプ付き）, Alt+Shift+S: 字幕保存。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -1610,7 +1610,17 @@
     }
 
     const nativeRow = document.getElementById(CUSTOM_NATIVE_ROW_ID);
-    if (nativeRow && (!hasCustomCaptions() || !findNativeCaptionsTopRow())) nativeRow.remove();
+    const nativeContainer = findNativeCaptionMenuContainer();
+    if (
+      nativeRow &&
+      (
+        !hasCustomCaptions() ||
+        !nativeContainer ||
+        nativeRow.parentElement !== nativeContainer
+      )
+    ) {
+      nativeRow.remove();
+    }
 
     state.customTopRowMounted = !!document.getElementById(CUSTOM_TOP_ROW_ID);
     state.customNativeRowMounted = !!document.getElementById(CUSTOM_NATIVE_ROW_ID);
