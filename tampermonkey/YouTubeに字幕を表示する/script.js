@@ -31,6 +31,7 @@
   const OVERLAY_ID = "ytsrt-overlay";
   const STYLE_ID = "ytsrt-style";
   const LOAD_BUTTON_ID = "ytsrt-load-button";
+  const TOOLTIP_ID = "ytsrt-tooltip";
   const CUSTOM_PANEL_ID = "ytsrt-custom-captions-panel";
   const CUSTOM_TOP_ROW_ID = "ytsrt-custom-captions-row";
   const CUSTOM_NATIVE_ROW_ID = "ytsrt-native-custom-row";
@@ -63,7 +64,7 @@
       off: "オフ",
       on: "オン",
       loadCaptions: "字幕を読み込む",
-      reloadCaptions: "字幕を再読み込む",
+      reloadCaptions: "字幕を再読み込み",
       unavailable: "利用不可",
     },
     en: {
@@ -151,6 +152,10 @@
 
   function getLoadButton() {
     return document.getElementById(LOAD_BUTTON_ID);
+  }
+
+  function getTooltip() {
+    return document.getElementById(TOOLTIP_ID);
   }
 
   function getSettingsPopup() {
@@ -590,19 +595,63 @@
       }
       #${LOAD_BUTTON_ID} .ytsrt-load-button__indicator {
         position: absolute;
+        top: 9px;
         right: 8px;
-        bottom: 8px;
-        width: 4px;
-        height: 4px;
+        width: 6px;
+        height: 6px;
         border-radius: 999px;
         background: #8ab4f8;
         opacity: 0;
-        transition: opacity 120ms ease;
-        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.75);
+        transform: scale(0.6);
+        transition: opacity 120ms ease, transform 120ms ease;
+        box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.85);
         pointer-events: none;
       }
       #${LOAD_BUTTON_ID}.--loaded .ytsrt-load-button__indicator {
         opacity: 1;
+        transform: scale(1);
+      }
+      #${LOAD_BUTTON_ID}:hover .ytsrt-load-button__icon,
+      #${LOAD_BUTTON_ID}:focus-visible .ytsrt-load-button__icon {
+        transform: scale(1.03);
+      }
+      #${TOOLTIP_ID} {
+        position: absolute;
+        z-index: 2024;
+        display: block;
+        max-width: 300px;
+        bottom: auto;
+        pointer-events: none;
+        color: #eee;
+        font-family: "YouTube Noto", "Roboto", "Arial", sans-serif;
+        font-size: 12.98px;
+        font-weight: 500;
+        line-height: 15px;
+      }
+      #${TOOLTIP_ID}[hidden] {
+        display: none;
+      }
+      #${TOOLTIP_ID} .ytp-tooltip-bottom-text {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 9px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.3);
+        color: #eee;
+        white-space: nowrap;
+      }
+      #${TOOLTIP_ID} .ytp-tooltip-keyboard-shortcut {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 11px;
+        min-height: 15px;
+        padding: 0 2px;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        color: #fff;
+        font-size: 12.98px;
       }
       ${PLAYER_SELECTOR} .ytp-subtitles-button.ytsrt-subtitles-ready {
         opacity: 1 !important;
@@ -907,8 +956,56 @@
       e.stopPropagation();
       openFilePicker();
     });
+    button.addEventListener("mouseenter", showTooltip);
+    button.addEventListener("focus", showTooltip);
+    button.addEventListener("mouseleave", hideTooltip);
+    button.addEventListener("blur", hideTooltip);
     syncLoadButtonState(button);
     return button;
+  }
+
+  function ensureTooltip(player = getPlayer()) {
+    if (!player) return null;
+    ensureStyle();
+
+    let tooltip = getTooltip();
+    if (!tooltip) {
+      tooltip = document.createElement("div");
+      tooltip.id = TOOLTIP_ID;
+      tooltip.className = "ytsrt-load-tooltip ytp-tooltip ytp-bottom";
+      tooltip.hidden = true;
+
+      const wrapper = document.createElement("div");
+      wrapper.className = "ytp-tooltip-text-wrapper";
+      wrapper.setAttribute("aria-hidden", "true");
+
+      const bottom = document.createElement("div");
+      bottom.className = "ytp-tooltip-bottom-text";
+
+      const label = document.createElement("span");
+      label.className = "ytp-tooltip-text";
+
+      const shortcut = document.createElement("div");
+      shortcut.className = "ytp-tooltip-keyboard-shortcut";
+      shortcut.textContent = LOAD_BUTTON_SHORTCUT;
+
+      bottom.appendChild(label);
+      bottom.appendChild(shortcut);
+      wrapper.appendChild(bottom);
+      tooltip.appendChild(wrapper);
+    }
+
+    if (tooltip.parentElement !== player) {
+      player.appendChild(tooltip);
+    }
+
+    syncTooltipState(tooltip);
+    return tooltip;
+  }
+
+  function syncTooltipState(tooltip = getTooltip()) {
+    const labelNode = tooltip?.querySelector(".ytp-tooltip-text");
+    if (labelNode) labelNode.textContent = getLoadButtonLabel();
   }
 
   function syncLoadButtonState(button = getLoadButton()) {
@@ -918,6 +1015,7 @@
     button.setAttribute("aria-label", label);
     button.dataset.titleNoTooltip = label;
     button.classList.toggle("--loaded", hasCustomCaptions());
+    syncTooltipState();
     syncSubtitlesButtonState();
 
     const topRow = document.getElementById(CUSTOM_TOP_ROW_ID);
@@ -927,6 +1025,37 @@
         getCustomRowSummary()
       );
     }
+  }
+
+  function positionTooltip(tooltip, button, player) {
+    const buttonRect = button.getBoundingClientRect();
+    const playerRect = player.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const left =
+      buttonRect.left - playerRect.left + (buttonRect.width / 2) - (tooltipRect.width / 2);
+    const top = buttonRect.top - playerRect.top - tooltipRect.height - 22;
+    tooltip.style.left = `${Math.max(8, left)}px`;
+    tooltip.style.top = `${Math.max(8, top)}px`;
+    tooltip.style.bottom = "auto";
+  }
+
+  function showTooltip() {
+    const player = getPlayer();
+    const button = getLoadButton();
+    if (!player || !button) return;
+
+    const tooltip = ensureTooltip(player);
+    if (!tooltip) return;
+
+    tooltip.hidden = false;
+    tooltip.style.visibility = "hidden";
+    positionTooltip(tooltip, button, player);
+    tooltip.style.visibility = "";
+  }
+
+  function hideTooltip() {
+    const tooltip = getTooltip();
+    if (tooltip) tooltip.hidden = true;
   }
 
   function syncSubtitlesButtonState(button = getSubtitlesButton()) {
@@ -1053,6 +1182,10 @@
   }
 
   function removePlayerControlsUi() {
+    hideTooltip();
+    const tooltip = getTooltip();
+    if (tooltip) tooltip.remove();
+
     const button = getLoadButton();
     if (button) button.remove();
 
@@ -1171,91 +1304,61 @@
   }
 
   function findTopLevelMenuContainer(popup = getSettingsPopup()) {
-    const direct = Array.from(popup?.querySelectorAll(".ytp-panel-menu") || []).find((el) =>
-      isVisibleElement(el) && !el.closest(`#${CUSTOM_PANEL_ID}`)
+    if (!popup || !isVisibleElement(popup) || getActivePanelHeader(popup)) return null;
+
+    const containers = Array.from(popup.querySelectorAll(".ytp-panel-menu")).filter((container) =>
+      isVisibleElement(container) && !container.closest(`#${CUSTOM_PANEL_ID}`)
     );
-    if (direct) return direct;
 
-    const items = getVisibleMenuItems(popup);
-    if (!items.length) return null;
-
-    const containers = new Map();
-    for (const item of items) {
-      if (
-        item.id === CUSTOM_TOP_ROW_ID ||
-        item.id === CUSTOM_NATIVE_ROW_ID ||
-        item.closest(`#${CUSTOM_PANEL_ID}`)
-      ) continue;
-      const parent = item.parentElement;
-      if (!parent) continue;
-      const current = containers.get(parent) || [];
-      current.push(item);
-      containers.set(parent, current);
-    }
-
-    let best = null;
-    let bestScore = -1;
-    for (const [container, menuItems] of containers) {
-      const hasToggle = menuItems.some((item) =>
-        item.querySelector(".ytp-menuitem-toggle-checkbox")
-      );
-      const hasBack = menuItems.some((item) =>
-        normalizeLabelText(item.textContent).includes(normalizeLabelText(t("captionsMenu")))
-      );
-      let score = menuItems.length;
-      if (hasToggle) score += 20;
-      if (hasBack) score -= 10;
-      if (score > bestScore) {
-        bestScore = score;
-        best = container;
-      }
-    }
-    return best;
+    return containers.find((container) =>
+      Array.from(container.children).some((item) =>
+        item.matches?.(MENU_ITEM_SELECTOR) &&
+        isVisibleElement(item) &&
+        item.getAttribute("role") === "menuitem"
+      )
+    ) || null;
   }
 
-  function isCaptionMenuContext(popup = getSettingsPopup()) {
-    if (!popup || !isVisibleElement(popup)) return false;
-    const text = normalizeLabelText(popup.textContent);
-    return text.includes(normalizeLabelText(t("captionsMenu"))) ||
-      text.includes("subtitles/cc") ||
-      text.includes("subtitles") ||
-      text.includes("captions");
+  function isCaptionsMenuTitle(text) {
+    const normalized = normalizeLabelText(text);
+    return normalized === normalizeLabelText(t("captionsMenu")) ||
+      normalized === "subtitles/cc" ||
+      normalized === "subtitles" ||
+      normalized === "captions";
   }
 
-  function findCaptionMenuContainer(popup = getSettingsPopup()) {
-    if (!isCaptionMenuContext(popup)) return null;
-    const items = getVisibleMenuItems(popup).filter((item) =>
+  function getActivePanelHeader(popup = getSettingsPopup()) {
+    if (!popup || !isVisibleElement(popup)) return null;
+    return Array.from(popup.querySelectorAll(".ytp-panel-header")).find(isVisibleElement) || null;
+  }
+
+  function getActivePanelTitleText(popup = getSettingsPopup()) {
+    const header = getActivePanelHeader(popup);
+    const title = header?.querySelector(".ytp-panel-title");
+    return title && isVisibleElement(title) ? title.textContent || "" : "";
+  }
+
+  function findNativeCaptionMenuContainer(popup = getSettingsPopup()) {
+    if (!isCaptionsMenuTitle(getActivePanelTitleText(popup))) return null;
+
+    const header = getActivePanelHeader(popup);
+    const container = header?.nextElementSibling;
+    if (
+      !container ||
+      !container.matches(".ytp-panel-menu") ||
+      !isVisibleElement(container) ||
+      container.closest(`#${CUSTOM_PANEL_ID}`)
+    ) {
+      return null;
+    }
+
+    const nativeItems = Array.from(container.querySelectorAll(MENU_ITEM_SELECTOR)).filter((item) =>
       item.id !== CUSTOM_TOP_ROW_ID &&
       item.id !== CUSTOM_NATIVE_ROW_ID &&
-      !item.closest(`#${CUSTOM_PANEL_ID}`)
+      item.getAttribute("role") === "menuitemradio" &&
+      isVisibleElement(item)
     );
-    if (!items.length) return null;
-
-    const counts = new Map();
-    for (const item of items) {
-      const parent = item.parentElement;
-      if (!parent) continue;
-      counts.set(parent, (counts.get(parent) || 0) + 1);
-    }
-
-    let best = null;
-    let bestCount = -1;
-    for (const [container, count] of counts) {
-      if (count > bestCount) {
-        best = container;
-        bestCount = count;
-      }
-    }
-    return best;
-  }
-
-  function isNativeCaptionSelectionMenu(popup = getSettingsPopup()) {
-    if (!isCaptionMenuContext(popup)) return false;
-    return getVisibleMenuItems(popup).some((item) =>
-      item.id !== CUSTOM_TOP_ROW_ID &&
-      item.id !== CUSTOM_NATIVE_ROW_ID &&
-      item.getAttribute("role") === "menuitemradio"
-    );
+    return nativeItems.length ? container : null;
   }
 
   function renderCustomSubmenu() {
@@ -1455,7 +1558,7 @@
     }
   }
 
-  function syncCaptionMenuChecks(container = findCaptionMenuContainer()) {
+  function syncCaptionMenuChecks(container = findNativeCaptionMenuContainer()) {
     if (!container) return;
     const customActive = state.captionMode === CAPTION_MODE.CUSTOM;
     const customRow = document.getElementById(CUSTOM_NATIVE_ROW_ID);
@@ -1480,12 +1583,14 @@
     }
 
     const nativeTopRow = findNativeCaptionsTopRow(popup);
-    const nativeCaptionContainer = hasCustomCaptions() &&
-      (nativeTopRow || isNativeCaptionSelectionMenu(popup))
-      ? findCaptionMenuContainer(popup)
+    const nativeCaptionContainer = hasCustomCaptions()
+      ? findNativeCaptionMenuContainer(popup)
       : null;
+    const shouldMountTopLevelCustomRow = hasCustomCaptions() &&
+      !nativeTopRow &&
+      !nativeCaptionContainer;
 
-    if (hasCustomCaptions() && !nativeCaptionContainer) {
+    if (shouldMountTopLevelCustomRow) {
       const container = findTopLevelMenuContainer(popup);
       if (container) mountTopLevelCustomRow(container);
     }
@@ -1500,7 +1605,9 @@
 
   function removeStaleInjectedRows() {
     const top = document.getElementById(CUSTOM_TOP_ROW_ID);
-    if (top && !hasCustomCaptions()) top.remove();
+    if (top && (!hasCustomCaptions() || !findTopLevelMenuContainer() || findNativeCaptionsTopRow())) {
+      top.remove();
+    }
 
     const nativeRow = document.getElementById(CUSTOM_NATIVE_ROW_ID);
     if (nativeRow && (!hasCustomCaptions() || !findNativeCaptionsTopRow())) nativeRow.remove();
@@ -1529,7 +1636,7 @@
       return;
     }
 
-    if (hasCustomCaptions() && state.nativeCaptionsAvailable && isCaptionMenuContext()) {
+    if (hasCustomCaptions() && state.nativeCaptionsAvailable && findNativeCaptionMenuContainer()) {
       const text = normalizeLabelText(item.textContent);
       setTimeout(() => {
         if (text === normalizeLabelText(t("off"))) {
