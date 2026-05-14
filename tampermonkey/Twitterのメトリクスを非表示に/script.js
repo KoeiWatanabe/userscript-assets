@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      1.9.0
+// @version      1.10.0
 // @description  メトリクス非表示（ホバー時表示）・サイドバー整理・おすすめタブ削除・原文デフォルト表示
 // @author       Gemini & Claude
 // @match        https://x.com/*
@@ -91,6 +91,18 @@
 
   // 原文を表示したい言語（「○○からの翻訳」の○○部分）
   const SHOW_ORIGINAL_LANGS = new Set(['英語']);
+  const SEARCH_INPUT_SELECTOR = '[data-testid="SearchBox_Search_Input"]';
+  const SIDEBAR_SECTION_MARKERS = [
+    'aside',
+    '[data-testid="news_sidebar"]',
+    '[data-testid="trend"]',
+    '[data-testid="placementTracking"]',
+    '[data-testid*="Upsell"]',
+    '[data-testid*="upsell"]',
+    '[role="complementary"]',
+    '[aria-label][tabindex="0"]',
+    'h2',
+  ].join(', ');
 
   // WeakSet で処理済みボタンを追跡（DOM 属性不要・副作用なし）
   const processedButtons = new WeakSet();
@@ -151,7 +163,44 @@
     }
   }
 
-  /** 右サイドバーのニュース・トレンドセクションを非表示（サイドバー変化時のみ実行） */
+  /** 検索ボックスを残しつつ、同じ親配下の右サイドバー要素をまとめて非表示にする */
+  function hideSidebarSiblingsExceptSearch(sidebar) {
+    const searchInput = sidebar.querySelector(SEARCH_INPUT_SELECTOR);
+    if (!searchInput) return false;
+
+    let branch = searchInput.parentElement;
+    while (branch && branch !== sidebar) {
+      const parent = branch.parentElement;
+      if (!parent) break;
+
+      const siblings = Array.from(parent.children);
+      const keep = siblings.find(child => child.contains(searchInput));
+      if (!keep || siblings.length < 2) {
+        branch = parent;
+        continue;
+      }
+
+      const hideable = siblings.filter((child) => {
+        if (child === keep || child.contains(searchInput)) return false;
+        return child.matches?.(SIDEBAR_SECTION_MARKERS) || child.querySelector?.(SIDEBAR_SECTION_MARKERS);
+      });
+
+      if (hideable.length > 0) {
+        hideable.forEach((child) => {
+          if (child.style.display !== 'none') {
+            child.style.setProperty('display', 'none', 'important');
+          }
+        });
+        return true;
+      }
+
+      branch = parent;
+    }
+
+    return false;
+  }
+
+  /** 右サイドバーの不要セクションを非表示（サイドバー変化時のみ実行） */
   function cleanSidebarSections(roots) {
     const sidebar = document.querySelector('[data-testid="sidebarColumn"]');
     if (!sidebar) return;
@@ -161,6 +210,8 @@
       sidebar === root || sidebar.contains(root) || root.contains(sidebar)
     );
     if (!affected) return;
+
+    if (hideSidebarSiblingsExceptSearch(sidebar)) return;
 
     sidebar.querySelectorAll('aside').forEach(aside => {
       const parent = aside.parentElement;
@@ -175,7 +226,7 @@
       let target = null;
       let cur = h2.parentElement;
       while (cur && cur !== sidebar) {
-        if (cur.querySelector('[data-testid="SearchBox_Search_Input"]')) break;
+        if (cur.querySelector(SEARCH_INPUT_SELECTOR)) break;
         target = cur;
         cur = cur.parentElement;
       }
