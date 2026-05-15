@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         辞書に見出しを付ける
 // @namespace    http://tampermonkey.net/
-// @version      2.4.1
-// @description  OALD / Cambridge Dictionary に意味の目次をサイドバーとしてページ内に組み込む
+// @version      2.5.3
+// @description  OALD / Cambridge Dictionary / Collins Dictionary に意味の目次をサイドバーとしてページ内に組み込む
 // @match        https://www.oxfordlearnersdictionaries.com/definition/english/*
 // @match        https://dictionary.cambridge.org/dictionary/*
+// @match        https://www.collinsdictionary.com/dictionary/english/*
 // @grant        none
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/辞書に見出しを付ける/script.js
@@ -15,16 +16,21 @@
 (function () {
   "use strict";
 
-  const SITE =
-    location.hostname === "www.oxfordlearnersdictionaries.com"
-      ? "oald"
-      : "cambridge";
+  const SITE_BY_HOST = {
+    "www.oxfordlearnersdictionaries.com": "oald",
+    "dictionary.cambridge.org": "cambridge",
+    "www.collinsdictionary.com": "collins",
+  };
+  const SITE = SITE_BY_HOST[location.hostname];
 
   // --- サイト別の設定 ---
   const CONFIG = {
     oald: {
       accentColor: "#0056b3",
       headerBg: "#0056b3",
+      dictTitleBg: "#1a3a5c",
+      sectionTitleBg: "#5a5a5a",
+      hoverBg: "#f0f6ff",
       // OALDはヘッダー+検索バーがスクロールで消える → 表示中はその下端に追従
       getHeaderBottom: () => {
         const sb = document.getElementById("searchbar");
@@ -36,10 +42,37 @@
     cambridge: {
       accentColor: "#00bdb6",
       headerBg: "#00bdb6",
+      dictTitleBg: "#1a3a5c",
+      sectionTitleBg: "#5a5a5a",
+      hoverBg: "#f0f6ff",
       // Cambridgeは固定ヘッダー (#header) の下端に追従
       getHeaderBottom: () => {
         const h = document.querySelector("#header");
         return h ? Math.max(h.getBoundingClientRect().bottom, 0) + 10 : 10;
+      },
+    },
+    collins: {
+      accentColor: "#cc1f26",
+      headerBg: "#cc1f26",
+      dictTitleBg: "#7e7e7e",
+      sectionTitleBg: "#6f7d90",
+      hoverBg: "#f7fbff",
+      getHeaderBottom: () => {
+        const candidates = [
+          document.querySelector(".top"),
+          document.querySelector(".navigation"),
+          document.querySelector("header"),
+        ].filter((el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          return rect.bottom > 0 && rect.top < 120 && rect.bottom < window.innerHeight * 0.5;
+        });
+        if (candidates.length === 0) return 10;
+        return (
+          Math.max(
+            ...candidates.map((el) => Math.max(el.getBoundingClientRect().bottom, 0))
+          ) + 10
+        );
       },
     },
   }[SITE];
@@ -82,12 +115,12 @@
       padding: 0;
     }
 
-    /* --- 辞書タイトル (Cambridge) --- */
+    /* --- 辞書タイトル --- */
     #dict-toc-sidebar .toc-dict-title {
       padding: 8px 14px;
       font-weight: bold;
       color: #fff;
-      background: #1a3a5c;
+      background: ${CONFIG.dictTitleBg};
       font-size: 13px;
       margin-top: 2px;
     }
@@ -95,7 +128,7 @@
       margin-top: 0;
     }
     #dict-toc-sidebar .toc-dict-title:hover {
-      background: #243f5f;
+      filter: brightness(0.92);
     }
 
     /* --- 折りたたみ見出し (品詞) --- */
@@ -142,7 +175,7 @@
       margin-top: 0;
     }
     #dict-toc-sidebar .toc-group-heading:hover {
-      background: #f0f6ff;
+      background: ${CONFIG.hoverBg};
     }
 
     /* --- 定義行 --- */
@@ -153,7 +186,7 @@
       border-left: 3px solid transparent;
     }
     #dict-toc-sidebar .toc-sense:hover {
-      background: #f0f6ff;
+      background: ${CONFIG.hoverBg};
       border-left-color: ${CONFIG.accentColor};
     }
     #dict-toc-sidebar .toc-sense .toc-sense-num {
@@ -167,9 +200,20 @@
       padding: 8px 14px 4px;
       font-weight: bold;
       color: #fff;
-      background: #5a5a5a;
+      background: ${CONFIG.sectionTitleBg};
       font-size: 13px;
       margin-top: 6px;
+    }
+
+    #dict-toc-sidebar .toc-section-link {
+      padding: 5px 14px 5px 28px;
+      cursor: pointer;
+      color: #333;
+      border-left: 3px solid transparent;
+    }
+    #dict-toc-sidebar .toc-section-link:hover {
+      background: ${CONFIG.hoverBg};
+      border-left-color: ${CONFIG.sectionTitleBg};
     }
 
     /* --- Idiom / Phrasal Verb 項目 --- */
@@ -195,7 +239,7 @@
       border-left: 3px solid transparent;
     }
     #dict-toc-sidebar .toc-phrase:hover {
-      background: #f0f6ff;
+      background: ${CONFIG.hoverBg};
       border-left-color: #999;
     }
     #dict-toc-sidebar .toc-phrase::before {
@@ -236,6 +280,39 @@
     el.classList.remove("dict-toc-highlight");
     void el.offsetWidth;
     el.classList.add("dict-toc-highlight");
+  }
+
+  function normalizeText(text) {
+    return String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function truncateText(text, maxLen = 80) {
+    const normalized = normalizeText(text);
+    if (normalized.length <= maxLen) return normalized;
+    return normalized.slice(0, maxLen - 1).trimEnd() + "…";
+  }
+
+  function stripCollinsCobuildMeta(text) {
+    return normalizeText(text)
+      .replace(/^\.\.\.\s*/, "")
+      .replace(/^(\d+|[a-z])\.\s*/i, "")
+      .replace(
+        /^(?:(?:countable|uncountable|singular|plural|transitive|intransitive|linking|reciprocal|auxiliary|modal|ordinal|predeterminer)\s+)*(?:noun|verb|adjective|adverb|pronoun|preposition|conjunction|determiner|interjection|exclamation|modal verb|phrasal verb|combining form)(?:\s+\[[^\]]+\])*(?:\s+[A-C]\d\+?)?\s*/i,
+        ""
+      )
+      .replace(/^(?:\[[^\]]+\]\s*)+/i, "")
+      .replace(/^(?:[A-C]\d\+?\s*)+/i, "")
+      .trim();
+  }
+
+  function stripCollinsLeadingLabels(text) {
+    return normalizeText(text)
+      .replace(/^(?:\([^)]*\)\s*)+/i, "")
+      .replace(/^(?:\[[^\]]+\]\s*)+/i, "")
+      .trim();
   }
 
   // --- OALD データ収集 ---
@@ -394,6 +471,233 @@
     return data;
   }
 
+  // --- Collins データ収集 ---
+  function collectCollins() {
+    const DICT_LABELS = {
+      Cob_Adv_Brit: "COBUILD",
+      Collins_Eng_Dict: "British English",
+      Large_US_Webster: "American English (Webster)",
+      Penguin: "American English (Penguin)",
+      ESP_Vocab_Extractive: "Oil and Gas Industry",
+    };
+
+    function sanitizeExcerpt(text) {
+      return normalizeText(text)
+        .replace(/\biaw\.cmd\.push[\s\S]*$/i, "")
+        .replace(/\bgoogletag[\s\S]*$/i, "")
+        .trim();
+    }
+
+    function buildHomLabel(hom, fallbackNum) {
+      const lines = hom.innerText
+        .split("\n")
+        .map((line) => normalizeText(line))
+        .filter(Boolean);
+      const firstLine = lines[0] || "";
+      const match = firstLine.match(/^(\d+)\.\s*(.*)$/);
+      const num = match ? Number(match[1]) : fallbackNum;
+      const firstSense = hom.querySelector(".sense");
+      const excerptSource = firstSense ? firstSense.textContent : lines.slice(1).join(" ");
+      const excerpt = truncateText(
+        sanitizeExcerpt(
+          stripCollinsCobuildMeta(excerptSource) ||
+          stripCollinsCobuildMeta(lines.slice(1).join(" ")) ||
+          excerptSource
+        ),
+        72
+      );
+      return {
+        num,
+        el: hom,
+        def: excerpt || `Sense ${num}`,
+      };
+    }
+
+    function buildSenseLabel(sense, fallbackNum) {
+      const lines = sense.innerText
+        .split("\n")
+        .map((line) => normalizeText(line))
+        .filter(Boolean);
+      const firstLine = lines[0] || "";
+      const match = firstLine.match(/^(\d+|[a-z])\.\s*(.*)$/i);
+      const num = match ? match[1] : String(fallbackNum);
+      const headRest = normalizeText(match ? match[2] : firstLine);
+      let defLine = "";
+      if (headRest && !/^\(.*\)$/.test(headRest)) {
+        defLine = headRest;
+      } else {
+        defLine =
+          lines
+            .slice(1)
+            .map((line) => line.replace(/^[a-z]\.\s*/i, ""))
+            .find(Boolean) || "";
+      }
+
+      const def = truncateText(
+        sanitizeExcerpt(
+          stripCollinsLeadingLabels(defLine || headRest || sense.textContent || "")
+        ),
+        72
+      );
+      return {
+        num,
+        el: sense,
+        def: def || `Sense ${num}`,
+      };
+    }
+
+    function collectHomSenses(hom) {
+      const directSenses = Array.from(hom.querySelectorAll(":scope > .sense"));
+      if (directSenses.length > 0) {
+        return directSenses.map((sense, index) => buildSenseLabel(sense, index + 1));
+      }
+
+      if (
+        hom.matches(".sense") ||
+        hom.querySelector(":scope > .def") ||
+        hom.querySelector(":scope > .sensenum")
+      ) {
+        return [buildSenseLabel(hom, 1)];
+      }
+
+      const nestedSenses = Array.from(hom.querySelectorAll(".sense"));
+      return nestedSenses.map((sense, index) => buildSenseLabel(sense, index + 1));
+    }
+
+    function collectLogicalEntries(dictBlock) {
+      const nestedEntries = Array.from(dictBlock.querySelectorAll(":scope > .dictlink.dictentry"));
+      if (nestedEntries.length > 0) return nestedEntries;
+      if (dictBlock.querySelector(".hom")) return [dictBlock];
+      return [];
+    }
+
+    function collectDictionaryBlocks(pageRoot) {
+      const blocks = [];
+      pageRoot.querySelectorAll(":scope > .dictionary").forEach((candidate) => {
+        if (candidate.classList.contains("assets")) return;
+        const nestedBlocks = Array.from(candidate.querySelectorAll(":scope > .dictionary"));
+        if (nestedBlocks.length > 0) {
+          blocks.push(...nestedBlocks);
+        } else {
+          blocks.push(candidate);
+        }
+      });
+      return blocks;
+    }
+
+    const data = { headword: "", dicts: [], sections: [] };
+    const hwEl = document.querySelector("article h2.h2_entry");
+    data.headword = hwEl ? normalizeText(hwEl.textContent).replace(/\s+in\s+.*$/, "") : "";
+    const rawEntries = [];
+
+    const pageRoot = document.querySelector("article .he .page");
+    if (pageRoot) {
+      collectDictionaryBlocks(pageRoot).forEach((dictBlock) => {
+        const dictKey = Array.from(dictBlock.classList).find((cls) => DICT_LABELS[cls]);
+        collectLogicalEntries(dictBlock).forEach((entryEl) => {
+          const titleEl = entryEl.querySelector("h2.h2_entry");
+          const anchorEl = entryEl.querySelector(".anchor");
+          const entry = {
+            dictKey,
+            rawTitle: normalizeText(titleEl ? titleEl.innerText : ""),
+            el: anchorEl || titleEl || entryEl,
+            groups: [],
+            renderMode: "grouped",
+            idioms: [],
+            phrasalVerbs: [],
+          };
+
+          if (dictKey === "Cob_Adv_Brit") {
+            entry.renderMode = "flat";
+            const group = { heading: "", el: null, senses: [] };
+            entryEl.querySelectorAll(".hom").forEach((hom, index) => {
+              group.senses.push(buildHomLabel(hom, index + 1));
+            });
+            if (group.senses.length > 0) {
+              entry.groups.push(group);
+            }
+          } else {
+            entryEl.querySelectorAll(".hom").forEach((hom) => {
+              const heading = normalizeText(
+                hom.querySelector(":scope > .gramGrp .pos, :scope > .pos, .pos")?.textContent ||
+                  ""
+              );
+              const group = {
+                heading,
+                el: hom,
+                senses: [],
+              };
+              group.senses.push(...collectHomSenses(hom));
+              if (group.senses.length > 0) {
+                entry.groups.push(group);
+              }
+            });
+            if (!entry.groups.some((group) => group.heading)) {
+              entry.renderMode = "flat";
+            }
+          }
+
+          if (entry.groups.some((group) => group.senses.length > 0)) {
+            rawEntries.push(entry);
+          }
+        });
+      });
+    }
+
+    const countsByKey = rawEntries.reduce((map, entry) => {
+      const key = entry.dictKey || entry.rawTitle;
+      map[key] = (map[key] || 0) + 1;
+      return map;
+    }, {});
+
+    rawEntries.forEach((entry) => {
+      const mappedLabel = DICT_LABELS[entry.dictKey] || entry.rawTitle;
+      const headwordFromTitle = entry.rawTitle.replace(/\s+in\s+.*$/, "");
+      const shouldUseRawTitle =
+        countsByKey[entry.dictKey || entry.rawTitle] > 1 &&
+        headwordFromTitle &&
+        headwordFromTitle !== data.headword;
+      entry.label = shouldUseRawTitle
+        ? entry.rawTitle.replace(/\s+in\s+/i, " (").replace(/\)$/, "") + ")"
+        : mappedLabel;
+      delete entry.dictKey;
+      delete entry.rawTitle;
+      data.dicts.push(entry);
+    });
+
+    const assets = document.querySelector("article .assets");
+    if (assets) {
+      assets.querySelectorAll("h2.entry_title, h2.h2_entry").forEach((heading) => {
+        const title = normalizeText(heading.innerText);
+        if (!title) return;
+        data.sections.push({
+          title,
+          el: heading,
+        });
+      });
+    }
+
+    return data;
+  }
+
+  // --- 定義項目リストを描画 ---
+  function renderSenseList(container, senses) {
+    senses.forEach((sense) => {
+      const item = document.createElement("div");
+      if (sense.phrase) {
+        item.className = "toc-phrase";
+        item.textContent = sense.phrase;
+      } else {
+        item.className = "toc-sense";
+        item.innerHTML = `<span class="toc-sense-num">${sense.num}.</span> ${sense.def.replace(/:$/, "")}`;
+      }
+      if (sense.el) {
+        item.addEventListener("click", () => scrollToEl(sense.el));
+      }
+      container.appendChild(item);
+    });
+  }
+
   // --- エントリの中身（グループ・定義）を描画 ---
   function renderEntryContent(container, entry) {
     entry.groups.forEach((group) => {
@@ -406,21 +710,7 @@
         }
         container.appendChild(h);
       }
-
-      group.senses.forEach((sense) => {
-        const item = document.createElement("div");
-        if (sense.phrase) {
-          item.className = "toc-phrase";
-          item.textContent = sense.phrase;
-        } else {
-          item.className = "toc-sense";
-          item.innerHTML = `<span class="toc-sense-num">${sense.num}.</span> ${sense.def.replace(/:$/, "")}`;
-        }
-        if (sense.el) {
-          item.addEventListener("click", () => scrollToEl(sense.el));
-        }
-        container.appendChild(item);
-      });
+      renderSenseList(container, group.senses);
     });
   }
 
@@ -496,6 +786,20 @@
     }
   }
 
+  // --- Collins 非-COBUILD: 品詞セクション付き ---
+  function renderCollinsGroupedEntry(body, entry) {
+    entry.groups.forEach((group) => {
+      const header = document.createElement("div");
+      header.className = "toc-collapsible open";
+      header.innerHTML = `<span>${group.heading} (${group.senses.length})</span>`;
+      if (group.el) {
+        header.addEventListener("click", () => scrollToEl(group.el, "start"));
+      }
+      body.appendChild(header);
+      renderSenseList(body, group.senses);
+    });
+  }
+
   // --- Cambridge TOC Body ---
   function buildCambridgeBody(body, data) {
     data.dicts.forEach((dict) => {
@@ -512,6 +816,40 @@
         renderCambridgeEntry(body, entry);
       });
     });
+  }
+
+  // --- Collins TOC Body ---
+  function buildCollinsBody(body, data) {
+    data.dicts.forEach((dict) => {
+      const dictTitle = document.createElement("div");
+      dictTitle.className = "toc-dict-title";
+      dictTitle.textContent = dict.label;
+      if (dict.el) {
+        dictTitle.style.cursor = "pointer";
+        dictTitle.addEventListener("click", () => scrollToEl(dict.el, "start"));
+      }
+      body.appendChild(dictTitle);
+      if (dict.renderMode === "grouped") {
+        renderCollinsGroupedEntry(body, dict);
+      } else {
+        renderEntryContent(body, dict);
+      }
+    });
+
+    if (data.sections.length > 0) {
+      const title = document.createElement("div");
+      title.className = "toc-section-title";
+      title.textContent = "Supplementary Sections";
+      body.appendChild(title);
+
+      data.sections.forEach((section) => {
+        const item = document.createElement("div");
+        item.className = "toc-section-link";
+        item.textContent = section.title;
+        item.addEventListener("click", () => scrollToEl(section.el, "start"));
+        body.appendChild(item);
+      });
+    }
   }
 
   // --- サイドバー要素を構築 ---
@@ -541,6 +879,9 @@
         if (r.width > 0) return primary;
       }
       return null;
+    }
+    if (SITE === "collins") {
+      return document.querySelector(".dictionary .res_cell_center_content");
     }
     return document.querySelector(".responsive_row > .responsive_entry_left");
   }
@@ -572,6 +913,35 @@
     return { left: 5, width: 240 };
   }
 
+  // --- Collins: 中央カラムと記事位置からTOC位置を計算 ---
+  function getCollinsTocRect() {
+    const content = document.querySelector(".dictionary .res_cell_center_content");
+    const article = document.querySelector("#article_1");
+    const rightPanel = document.querySelector(".dictionary > .res_cell_right");
+
+    if (content && article) {
+      const contentRect = content.getBoundingClientRect();
+      const articleRect = article.getBoundingClientRect();
+      const leftBoundary = Math.max(contentRect.left, 5);
+      const rightGap =
+        rightPanel && rightPanel.getBoundingClientRect().left > articleRect.right
+          ? Math.max(12, rightPanel.getBoundingClientRect().left - articleRect.right)
+          : 12;
+      const width = articleRect.left - leftBoundary - rightGap;
+      if (width > 160) {
+        return { left: leftBoundary, width: Math.min(width, 280) };
+      }
+
+      const fallbackWidth = 240;
+      return {
+        left: Math.max(5, articleRect.left - fallbackWidth - 12),
+        width: fallbackWidth,
+      };
+    }
+
+    return { left: 5, width: 240 };
+  }
+
   // --- メイン ---
   function buildTOC() {
     let bodyBuilder;
@@ -580,15 +950,19 @@
       const data = collectOALD();
       if (data.entries.length === 0) return;
       bodyBuilder = (body) => renderEntryFlat(body, data.entries[0]);
-    } else {
+    } else if (SITE === "cambridge") {
       const data = collectCambridge();
       if (data.dicts.length === 0) return;
       bodyBuilder = (body) => buildCambridgeBody(body, data);
+    } else {
+      const data = collectCollins();
+      if (data.dicts.length === 0 && data.sections.length === 0) return;
+      bodyBuilder = (body) => buildCollinsBody(body, data);
     }
 
     const anchorCol = getAnchorCol();
-    // Cambridge でアンカーが見つからなくてもフォールバックで表示する
-    if (!anchorCol && SITE !== "cambridge") return;
+    // OALD でアンカーなしは表示しない
+    if (!anchorCol && SITE === "oald") return;
 
     const sidebar = createSidebar(bodyBuilder);
     document.body.appendChild(sidebar);
@@ -603,6 +977,10 @@
         const r = getCambridgeTocRect(anchorCol);
         left = r.left;
         width = r.width;
+      } else if (SITE === "collins") {
+        const r = getCollinsTocRect();
+        left = r.left;
+        width = r.width;
       } else if (anchorCol) {
         const rect = anchorCol.getBoundingClientRect();
         left = rect.left;
@@ -613,15 +991,39 @@
 
       // フッター / 常時表示バーと重ならないよう maxHeight を制限
       let bottomLimit = window.innerHeight;
-      const footerSels = SITE === "cambridge"
-        ? ["#footer", ".pf.py.pb0.pl0.pr0"]   // 通常フッター + 常時表示ボトムバー
-        : ["#ox-footer"];                       // OALD フッター
+      const footerSels =
+        SITE === "cambridge"
+          ? ["#footer", ".pf.py.pb0.pl0.pr0"]
+          : SITE === "collins"
+            ? ["footer", ".footer", ".page_footer"]
+            : ["#ox-footer"];
       for (const sel of footerSels) {
         const el = document.querySelector(sel);
         if (el) {
           const elTop = el.getBoundingClientRect().top;
           if (elTop > 0 && elTop < bottomLimit) bottomLimit = elTop;
         }
+      }
+      if (SITE === "collins") {
+        Array.from(document.body.children).forEach((el) => {
+          if (el === sidebar) return;
+          const style = getComputedStyle(el);
+          if (
+            style.display === "none" ||
+            style.visibility === "hidden" ||
+            (style.position !== "fixed" && style.position !== "sticky")
+          ) {
+            return;
+          }
+          const rect = el.getBoundingClientRect();
+          if (
+            rect.height > 0 &&
+            rect.top > window.innerHeight * 0.6 &&
+            rect.top < bottomLimit
+          ) {
+            bottomLimit = rect.top;
+          }
+        });
       }
       const maxH = bottomLimit - top - 10;
 
