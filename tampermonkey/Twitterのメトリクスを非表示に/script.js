@@ -91,6 +91,7 @@
       align-items: center !important;
       justify-content: center !important;
       background-color: transparent !important;
+      color: inherit !important;
       transition: opacity 0.2s ease, filter 0.2s ease !important;
     }
 
@@ -121,14 +122,11 @@
       height: 20px !important;
       display: block !important;
       color: inherit;
+      fill: currentColor !important;
     }
 
-    .codex-retweet-toggle-button[data-state="on"] svg {
-      color: rgb(15, 20, 25) !important;
-    }
-
-    .codex-retweet-toggle-button[data-state="off"] svg {
-      color: rgb(29, 155, 240) !important;
+    .codex-retweet-toggle-button svg path {
+      fill: currentColor !important;
     }
 
     .codex-profile-retweet-hidden {

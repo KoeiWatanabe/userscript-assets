@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Geminiに自動送信する
 // @namespace    http://tampermonkey.net/
-// @version      2.2.2
+// @version      2.3.0
 // @description  URLクエリパラメータ ?q= の内容をGeminiのチャットに自動入力して送信する（?submit=0 で送信抑止）
 // @author       You
 // @match        https://gemini.google.com/*
@@ -15,17 +15,46 @@
     'use strict';
 
     const PARAM_NAME = 'q';
+    const MODEL_PARAM = 'model';
     const MODE_PARAM = 'mode';
+    const THINKING_PARAM = 'thinking';
     const SUBMIT_PARAM = 'submit';
-    const DEFAULT_MODE = 'fast';
+    const DEFAULT_MODEL = 'pro';
+    const DEFAULT_THINKING = 'standard';
     const INPUT_DELAY_MS = 1000;
     const MAX_WAIT_MS = 15000;
 
-    // 一次=data-test-id（言語非依存） / フォールバック=UI言語別テキスト照合
-    const MODE_MAP = {
-        think: { testId: 'bard-mode-option-thinking', texts: ['思考モード', 'Thinking'] },
-        fast:  { testId: 'bard-mode-option-fast',     texts: ['高速モード', 'Fast'] },
-        pro:   { testId: 'bard-mode-option-pro',      texts: ['Pro'] },
+    const MODEL_MAP = {
+        'flash-lite': {
+            aliases: ['flash-lite', 'flashlite', 'lite'],
+            currentPatterns: [/\bflash[\s-]*lite\b/i],
+            menuPatterns: [/^3\.1\s*flash-lite\b/i, /^flash-lite\b/i],
+        },
+        flash: {
+            aliases: ['flash', 'fast'],
+            currentPatterns: [/\bflash\b/i],
+            currentExcludePatterns: [/\blite\b/i],
+            menuPatterns: [/^3\.5\s*flash\b/i, /^flash\b/i],
+            menuExcludePatterns: [/\blite\b/i],
+        },
+        pro: {
+            aliases: ['pro', 'think'],
+            currentPatterns: [/\bpro\b/i],
+            menuPatterns: [/^3\.1\s*pro\b/i, /^pro\b/i],
+        },
+    };
+
+    const THINKING_MAP = {
+        standard: {
+            aliases: ['standard', 'std', 'normal', '標準'],
+            currentPatterns: [/標準/, /\bstandard\b/i],
+            menuPatterns: [/^標準\b/, /^standard\b/i],
+        },
+        extended: {
+            aliases: ['extended', 'expand', 'expanded', '拡張'],
+            currentPatterns: [/拡張/, /\bextended\b/i],
+            menuPatterns: [/^拡張\b/, /^extended\b/i],
+        },
     };
 
     // 一次=data-test-id / 二次=日本語UI / 三次=英語UI
@@ -34,16 +63,55 @@
         'button[aria-label="モード選択ツールを開く"]',
         'button[aria-label="Open mode picker"]',
     ];
+    const MODE_MENU_ITEM_SELECTOR = '[role="menuitem"], .mat-mdc-menu-item';
+    const THINKING_PARENT_PATTERNS = [/^思考レベル\b/, /^thinking level\b/i];
 
     const params = new URLSearchParams(window.location.search);
     const query = params.get(PARAM_NAME);
     if (!query) return;
-    const modeKey = params.get(MODE_PARAM) ?? DEFAULT_MODE;
+    const explicitModelKey = resolveConfigKey(params.get(MODEL_PARAM), MODEL_MAP);
+    const legacyModeKey = resolveConfigKey(params.get(MODE_PARAM), MODEL_MAP);
+    const modelKey = explicitModelKey ?? legacyModeKey ?? DEFAULT_MODEL;
+    const thinkingKey = resolveThinkingKey(params.get(THINKING_PARAM), {
+        modelSpecified: explicitModelKey != null,
+        legacyModeKey,
+    });
     const submitRaw = params.get(SUBMIT_PARAM);
     const shouldSubmit = !(submitRaw === '0' || submitRaw === 'false');
 
-    const storageKey = 'gemini-auto-submit:' + btoa(encodeURIComponent(query)).slice(0, 32);
+    const storageSeed = [query, modelKey, thinkingKey, shouldSubmit ? 'submit' : 'hold'].join('\u001f');
+    const storageKey = 'gemini-auto-submit:' + btoa(encodeURIComponent(storageSeed)).slice(0, 48);
     if (sessionStorage.getItem(storageKey)) return;
+
+    function compactText(text) {
+        return String(text ?? '').replace(/\s+/g, ' ').trim();
+    }
+
+    function matchesPatterns(text, includePatterns, excludePatterns = []) {
+        if (!includePatterns?.length) return false;
+        const compact = compactText(text);
+        return includePatterns.some(pattern => pattern.test(compact))
+            && !excludePatterns.some(pattern => pattern.test(compact));
+    }
+
+    function resolveConfigKey(rawValue, configMap) {
+        if (!rawValue) return null;
+        const normalized = compactText(rawValue).toLowerCase().replace(/[\s_]+/g, '-');
+        for (const [key, config] of Object.entries(configMap)) {
+            if (normalized === key) return key;
+            if (config.aliases?.includes(normalized)) return key;
+        }
+        return null;
+    }
+
+    function resolveThinkingKey(rawValue, { modelSpecified, legacyModeKey }) {
+        const explicitThinkingKey = resolveConfigKey(rawValue, THINKING_MAP);
+        if (explicitThinkingKey) return explicitThinkingKey;
+        if (!modelSpecified && legacyModeKey === 'pro' && compactText(params.get(MODE_PARAM)).toLowerCase() === 'think') {
+            return 'extended';
+        }
+        return DEFAULT_THINKING;
+    }
 
     function waitFor(selectors, { predicate = () => true, timeout = MAX_WAIT_MS, interval = 200 } = {}) {
         return new Promise((resolve, reject) => {
@@ -102,28 +170,82 @@
         }
     }
 
-    async function selectMode({ testId, texts }) {
-        // 無料会員など一部UIではモードボタンが存在しないため短めのタイムアウトで失敗させる
+    function getVisibleMenuItems() {
+        return [...document.querySelectorAll(MODE_MENU_ITEM_SELECTOR)]
+            .filter(el => {
+                const style = window.getComputedStyle(el);
+                return style.display !== 'none' && style.visibility !== 'hidden';
+            });
+    }
+
+    function isSelectedMenuItem(el) {
+        return el.classList.contains('selected')
+            || el.getAttribute('aria-current') === 'true'
+            || el.getAttribute('aria-selected') === 'true';
+    }
+
+    async function closeModeMenu() {
+        document.body.click();
+        await new Promise(r => setTimeout(r, 250));
+    }
+
+    async function openModeMenu() {
         const modeBtn = await waitFor(MODE_BUTTON_SELECTORS, { timeout: 3000 });
-
-        // 軽量判定: ボタン表示テキストに現在モード名が含まれていれば既選択
-        if (texts.some(t => modeBtn.textContent.includes(t))) return;
-
-        modeBtn.click();
-        await waitFor(['.mat-mdc-menu-item'], { timeout: 3000 });
-        await new Promise(r => setTimeout(r, 200)); // Angular アニメーション待ち
-
-        let target = document.querySelector(`[data-test-id="${testId}"]`);
-        if (!target) {
-            target = [...document.querySelectorAll('.mat-mdc-menu-item')]
-                .find(el => texts.some(t => el.textContent.includes(t)));
+        if (!getVisibleMenuItems().length) {
+            modeBtn.click();
+            await waitFor([MODE_MENU_ITEM_SELECTOR], { timeout: 3000 });
+            await new Promise(r => setTimeout(r, 200)); // Angular アニメーション待ち
         }
-        if (!target) throw new Error(`モード項目なし: ${testId}`);
+        return modeBtn;
+    }
 
-        // ボタンテキスト判定で漏れた既選択ケースの保険（data-test-id ヒット時）
-        if (target.getAttribute('aria-current') === 'true') {
-            document.body.click();
-            await new Promise(r => setTimeout(r, 300));
+    function findVisibleMenuItem({ includePatterns, excludePatterns = [] }) {
+        return getVisibleMenuItems().find(el => matchesPatterns(el.textContent, includePatterns, excludePatterns));
+    }
+
+    async function selectModel(modelConfig) {
+        // 無料会員など一部UIではモードボタンが存在しないため短めのタイムアウトで失敗させる
+        const modeBtn = await openModeMenu();
+
+        if (matchesPatterns(modeBtn.textContent, modelConfig.currentPatterns, modelConfig.currentExcludePatterns ?? [])) {
+            await closeModeMenu();
+            return;
+        }
+
+        const target = findVisibleMenuItem({
+            includePatterns: modelConfig.menuPatterns,
+            excludePatterns: modelConfig.menuExcludePatterns ?? [],
+        });
+        if (!target) throw new Error(`モデル項目なし: ${modelKey}`);
+
+        if (isSelectedMenuItem(target)) {
+            await closeModeMenu();
+            return;
+        }
+
+        target.click();
+        await new Promise(r => setTimeout(r, 400));
+    }
+
+    async function selectThinkingLevel(levelConfig) {
+        await openModeMenu();
+
+        const thinkingMenu = findVisibleMenuItem({ includePatterns: THINKING_PARENT_PATTERNS });
+        if (!thinkingMenu) throw new Error('思考レベル項目なし');
+
+        if (matchesPatterns(thinkingMenu.textContent, levelConfig.currentPatterns)) {
+            await closeModeMenu();
+            return;
+        }
+
+        thinkingMenu.click();
+        await new Promise(r => setTimeout(r, 250));
+
+        const target = findVisibleMenuItem({ includePatterns: levelConfig.menuPatterns });
+        if (!target) throw new Error(`思考レベル項目なし: ${thinkingKey}`);
+
+        if (isSelectedMenuItem(target)) {
+            await closeModeMenu();
             return;
         }
 
@@ -132,10 +254,9 @@
     }
 
     async function autoSubmit() {
-        // モード選択は失敗しても送信は続行（UI未対応環境向けフェイルソフト）
-        if (MODE_MAP[modeKey]) {
-            await selectMode(MODE_MAP[modeKey]).catch(() => {});
-        }
+        // モデル/思考レベル選択は失敗しても送信は続行（UI未対応環境向けフェイルソフト）
+        await selectModel(MODEL_MAP[modelKey]).catch(() => {});
+        await selectThinkingLevel(THINKING_MAP[thinkingKey]).catch(() => {});
 
         // 入力欄: 構造セレクタのみ（言語非依存）
         const inputEl = await waitFor([
