@@ -98,7 +98,6 @@
     routeToken: 0,
     ignoreNextSubtitlesButtonClick: false,
   };
-  const originalSubtitlesButtonIcons = new WeakMap();
   const SUBTITLES_BUTTON_STASHED_ATTRIBUTES = [
     ["aria-label", "ytsrtOriginalAriaLabel"],
     ["aria-pressed", "ytsrtOriginalAriaPressed"],
@@ -983,10 +982,7 @@
 
   function cloneSubtitleIcon() {
     const button = getSubtitlesButton();
-    const currentIcon = getSubtitlesButtonIconContainer(button);
-    const sourceIcon = currentIcon?.dataset.ytsrtCustomIcon === "1"
-      ? originalSubtitlesButtonIcons.get(button) || currentIcon
-      : currentIcon;
+    const sourceIcon = getSubtitlesButtonIconContainer(button);
     const source = sourceIcon?.querySelector("svg");
     if (source) {
       const svg = source.cloneNode(true);
@@ -1035,13 +1031,6 @@
 
   function syncSubtitlesButtonIcon(button = getSubtitlesButton(), customActive = false) {
     if (!button) return;
-
-    const icon = getSubtitlesButtonIconContainer(button);
-    if (icon?.dataset.ytsrtCustomIcon === "1") {
-      const originalIcon = originalSubtitlesButtonIcons.get(button);
-      if (originalIcon) icon.replaceWith(originalIcon.cloneNode(true));
-      originalSubtitlesButtonIcons.delete(button);
-    }
 
     if (!customActive) {
       removeCustomSubtitlesButtonIcon(button);
@@ -1256,10 +1245,8 @@
 
   function hasManagedSubtitlesButtonState(button) {
     if (!button) return false;
-    const icon = getSubtitlesButtonIconContainer(button);
     return button.dataset.ytsrtManaged === "1" ||
       button.dataset.ytsrtForcedActive === "1" ||
-      icon?.dataset.ytsrtCustomIcon === "1" ||
       !!getCustomSubtitlesButtonIcon(button) ||
       !!button.querySelector("[data-ytsrt-original-fill-opacity]") ||
       SUBTITLES_BUTTON_STASHED_ATTRIBUTES.some(([, datasetKey]) => datasetKey in button.dataset);
@@ -1303,7 +1290,6 @@
 
   function restoreManagedSubtitlesButtonState(button, { resetActiveClass = false } = {}) {
     syncSubtitlesButtonIcon(button);
-    originalSubtitlesButtonIcons.delete(button);
     syncForcedSubtitlesButtonActiveState(button, false, resetActiveClass);
     restoreManagedSubtitlesButtonAttributes(button);
     button.removeAttribute("aria-disabled");
@@ -1318,7 +1304,6 @@
     button.dataset.titleNoTooltip = label;
     button.classList.toggle("--loaded", hasCustomCaptions());
     syncTooltipState();
-    syncSubtitlesButtonState();
 
     const topRow = document.getElementById(CUSTOM_TOP_ROW_ID);
     if (topRow) {
@@ -1394,6 +1379,7 @@
     }
 
     syncLoadButtonState(button);
+    syncSubtitlesButtonState();
     return button;
   }
 
@@ -1412,7 +1398,7 @@
 
     disconnectControlsObserver();
     state.controlsObs = new MutationObserver(() => scheduleEnsureUi());
-    state.controlsObs.observe(player, { childList: true, subtree: true, attributes: true });
+    state.controlsObs.observe(player, { childList: true, subtree: true });
     state.controlsObsTarget = player;
   }
 
@@ -1563,10 +1549,6 @@
       normalized === "captions";
   }
 
-  function isCaptionsMenuTitle(text) {
-    return isCaptionsMenuLabel(text);
-  }
-
   function getActivePanelHeader(popup = getSettingsPopup()) {
     if (!popup || !isVisibleElement(popup)) return null;
     return Array.from(popup.querySelectorAll(".ytp-panel-header")).find(isVisibleElement) || null;
@@ -1579,7 +1561,7 @@
   }
 
   function findNativeCaptionMenuContainer(popup = getSettingsPopup()) {
-    if (!isCaptionsMenuTitle(getActivePanelTitleText(popup))) return null;
+    if (!isCaptionsMenuLabel(getActivePanelTitleText(popup))) return null;
 
     const header = getActivePanelHeader(popup);
     const container = header?.nextElementSibling;
