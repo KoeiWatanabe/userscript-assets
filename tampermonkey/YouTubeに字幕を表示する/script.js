@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      2.0.1
+// @version      2.0.2
 // @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -16,11 +16,11 @@
   "use strict";
 
   // ── Tuning constants ──────────────────────────────────────────────────────
-  const FONT_RATIO = 0.045;
+  const FONT_RATIO = 0.0444;
   const FONT_MIN_PX = 14;
   const FONT_MAX_PX = 56;
-  const BOTTOM_PERCENT = 5;
-  const MAX_WIDTH_PCT = 85;
+  const BOTTOM_PERCENT = 2;
+  const MAX_WIDTH_PCT = 96;
 
   // ── Storage keys ──────────────────────────────────────────────────────────
   const CAPTION_KEY_PREFIX = "ytsrt:srt:";
@@ -739,36 +739,43 @@
 
   // ── Styles ────────────────────────────────────────────────────────────────
   function ensureStyle() {
-    if (document.getElementById(STYLE_ID)) return;
+    let style = document.getElementById(STYLE_ID);
+    if (!style) {
+      style = document.createElement("style");
+      style.id = STYLE_ID;
+    }
 
-    const style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = `
+    const css = `
       #${OVERLAY_ID} {
         position: absolute;
         left: 50%;
         bottom: ${BOTTOM_PERCENT}%;
         transform: translateX(-50%);
-        max-width: ${MAX_WIDTH_PCT}%;
+        width: ${MAX_WIDTH_PCT}%;
         z-index: 60;
         pointer-events: none;
         text-align: center;
         color: #fff;
-        font-family: "YouTube Noto", "Noto Sans JP", "Roboto", "Arial", sans-serif;
-        font-weight: 500;
-        line-height: 1.3;
-        text-shadow: 0 0 2px rgba(0,0,0,0.85);
+        font-family: "YouTube Noto", Roboto, Arial, Helvetica, Verdana, "PT Sans Caption", sans-serif;
+        font-weight: 400;
+        line-height: normal;
+        text-shadow: none;
         white-space: pre-wrap;
-        word-break: break-word;
+        word-break: normal;
+        overflow-wrap: normal;
         display: none;
       }
       #${OVERLAY_ID} > span {
         display: inline-block;
-        background: rgba(0, 0, 0, 0.75);
-        padding: 0.18em 0.5em;
-        border-radius: 3px;
+        max-width: 100%;
+        background: rgba(8, 8, 8, 0.75);
+        padding: 0 0.25em;
+        border-radius: 0;
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
+      }
+      ${PLAYER_SELECTOR}:not(.ytp-autohide) #${OVERLAY_ID} {
+        bottom: 12%;
       }
       #${OVERLAY_ID}.--visible { display: block; }
 
@@ -961,7 +968,8 @@
         padding: 8px 0;
       }
     `;
-    document.head.appendChild(style);
+    if (style.textContent !== css) style.textContent = css;
+    if (style.parentElement !== document.head) document.head.appendChild(style);
   }
 
   // ── SVG helpers ───────────────────────────────────────────────────────────
