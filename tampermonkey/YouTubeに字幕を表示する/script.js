@@ -1527,6 +1527,86 @@
     setTimeout(() => scheduleSyncSettingsUi(), 320);
   }
 
+  function hasInjectedSettingsMenuContent(popup = getSettingsPopup()) {
+    return !!popup?.querySelector(
+      `#${CUSTOM_TOP_ROW_ID}, #${CUSTOM_NATIVE_ROW_ID}, #${CUSTOM_PANEL_ID}`
+    );
+  }
+
+  function stashInlineWidth(el) {
+    if (!el || "ytsrtOriginalInlineWidth" in el.dataset) return;
+    el.dataset.ytsrtOriginalInlineWidth = el.style.width || MISSING_ATTRIBUTE_VALUE;
+  }
+
+  function restoreInlineWidth(el) {
+    if (!el || !("ytsrtOriginalInlineWidth" in el.dataset)) return;
+
+    const originalWidth = el.dataset.ytsrtOriginalInlineWidth;
+    if (originalWidth === MISSING_ATTRIBUTE_VALUE) {
+      el.style.removeProperty("width");
+    } else {
+      el.style.width = originalWidth;
+    }
+    delete el.dataset.ytsrtOriginalInlineWidth;
+  }
+
+  function restoreSettingsPopupWidth(popup = getSettingsPopup()) {
+    if (!popup) return;
+    restoreInlineWidth(popup);
+    popup.querySelectorAll(".ytp-panel").forEach(restoreInlineWidth);
+  }
+
+  function getOriginalInlineWidth(el, fallbackWidth = 0) {
+    if (!el) return fallbackWidth;
+
+    const originalWidth = el.dataset.ytsrtOriginalInlineWidth;
+    if (originalWidth && originalWidth !== MISSING_ATTRIBUTE_VALUE) {
+      return Number.parseFloat(originalWidth) || fallbackWidth;
+    }
+    return Number.parseFloat(el.style.width) || fallbackWidth;
+  }
+
+  function syncSettingsPopupWidth(popup = getSettingsPopup()) {
+    if (!popup || !isVisibleElement(popup)) return;
+
+    if (!hasInjectedSettingsMenuContent(popup)) {
+      restoreSettingsPopupWidth(popup);
+      return;
+    }
+
+    const widestMenu = Array.from(popup.querySelectorAll(".ytp-panel-menu"))
+      .filter(isVisibleElement)
+      .reduce((widest, menu) => {
+        const width = menu.getBoundingClientRect().width;
+        return width > widest.width ? { menu, width } : widest;
+      }, { menu: null, width: 0 });
+    if (!widestMenu.menu) return;
+
+    const panel = widestMenu.menu.closest(".ytp-panel");
+    const popupWidth = popup.getBoundingClientRect().width;
+    const baseWidth = getOriginalInlineWidth(popup, popupWidth);
+    const targetWidth = Math.ceil(Math.max(baseWidth, widestMenu.width));
+    const currentWidth = Math.ceil(popupWidth);
+    if (
+      targetWidth === currentWidth &&
+      (!panel || targetWidth === Math.ceil(panel.getBoundingClientRect().width))
+    ) {
+      return;
+    }
+
+    stashInlineWidth(popup);
+    popup.style.width = `${targetWidth}px`;
+
+    if (panel) {
+      stashInlineWidth(panel);
+      panel.style.width = `${targetWidth}px`;
+    }
+
+    Array.from(popup.querySelectorAll(".ytp-panel"))
+      .filter((candidate) => candidate !== panel)
+      .forEach(restoreInlineWidth);
+  }
+
   function findTopLevelMenuContainer(popup = getSettingsPopup()) {
     if (!popup || !isVisibleElement(popup) || getActivePanelHeader(popup)) return null;
 
@@ -1657,6 +1737,7 @@
     list.appendChild(customItem);
     panel.appendChild(list);
     popup.appendChild(panel);
+    syncSettingsPopupWidth(popup);
   }
 
   function cloneTopLevelMenuRowTemplate(container = findTopLevelMenuContainer()) {
@@ -1866,9 +1947,11 @@
     }
 
     syncTopLevelCaptionsSummary(popup);
+    syncSettingsPopupWidth(popup);
   }
 
   function removeStaleInjectedRows() {
+    const popup = getSettingsPopup();
     const top = document.getElementById(CUSTOM_TOP_ROW_ID);
     if (top && (!hasCustomCaptions() || !findTopLevelMenuContainer() || findNativeCaptionsTopRow())) {
       top.remove();
@@ -1885,6 +1968,10 @@
       )
     ) {
       nativeRow.remove();
+    }
+
+    if (!hasInjectedSettingsMenuContent(popup)) {
+      restoreSettingsPopupWidth(popup);
     }
   }
 
