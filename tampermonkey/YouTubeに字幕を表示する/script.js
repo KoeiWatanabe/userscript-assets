@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      2.0.2
+// @version      2.0.3
 // @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        unsafeWindow
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/script.js
 // @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/icon_128.png
@@ -35,6 +36,9 @@
   const CUSTOM_PANEL_ID = "ytsrt-custom-captions-panel";
   const CUSTOM_TOP_ROW_ID = "ytsrt-custom-captions-row";
   const CUSTOM_NATIVE_ROW_ID = "ytsrt-native-custom-row";
+  const LIVE_STATE_ATTR = "data-ytsrt-live-now";
+  const LIVE_STATE_VIDEO_ID_ATTR = "data-ytsrt-live-video-id";
+  const LIVE_STATE_READY_ATTR = "data-ytsrt-live-state-ready";
   const PLAYER_SELECTOR = "#movie_player";
   const VIDEO_SELECTOR = "video.html5-main-video";
   const RIGHT_CONTROLS_SELECTOR = `${PLAYER_SELECTOR} .ytp-right-controls`;
@@ -83,6 +87,7 @@
     cues: [],
     captionMode: CAPTION_MODE.OFF,
     currentVideoId: "",
+    currentPageIsLive: false,
     nativeCaptionsAvailable: false,
     lastKnownNativeTrackLabel: "",
     lastCueIdx: -1,
@@ -137,6 +142,34 @@
 
   function getVideo() {
     return document.querySelector(VIDEO_SELECTOR);
+  }
+
+  function getPageLiveState() {
+    const root = document.documentElement;
+    return {
+      isLive: root.getAttribute(LIVE_STATE_ATTR) === "1",
+      videoId: root.getAttribute(LIVE_STATE_VIDEO_ID_ATTR) || "",
+      ready: root.getAttribute(LIVE_STATE_READY_ATTR) === "1",
+    };
+  }
+
+  function waitForCurrentLiveBroadcastState(videoId, timeoutMs = 3000) {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      const tick = () => {
+        const liveState = getPageLiveState();
+        if ((liveState.videoId === videoId && liveState.ready) || Date.now() >= deadline) {
+          resolve(liveState.videoId === videoId && liveState.ready && liveState.isLive);
+          return;
+        }
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+
+  function isCustomCaptionDisabledForCurrentPage() {
+    return state.currentPageIsLive;
   }
 
   function getOverlay() {
@@ -1369,7 +1402,7 @@
   }
 
   function ensureLoadButton() {
-    if (!isVideoPage()) return null;
+    if (!isVideoPage() || isCustomCaptionDisabledForCurrentPage()) return null;
 
     const player = getPlayer();
     if (!player) return null;
@@ -2074,6 +2107,8 @@
     enableAfterLoad = false,
     routeToken = state.routeToken,
   } = {}) {
+    if (isCustomCaptionDisabledForCurrentPage()) return false;
+
     const cues = parseCaption(raw);
     if (!cues.length) return false;
 
@@ -2083,7 +2118,13 @@
       gmSet(CAPTION_KEY_PREFIX + persistVideoId, raw);
     }
 
-    if (!await waitForPlayer() || routeToken !== state.routeToken) return true;
+    if (
+      !await waitForPlayer() ||
+      routeToken !== state.routeToken ||
+      isCustomCaptionDisabledForCurrentPage()
+    ) {
+      return true;
+    }
 
     ensureLoadButton();
     ensureOverlay();
@@ -2103,6 +2144,8 @@
   }
 
   function openFilePicker() {
+    if (isCustomCaptionDisabledForCurrentPage()) return;
+
     const videoId = state.currentVideoId;
     if (!videoId) return;
 
@@ -2119,7 +2162,13 @@
         if (!file) return;
 
         const text = await file.text();
-        if (routeToken !== state.routeToken || videoId !== state.currentVideoId) return;
+        if (
+          routeToken !== state.routeToken ||
+          videoId !== state.currentVideoId ||
+          isCustomCaptionDisabledForCurrentPage()
+        ) {
+          return;
+        }
 
         const loaded = await loadCaptionText(text, {
           persist: true,
@@ -2155,6 +2204,7 @@
     state.captionMode = CAPTION_MODE.OFF;
     state.captionTransitionToken += 1;
     state.currentVideoId = "";
+    state.currentPageIsLive = false;
     state.lastKnownNativeTrackLabel = "";
     state.nativeCaptionsAvailable = false;
     state.pendingCaptionSelection = null;
@@ -2171,7 +2221,13 @@
 
     state.currentVideoId = videoId;
     const ready = await waitForPlayer();
-    if (!ready || routeToken !== state.routeToken) return;
+    if (!ready || routeToken !== state.routeToken || videoId !== getVideoId()) return;
+
+    const pageIsLive = await waitForCurrentLiveBroadcastState(videoId);
+    if (routeToken !== state.routeToken || videoId !== getVideoId()) return;
+
+    state.currentPageIsLive = pageIsLive;
+    if (state.currentPageIsLive) return;
 
     ensureLoadButton();
     bindVideoListeners();
@@ -2179,6 +2235,8 @@
 
     const saved = gmGet(CAPTION_KEY_PREFIX + videoId, null);
     if (!saved) return;
+
+    if (routeToken !== state.routeToken) return;
 
     await loadCaptionText(saved, {
       enableAfterLoad: getStoredCustomMode() === CAPTION_MODE.CUSTOM,
@@ -2188,7 +2246,7 @@
 
   // ── Events / shortcuts ────────────────────────────────────────────────────
   function onDocumentClick(e) {
-    if (!isVideoPage()) return;
+    if (!isVideoPage() || isCustomCaptionDisabledForCurrentPage()) return;
 
     const subtitlesButton = e.target.closest(SUBTITLES_BUTTON_SELECTOR);
     if (subtitlesButton) {
@@ -2227,7 +2285,13 @@
     document.addEventListener("click", onDocumentClick, true);
 
     document.addEventListener("keydown", (e) => {
-      if (!isVideoPage() || isEditableTarget()) return;
+      if (
+        !isVideoPage() ||
+        isCustomCaptionDisabledForCurrentPage() ||
+        isEditableTarget()
+      ) {
+        return;
+      }
 
       const altOnly = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey;
       const plainC = !e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyC";
@@ -2250,7 +2314,137 @@
   }
 
   // ── Startup ───────────────────────────────────────────────────────────────
+  function installPageLiveStateReader(pageWindow) {
+    if (!pageWindow) return false;
+    if (pageWindow.__ytsrtLiveStateReaderInstalled) return true;
+    pageWindow.__ytsrtLiveStateReaderInstalled = true;
+
+    const pageDocument = pageWindow.document;
+
+    const getVideoIdFromUrl = () => {
+      const q = new URLSearchParams(pageWindow.location.search).get("v");
+      if (q) return q;
+      const m = pageWindow.location.pathname.match(/^\/(?:live|embed)\/([^/?#]+)/);
+      return m ? m[1] : "";
+    };
+
+    const getPlayerResponse = () => {
+      const player = pageDocument.querySelector(PLAYER_SELECTOR);
+      if (typeof player?.getPlayerResponse === "function") {
+        try {
+          const response = player.getPlayerResponse();
+          if (response) return response;
+        } catch {
+          // Keep the bridge silent.
+        }
+      }
+      return pageWindow.ytInitialPlayerResponse || null;
+    };
+
+    const syncLiveState = () => {
+      const response = getPlayerResponse();
+      const liveDetails = response?.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
+      const videoId = response?.videoDetails?.videoId || getVideoIdFromUrl();
+      const isLiveNow = liveDetails?.isLiveNow === true;
+
+      pageDocument.documentElement.setAttribute(LIVE_STATE_ATTR, isLiveNow ? "1" : "0");
+      pageDocument.documentElement.setAttribute(LIVE_STATE_READY_ATTR, response ? "1" : "0");
+      if (videoId) {
+        pageDocument.documentElement.setAttribute(LIVE_STATE_VIDEO_ID_ATTR, videoId);
+      } else {
+        pageDocument.documentElement.removeAttribute(LIVE_STATE_VIDEO_ID_ATTR);
+      }
+    };
+
+    const scheduleLiveStateSync = () => {
+      syncLiveState();
+      pageWindow.setTimeout(syncLiveState, 250);
+      pageWindow.setTimeout(syncLiveState, 1000);
+      pageWindow.setTimeout(syncLiveState, 2000);
+      pageWindow.setTimeout(syncLiveState, 3000);
+    };
+
+    scheduleLiveStateSync();
+    pageWindow.addEventListener("yt-navigate-finish", scheduleLiveStateSync);
+    pageWindow.addEventListener("yt-page-data-updated", scheduleLiveStateSync);
+    return true;
+  }
+
+  function injectPageLiveStateReader() {
+    try {
+      if (typeof unsafeWindow !== "undefined" && installPageLiveStateReader(unsafeWindow)) {
+        return;
+      }
+    } catch {
+      // Fall back to script-tag injection below.
+    }
+
+    const script = document.createElement("script");
+    script.textContent = `
+(() => {
+  const LIVE_ATTR = ${JSON.stringify(LIVE_STATE_ATTR)};
+  const VIDEO_ID_ATTR = ${JSON.stringify(LIVE_STATE_VIDEO_ID_ATTR)};
+  const READY_ATTR = ${JSON.stringify(LIVE_STATE_READY_ATTR)};
+  const INSTALL_KEY = "__ytsrtLiveStateReaderInstalled";
+
+  if (window[INSTALL_KEY]) {
+    return;
+  }
+  window[INSTALL_KEY] = true;
+
+  function getVideoIdFromUrl() {
+    const q = new URLSearchParams(location.search).get("v");
+    if (q) return q;
+    const m = location.pathname.match(/^\\/(?:live|embed)\\/([^/?#]+)/);
+    return m ? m[1] : "";
+  }
+
+  function getPlayerResponse() {
+    const player = document.querySelector("#movie_player");
+    if (typeof player?.getPlayerResponse === "function") {
+      try {
+        const response = player.getPlayerResponse();
+        if (response) return response;
+      } catch {
+        // Keep the page bridge silent.
+      }
+    }
+    return window.ytInitialPlayerResponse || null;
+  }
+
+  function syncLiveState() {
+    const response = getPlayerResponse();
+    const liveDetails = response?.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
+    const videoId = response?.videoDetails?.videoId || getVideoIdFromUrl();
+    const isLiveNow = liveDetails?.isLiveNow === true;
+
+    document.documentElement.setAttribute(LIVE_ATTR, isLiveNow ? "1" : "0");
+    document.documentElement.setAttribute(READY_ATTR, response ? "1" : "0");
+    if (videoId) {
+      document.documentElement.setAttribute(VIDEO_ID_ATTR, videoId);
+    } else {
+      document.documentElement.removeAttribute(VIDEO_ID_ATTR);
+    }
+  }
+
+  function scheduleLiveStateSync() {
+    syncLiveState();
+    setTimeout(syncLiveState, 250);
+    setTimeout(syncLiveState, 1000);
+    setTimeout(syncLiveState, 2000);
+    setTimeout(syncLiveState, 3000);
+  }
+
+  scheduleLiveStateSync();
+  window.addEventListener("yt-navigate-finish", scheduleLiveStateSync);
+  window.addEventListener("yt-page-data-updated", scheduleLiveStateSync);
+})();`;
+    (document.head || document.documentElement).appendChild(script);
+    script.remove();
+  }
+
   function start() {
+    injectPageLiveStateReader();
     registerShortcuts();
     handleRouteChange();
     window.addEventListener("yt-navigate-finish", handleRouteChange);
