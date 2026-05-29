@@ -16,8 +16,8 @@
     "use strict";
 
     const BUTTON_WIDTH = "210px";
-    const DATE_WIDTH = "100px";
-    const DURATION_WIDTH = "80px";
+    const DATE_WIDTH = "108px";
+    const DURATION_WIDTH = "72px";
     const THUMB_WIDTH_EPISODE = "40px";
 
     const UNIFIED_BODY_CLASS = "tm-layout-unified";
@@ -119,10 +119,10 @@
           width: ${DATE_WIDTH} !important;
           min-width: ${DATE_WIDTH} !important;
           max-width: ${DATE_WIDTH} !important;
-          justify-self: end !important;
+          justify-self: start !important;
           display: flex !important;
-          justify-content: flex-end !important;
-          text-align: right !important;
+          justify-content: flex-start !important;
+          text-align: left !important;
           white-space: nowrap !important;
         }
         ${R} > :nth-child(4) {
@@ -130,8 +130,8 @@
           width: ${DURATION_WIDTH} !important;
           min-width: ${DURATION_WIDTH} !important;
           max-width: ${DURATION_WIDTH} !important;
-          text-align: right !important;
-          justify-self: end !important;
+          text-align: left !important;
+          justify-self: start !important;
           margin-right: 12px !important;
         }
       }
@@ -216,18 +216,18 @@
           order: 5 !important;
           width: ${DATE_WIDTH} !important;
           min-width: ${DATE_WIDTH} !important;
-          justify-self: end !important;
-          text-align: right !important;
+          justify-self: start !important;
+          text-align: left !important;
           display: flex !important;
-          justify-content: flex-end !important;
+          justify-content: flex-start !important;
           white-space: nowrap !important;
         }
         ${R} > :nth-child(4) {
           order: 6 !important;
           width: ${DURATION_WIDTH} !important;
           min-width: ${DURATION_WIDTH} !important;
-          justify-self: end !important;
-          text-align: right !important;
+          justify-self: start !important;
+          text-align: left !important;
           margin-right: 12px !important;
           white-space: nowrap !important;
         }
