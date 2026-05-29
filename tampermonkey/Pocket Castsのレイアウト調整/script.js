@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pocket Castsのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      4.1
+// @version      4.2
 // @description  Pocket Casts: /podcast と指定5ページ（starred/history/new-releases/in-progress/search）で別レイアウトを適用。SPA遷移で自動ON/OFF。レスポンシブ対応（769px未満はネイティブレイアウトに委ねる）。
 // @author       You
 // @match        https://pocketcasts.com/*
