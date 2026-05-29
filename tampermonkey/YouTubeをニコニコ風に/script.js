@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風に
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.2.2
+// @version      2.2.3
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
@@ -99,15 +99,21 @@
   // ─── 映像領域に合わせてオーバーレイの位置・サイズを更新 ───
   function updateOverlayBounds() {
     if (!overlay) return;
-    const player = overlay.parentElement;
-    if (!player) return;
+    const player = document.querySelector('#movie_player');
+    const host = overlay.parentElement;
+    if (!player || !host) return;
     const video = player.querySelector('video');
+    const playerRect = player.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    const baseLeft = playerRect.left - hostRect.left;
+    const baseTop = playerRect.top - hostRect.top;
+
     if (!video || !video.videoWidth || !video.videoHeight) {
       // 映像情報が未取得の場合はフル表示
-      overlay.style.top = '0';
-      overlay.style.left = '0';
-      overlay.style.width = '100%';
-      overlay.style.height = '100%';
+      overlay.style.top = baseTop + 'px';
+      overlay.style.left = baseLeft + 'px';
+      overlay.style.width = player.clientWidth + 'px';
+      overlay.style.height = player.clientHeight + 'px';
       overlayWidth = player.clientWidth;
       overlayHeight = player.clientHeight;
       overlay.style.setProperty('--yt-danmaku-w', overlayWidth + 'px');
@@ -136,8 +142,8 @@
       offsetY = (playerH - renderH) / 2;
     }
 
-    overlay.style.top = offsetY + 'px';
-    overlay.style.left = offsetX + 'px';
+    overlay.style.top = (baseTop + offsetY) + 'px';
+    overlay.style.left = (baseLeft + offsetX) + 'px';
     overlay.style.width = renderW + 'px';
     overlay.style.height = renderH + 'px';
     overlayWidth = renderW;
@@ -157,8 +163,11 @@
         top: 0; left: 0; width: 100%; height: 100%;
         pointer-events: none;
         overflow: hidden;
-        z-index: 2021;
+        z-index: 11;
         contain: layout paint;
+      }
+      #movie_player .ytp-caption-window-container {
+        z-index: 12;
       }
       @keyframes yt-danmaku-scroll {
         from { transform: translateX(0); }
@@ -631,6 +640,7 @@
   function createOverlay() {
     const player = document.querySelector('#movie_player');
     if (!player) return null;
+    const videoLayer = player.querySelector('.html5-video-container');
 
     const existing = player.querySelector('#yt-danmaku-overlay');
     if (existing) existing.remove();
@@ -639,7 +649,12 @@
 
     const el = h('div', { id: 'yt-danmaku-overlay' });
     player.style.position = 'relative';
-    player.appendChild(el);
+
+    if (videoLayer && videoLayer.parentNode === player) {
+      videoLayer.insertAdjacentElement('afterend', el);
+    } else {
+      player.appendChild(el);
+    }
 
     // ResizeObserverでプレイヤーサイズ変更を監視 → 映像領域を再計算
     if (resizeObserver) resizeObserver.disconnect();
@@ -647,8 +662,8 @@
     resizeObserver.observe(player);
 
     // video のメタデータ読み込み時にも再計算（アスペクト比が確定するタイミング）
-    const video = player.querySelector('video');
-    if (video) video.addEventListener('loadedmetadata', () => updateOverlayBounds(), { once: true });
+    const playerVideo = player.querySelector('video');
+    if (playerVideo) playerVideo.addEventListener('loadedmetadata', () => updateOverlayBounds(), { once: true });
 
     updateOverlayBounds();
     return el;

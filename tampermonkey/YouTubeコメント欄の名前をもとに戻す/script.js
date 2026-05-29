@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeコメント欄の名前をもとに戻す＋
 // @namespace    https://example.com/
-// @version      1.0.3
+// @version      1.0.4
 // @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
 // @match        https://www.youtube.com/*
 // @match        https://www.youtube.com/live_chat*
@@ -48,7 +48,12 @@
     'yt-live-chat-ticker-sponsor-item-renderer #text';
   const AUTHOR_NAME_SEL = 'yt-live-chat-author-chip #author-name, a#author-name, span#author-name';
   const LIVE_CHAT_SCAN_SEL = `${AUTHOR_NAME_SEL},${TICKER_TEXT_SEL}`;
-  const COMMENT_AUTHOR_LINK_SEL = 'a#author-text[href^="/@"], a#author-name[href^="/@"]';
+  const COMMENT_AUTHOR_LINK_SEL =
+    'a#author-text[href^="/@"],' +
+    'a#author-name[href^="/@"],' +
+    'ytd-author-comment-badge-renderer a#name[href^="/@"]';
+  const COMMENT_ATTRIBUTION_TEXT_SEL =
+    'ytd-pinned-comment-badge-renderer #label';
   const entityDecoder = new DOMParser();
 
   function decodeEntities(s) {
@@ -71,6 +76,10 @@
   function extractHandleFromHref(href) {
     const m = href && href.match(/\/@([A-Za-z0-9._-]{2,})/);
     return m ? '@' + m[1] : null;
+  }
+
+  function replaceAllLiteral(text, needle, replacement) {
+    return String(text || '').split(needle).join(replacement);
   }
 
   class LRU {
@@ -300,6 +309,7 @@
     authorEl.dataset.ytNameRestored = '1';
     authorEl.dataset.originalHandle = handle;
     try { authorEl.setAttribute('title', handle); } catch { }
+    updateRelatedCommentAttributionLabels(authorEl, handle, name);
     authorState.delete(authorEl);
   }
 
@@ -309,7 +319,28 @@
     for (const el of root.querySelectorAll(selector)) enqueueAuthorElement(el);
   }
 
+  function updateRelatedCommentAttributionLabels(authorEl, handle, name) {
+    const commentRoot = authorEl.closest('ytd-comment-view-model, ytd-comment-thread-renderer');
+    if (!commentRoot) return;
+
+    for (const label of commentRoot.querySelectorAll(COMMENT_ATTRIBUTION_TEXT_SEL)) {
+      const text = label.textContent || '';
+      if (!text.includes(handle)) continue;
+      label.textContent = replaceAllLiteral(text, handle, name);
+      label.dataset.ytNameRestored = '1';
+      label.dataset.originalHandle = handle;
+    }
+  }
+
   function getCommentAuthorTarget(link) {
+    if (link.matches('ytd-author-comment-badge-renderer a#name')) {
+      return link.querySelector(
+        'ytd-channel-name yt-formatted-string#text,' +
+        '#channel-name #text,' +
+        'yt-formatted-string#text'
+      ) || link;
+    }
+
     let child = link.firstElementChild;
     while (child) {
       const tag = child.localName;
