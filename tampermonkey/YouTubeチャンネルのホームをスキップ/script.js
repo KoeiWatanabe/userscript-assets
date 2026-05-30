@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeチャンネルのホームをスキップ
 // @namespace    http://tampermonkey.net/
-// @version      3.3
+// @version      3.4
 // @description  YouTubeチャンネルページを自動的に/videosへリダイレクト。動画視聴中の投稿主/コラボレーター遷移は動画タイプに合わせ、その他は件数比較で決定。
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -31,6 +31,10 @@
         const dateText = document.querySelector('#info-strings yt-formatted-string')?.textContent ?? '';
         if (/streamed|配信済み/i.test(dateText)) return true;
         return false;
+    }
+
+    function closestElement(target, selector) {
+        return target instanceof Element ? target.closest(selector) : null;
     }
 
     // ---- InnerTube API ----
@@ -208,11 +212,16 @@
     // ---- ホームフィードのライブアバタークリック ----
 
     document.addEventListener('click', async (e) => {
-        const liveRing = e.target.closest('.yt-spec-avatar-shape--live-ring');
-        if (!liveRing) return;
+        const liveAvatar = closestElement(e.target, [
+            '.yt-spec-avatar-shape--live-ring',
+            '.ytSpecAvatarShapeLiveRing',
+            '.ytSpecAvatarShapeLiveBadge',
+            '.ytSpecAvatarShapeHost[aria-label*="watch live" i]',
+        ].join(', '));
+        if (!liveAvatar) return;
 
-        const container = liveRing.closest(
-            'yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer'
+        const container = liveAvatar.closest(
+            'yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-rich-grid-media'
         );
         if (!container) return;
 
@@ -281,7 +290,7 @@
             }
 
             // B. 通常のリンククリック（投稿主エリアなど）
-            const anchor = e.target.closest('a');
+            const anchor = closestElement(e.target, 'a');
             if (anchor) {
                 try {
                     const url = new URL(anchor.href, location.origin);
@@ -337,7 +346,7 @@
             // 2. /watch 以外のページ（ホーム、トレンドなど）
             // すべてのチャンネルリンクで「競争ロジック」を使う
 
-            const anchor = e.target.closest('a');
+            const anchor = closestElement(e.target, 'a');
             if (!anchor) return;
 
             try {
