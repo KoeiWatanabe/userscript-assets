@@ -54,13 +54,24 @@
     'ytd-author-comment-badge-renderer a#name[href^="/@"]';
   const COMMENT_ATTRIBUTION_TEXT_SEL =
     'ytd-pinned-comment-badge-renderer #label';
-  const entityDecoder = new DOMParser();
+  const entityDecoder = document.createElement('textarea');
 
   function decodeEntities(s) {
     if (!s || !s.includes('&')) return s || '';
     try {
-      return entityDecoder.parseFromString(`<i>${s}</i>`, 'text/html').body.textContent || s;
+      entityDecoder.innerHTML = s;
+      return entityDecoder.value || s;
     } catch { return s; }
+  }
+
+  function normalizeDisplayName(name) {
+    let normalized = String(name || '');
+    for (let i = 0; i < 4 && normalized.includes('&'); i++) {
+      const decoded = decodeEntities(normalized);
+      if (decoded === normalized) break;
+      normalized = decoded;
+    }
+    return normalized.trim();
   }
 
   function isHandleText(s) {
@@ -119,7 +130,14 @@
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (!parsed || parsed.v !== 2 || !Array.isArray(parsed.entries)) return;
-      lsCache.load(parsed.entries);
+      let changed = false;
+      const entries = parsed.entries.map(([handle, name]) => {
+        const normalizedName = normalizeDisplayName(name);
+        if (normalizedName !== name) changed = true;
+        return [handle, normalizedName];
+      });
+      lsCache.load(entries);
+      if (changed) schedulePersist();
     } catch { }
   }
 
@@ -147,7 +165,7 @@
     if (!html) return null;
     const m = html.match(OG_TITLE_RE);
     if (!m) return null;
-    const name = decodeEntities(m[1] || '').trim().replace(/\s+-\s+YouTube\s*$/i, '').trim();
+    const name = normalizeDisplayName(m[1] || '').replace(/\s+-\s+YouTube\s*$/i, '').trim();
     if (!name || /^YouTube$/i.test(name)) return null;
     return name;
   }
@@ -228,12 +246,17 @@
 
   async function fetchDisplayNameByHandle(handle) {
     const mc = memCache.get(handle);
-    if (mc) return mc;
+    if (mc) return normalizeDisplayName(mc);
 
     const lc = lsCache.get(handle);
     if (lc) {
-      memCache.set(handle, lc);
-      return lc;
+      const name = normalizeDisplayName(lc);
+      memCache.set(handle, name);
+      if (name !== lc) {
+        lsCache.set(handle, name);
+        schedulePersist();
+      }
+      return name;
     }
 
     const nts = negCache.get(handle);
@@ -250,10 +273,11 @@
     try {
       const name = await p;
       if (name) {
-        memCache.set(handle, name);
-        lsCache.set(handle, name);
+        const normalizedName = normalizeDisplayName(name);
+        memCache.set(handle, normalizedName);
+        lsCache.set(handle, normalizedName);
         schedulePersist();
-        return name;
+        return normalizedName;
       }
       negCache.set(handle, now());
       return null;
