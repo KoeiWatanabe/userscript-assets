@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeのレイアウト調整
 // @namespace    https://example.com/
-// @version      3.8.0
-// @description  YouTubeのレイアウトを調整する（高評価数の表示制御、Hideボタンの非表示など）
+// @version      3.8.1
+// @description  YouTubeのレイアウトを調整する（高評価数の表示制御、ライブチャット文字サイズ調整、Hideボタンの非表示など）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_addStyle
@@ -16,6 +16,7 @@
 
   const HITBOX_PAD = 6;
   const OPEN_WIDTH = 100;
+  const LIVE_CHAT_FONT_SIZE = '110%';
 
   const HOVER_DELAY = 80;
   const WIDTH_DURATION = 140;
@@ -103,14 +104,24 @@
     }
 
     /* =========================================================
-       4) 動画プレーヤー上の Hide ボタンを非表示
+       4) ライブチャットの文字サイズを拡大
+       ========================================================= */
+    yt-live-chat-text-message-renderer #message,
+    yt-live-chat-paid-message-renderer #message,
+    yt-live-chat-membership-item-renderer #message,
+    yt-live-chat-author-chip #author-name {
+      font-size: ${LIVE_CHAT_FONT_SIZE} !important;
+    }
+
+    /* =========================================================
+       5) 動画プレーヤー上の Hide ボタンを非表示
        ========================================================= */
     .ytp-ce-hide-button-container {
       display: none !important;
     }
 
     /* =========================================================
-       5) 低モーション環境
+       6) 低モーション環境
        ========================================================= */
     @media (prefers-reduced-motion: reduce) {
       ${textSelector} {

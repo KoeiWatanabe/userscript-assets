@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeコメント欄の名前をもとに戻す＋
 // @namespace    https://example.com/
-// @version      1.0.4
+// @version      1.0.6
 // @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
 // @match        https://www.youtube.com/*
 // @match        https://www.youtube.com/live_chat*
@@ -54,14 +54,51 @@
     'ytd-author-comment-badge-renderer a#name[href^="/@"]';
   const COMMENT_ATTRIBUTION_TEXT_SEL =
     'ytd-pinned-comment-badge-renderer #label';
-  const entityDecoder = document.createElement('textarea');
+  const decodeCache = new Map();
+  const DECODE_CACHE_MAX = 2000;
 
   function decodeEntities(s) {
-    if (!s || !s.includes('&')) return s || '';
-    try {
-      entityDecoder.innerHTML = s;
-      return entityDecoder.value || s;
-    } catch { return s; }
+    if (s == null) return '';
+    const text = String(s);
+    if (!text.includes('&')) return text;
+
+    const cached = decodeCache.get(text);
+    if (cached !== undefined) return cached;
+
+    const named = {
+      amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00A0',
+      hellip: '…', ndash: '–', mdash: '—', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”',
+      laquo: '«', raquo: '»', middot: '·', bull: '•',
+      copy: '©', reg: '®', trade: '™', deg: '°', plusmn: '±', times: '×', divide: '÷', micro: 'µ',
+      yen: '¥', euro: '€', pound: '£', cent: '¢',
+      frac14: '¼', frac12: '½', frac34: '¾', sup1: '¹', sup2: '²', sup3: '³',
+    };
+
+    let decoded = text.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]+);/g, (match, entity) => {
+      if (entity[0] === '#') {
+        const isHex = (entity[1] || '').toLowerCase() === 'x';
+        const num = parseInt(isHex ? entity.slice(2) : entity.slice(1), isHex ? 16 : 10);
+        if (!Number.isFinite(num)) return match;
+        try { return String.fromCodePoint(num); } catch { return match; }
+      }
+      const key = entity.toLowerCase();
+      return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : match;
+    });
+
+    if (/&[a-zA-Z][a-zA-Z0-9]+;/.test(decoded)) {
+      try {
+        const doc = new DOMParser().parseFromString(`<textarea>${decoded}</textarea>`, 'text/html');
+        const textarea = doc && doc.querySelector('textarea');
+        if (textarea && typeof textarea.value === 'string') decoded = textarea.value;
+      } catch { }
+    }
+
+    decodeCache.set(text, decoded);
+    if (decodeCache.size > DECODE_CACHE_MAX) {
+      const firstKey = decodeCache.keys().next().value;
+      if (firstKey !== undefined) decodeCache.delete(firstKey);
+    }
+    return decoded;
   }
 
   function normalizeDisplayName(name) {
@@ -395,18 +432,21 @@
    * Live Chat Module
    **********************/
   const LiveChat = (() => {
+    const REPLY_PANEL_SEL = 'ytd-engagement-panel-section-list-renderer[target-id="PAreply_thread"]';
     const WATCH = [
       { sel: '#item-list #items', opts: { childList: true, subtree: false } },
       { sel: 'yt-live-chat-banner-manager', opts: { childList: true, subtree: true } },
       { sel: 'yt-live-chat-ticker-renderer #ticker-items', opts: { childList: true, subtree: true } },
       { sel: 'yt-live-chat-pinned-message-renderer#pinned-message', opts: { childList: true, subtree: true } },
       {
-        sel: 'ytd-engagement-panel-section-list-renderer[target-id="PAreply_thread"]',
+        sel: REPLY_PANEL_SEL,
         opts: { childList: true, subtree: true, attributes: true, attributeFilter: ['visibility'] },
         watchAttrs: true,
       },
     ];
     const slots = WATCH.map(() => ({ el: null, mo: null }));
+    let rootObserver = null;
+    let rootObserverTarget = null;
 
     const nodeQueue = new Set();
     let rafScheduled = false;
@@ -439,7 +479,44 @@
       });
     }
 
+    function findRelatedReplyPanel(node) {
+      if (!isElement(node)) return null;
+      if (node.matches(REPLY_PANEL_SEL)) return node;
+      const closest = node.closest(REPLY_PANEL_SEL);
+      if (closest) return closest;
+      return node.querySelector(REPLY_PANEL_SEL);
+    }
+
+    function attachRootObserverIfNeeded() {
+      const root = document.querySelector('yt-live-chat-app') || document.body || document.documentElement;
+      if (!root || rootObserverTarget === root) return;
+
+      if (rootObserver) { try { rootObserver.disconnect(); } catch { } }
+      rootObserverTarget = root;
+      rootObserver = new MutationObserver((mutList) => {
+        let shouldAttach = false;
+        for (const mut of mutList) {
+          if (mut.type === 'attributes') {
+            const panel = findRelatedReplyPanel(mut.target);
+            if (panel) {
+              shouldAttach = true;
+              enqueueNode(panel);
+            }
+          }
+          for (const node of mut.addedNodes) {
+            const panel = findRelatedReplyPanel(node);
+            if (!panel) continue;
+            shouldAttach = true;
+            enqueueNode(panel);
+          }
+        }
+        if (shouldAttach) attachObserverIfNeeded();
+      });
+      rootObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['visibility'] });
+    }
+
     function attachObserverIfNeeded() {
+      attachRootObserverIfNeeded();
       for (let i = 0; i < WATCH.length; i++) {
         const spec = WATCH[i];
         const slot = slots[i];
@@ -459,6 +536,9 @@
         slot.el = null;
         slot.mo = null;
       }
+      if (rootObserver) { try { rootObserver.disconnect(); } catch { } }
+      rootObserver = null;
+      rootObserverTarget = null;
     }
 
     return { attachObserverIfNeeded, reset };
