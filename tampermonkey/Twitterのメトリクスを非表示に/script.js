@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      1.11.0
-// @description  メトリクス非表示（ホバー時表示）・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替
+// @version      1.12.0
+// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替
 // @author       Gemini & Claude
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -50,6 +50,21 @@
       opacity: 1;
       visibility: visible;
       transition: opacity 0.2s ease-in-out, visibility 0s;
+    }
+
+    /* ===== 認証バッジ非表示 ===== */
+    :is(
+      span:has(> [data-testid="icon-verified"]),
+      button:has(> [data-testid="icon-verified"]),
+      span:has(> svg[aria-label="Verified account"][role="img"]),
+      span:has(> svg[aria-label="認証済みアカウント"][role="img"]),
+      button:has(> svg[aria-label="Verified account"][role="img"]),
+      button:has(> svg[aria-label="認証済みアカウント"][role="img"]),
+      [data-testid="icon-verified"],
+      svg[aria-label="Verified account"][role="img"],
+      svg[aria-label="認証済みアカウント"][role="img"]
+    ) {
+      display: none !important;
     }
 
     /* ===== 左サイドバー: プレミアムリンク非表示 ===== */
