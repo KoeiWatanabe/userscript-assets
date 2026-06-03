@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeのレイアウト調整
 // @namespace    https://example.com/
-// @version      3.8.1
-// @description  YouTubeのレイアウトを調整する（高評価数の表示制御、ライブチャット文字サイズ調整、Hideボタンの非表示など）
+// @version      3.9.0
+// @description  YouTubeのレイアウトを調整する（高評価数の表示制御、ライブチャット文字サイズ調整、プレイリスト位置調整、Hideボタンの非表示など）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_addStyle
@@ -121,7 +121,45 @@
     }
 
     /* =========================================================
-       6) 低モーション環境
+       6) プレイリストをライブチャット下へ移動
+       ========================================================= */
+    ytd-watch-flexy[playlist][show-playlist][live-chat-present-and-expanded]
+      #secondary-inner {
+      display: flex !important;
+      flex-direction: column !important;
+    }
+
+    ytd-watch-flexy[playlist][show-playlist][live-chat-present-and-expanded]
+      #secondary-inner > #panels {
+      order: 0 !important;
+    }
+
+    ytd-watch-flexy[playlist][show-playlist][live-chat-present-and-expanded]
+      #secondary-inner > #inline-panels {
+      order: 5 !important;
+    }
+
+    ytd-watch-flexy[playlist][show-playlist][live-chat-present-and-expanded]
+      #secondary-inner > #chat-container {
+      order: 10 !important;
+    }
+
+    ytd-watch-flexy[playlist][show-playlist][live-chat-present-and-expanded]
+      #secondary-inner > ytd-playlist-panel-renderer#playlist {
+      order: 20 !important;
+    }
+
+    ytd-watch-flexy[playlist][show-playlist][live-chat-present-and-expanded]
+      #secondary-inner > #persistent-panel-container,
+    ytd-watch-flexy[playlist][show-playlist][live-chat-present-and-expanded]
+      #secondary-inner > #donation-shelf,
+    ytd-watch-flexy[playlist][show-playlist][live-chat-present-and-expanded]
+      #secondary-inner > #related {
+      order: 30 !important;
+    }
+
+    /* =========================================================
+       7) 低モーション環境
        ========================================================= */
     @media (prefers-reduced-motion: reduce) {
       ${textSelector} {
