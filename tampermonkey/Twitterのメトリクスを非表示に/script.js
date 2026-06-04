@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      1.12.0
+// @version      1.12.1
 // @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替
 // @author       Gemini & Claude
 // @match        https://x.com/*
@@ -158,6 +158,7 @@
   let forYouWrapper = null;
   let currentProfileHandle = null;
   let hideProfileRetweets = false;
+  const profileRetweetHiddenStates = new Map();
 
   // 原文を表示したい言語（「○○からの翻訳」の○○部分）
   const SHOW_ORIGINAL_LANGS = new Set(['英語']);
@@ -211,6 +212,15 @@
     if (!isProfilePagePath()) return null;
     const [handle] = location.pathname.split('/').filter(Boolean);
     return normalizeHandle(handle);
+  }
+
+  function getProfileRetweetsHidden(profileHandle) {
+    return profileHandle ? profileRetweetHiddenStates.get(profileHandle) === true : false;
+  }
+
+  function setProfileRetweetsHidden(profileHandle, shouldHide) {
+    if (!profileHandle) return;
+    profileRetweetHiddenStates.set(profileHandle, shouldHide);
   }
 
   function extractHandleFromHref(href) {
@@ -343,6 +353,7 @@
 
     button.addEventListener('click', () => {
       hideProfileRetweets = !hideProfileRetweets;
+      setProfileRetweetsHidden(currentProfileHandle, hideProfileRetweets);
       renderAllRetweetToggleButtons();
       applyProfileRetweetVisibility([document.documentElement]);
     });
@@ -677,10 +688,8 @@
       // URL 変化 → キャッシュをリセットして全体再スキャン
       forYouWrapper = null;
       const nextProfileHandle = getCurrentProfileHandleFromUrl();
-      if (nextProfileHandle !== currentProfileHandle) {
-        hideProfileRetweets = false;
-      }
       currentProfileHandle = nextProfileHandle;
+      hideProfileRetweets = getProfileRetweetsHidden(currentProfileHandle);
       pendingAddedNodes.length = 0;
       pendingAddedNodes.push(document.documentElement);
     } else {
@@ -714,7 +723,7 @@
 
   function start() {
     currentProfileHandle = getCurrentProfileHandleFromUrl();
-    hideProfileRetweets = false;
+    hideProfileRetweets = getProfileRetweetsHidden(currentProfileHandle);
     window.addEventListener('scroll', scheduleRetweetToggleSync, { passive: true });
     observer.observe(document.documentElement, {
       childList: true,
