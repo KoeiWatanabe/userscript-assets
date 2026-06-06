@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Blueskyのレイアウト調整
 // @namespace    https://tampermonkey.net/
-// @version      1.1.0
+// @version      1.1.1
 // @description  Blueskyでポストのメトリクス（数値）を通常時は非表示にし、ホバー時のみ表示します。（タイムライン、個別詳細、検索結果に対応）
 // @match        https://bsky.app/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Bluesky%E3%81%AE%E3%83%AC%E3%82%A4%E3%82%A2%E3%82%A6%E3%83%88%E8%AA%BF%E6%95%B4/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Bluesky%E3%81%AE%E3%83%AC%E3%82%A4%E3%82%A2%E3%82%A6%E3%83%88%E8%AA%BF%E6%95%B4/script.js
-// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Bluesky%E3%81%AE%E3%83%AC%E3%82%A4%E3%82%A2%E3%82%A6%E3%83%88%E8%AA%BF%E6%95%B4/icon_128.png
+// @icon         https://web-cdn.bsky.app/static/favicon.png
 // @grant        none
 // ==/UserScript==
 
