@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Longmanで日本語に切り替える
 // @namespace    https://tampermonkey.net/
-// @version      1.5.0
+// @version      1.5.1
 // @description  Longman Dictionary の通常英語ページと英語スペルチェックを英和辞書側へ自動で切り替える
 // @match        https://www.ldoceonline.com/dictionary/*
 // @match        https://www.ldoceonline.com/spellcheck/english/*
@@ -9,7 +9,7 @@
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Longmanで日本語に切り替える/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Longmanで日本語に切り替える/script.js
-// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Longmanで日本語に切り替える/icon_128.png
+// @icon         https://www.ldoceonline.com/external/images/favicon.ico?version=1.2.89
 // ==/UserScript==
 
 (function () {
