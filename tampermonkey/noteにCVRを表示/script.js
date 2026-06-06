@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         noteにCVRを表示
 // @namespace    https://tampermonkey.net/
-// @version      1.1.0
+// @version      1.1.1
 // @description  note.comのアクセス状況にCVRカードとテーブル列を表示します
 // @match        https://note.com/sitesettings/stats*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/noteにCVRを表示/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/noteにCVRを表示/script.js
-// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/noteにCVRを表示/icon_128.png
+// @icon         https://assets.st-note.com/poc-image/manual/note-common-images/production/svg/production.ico
 // @grant        none
 // ==/UserScript==
 
