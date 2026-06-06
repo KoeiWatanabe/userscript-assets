@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにNGワードを設定する
 // @namespace    https://tampermonkey.net/
-// @version      1.1.0
+// @version      1.2.0
 // @description  YouTubeのホームフィードと動画ページのおすすめから、設定したNGワードに一致する動画を非表示にします。
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにNGワードを設定する/script.js
@@ -22,6 +22,7 @@
   const PREVIOUS_DISPLAY_ATTR = `data-${SCRIPT_KEY}-previous-display`;
   const CLEANUP_KEY = "__ytNewsFilterCleanup";
   const MODAL_ATTR = `data-${SCRIPT_KEY}-settings`;
+  const COMMON_WORDS_KEY = "commonWords:v1";
   const ACCOUNT_WORDS_PREFIX = "accountWords:v1:";
   const DEFAULT_ACCOUNT_KEY = "default";
 
@@ -201,6 +202,19 @@
     return `${ACCOUNT_WORDS_PREFIX}${accountKey}`;
   }
 
+  function readCommonWords() {
+    const value = GM_getValue(COMMON_WORDS_KEY, []);
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return uniqueWordsFromText(value.join("\n"));
+  }
+
+  function writeCommonWords(words) {
+    GM_setValue(COMMON_WORDS_KEY, uniqueWordsFromText(words.join("\n")));
+  }
+
   function readAccountWords(accountKey = getAccountInfo().key) {
     const value = GM_getValue(getAccountWordsStorageKey(accountKey), []);
     if (!Array.isArray(value)) {
@@ -272,13 +286,17 @@
     return patterns.some((pattern) => pattern.test(text));
   }
 
-  function shouldHide(info, accountWords) {
+  function shouldHide(info, commonWords, accountWords) {
     if (info.channel && matchAny(info.channel, CHANNEL_NEWS_PATTERNS)) {
       return true;
     }
 
     const cardText = `${info.title}\n${info.channel}\n${info.text}`;
     if (matchAny(cardText, CONTENT_BLOCK_PATTERNS)) {
+      return true;
+    }
+
+    if (matchWords(cardText, commonWords)) {
       return true;
     }
 
@@ -343,7 +361,9 @@
     }
 
     const accountInfo = getAccountInfo();
+    const commonWords = readCommonWords();
     const accountWords = readAccountWords(accountInfo.key);
+    const commonWordsSignature = commonWords.join("\n").toLocaleLowerCase();
     const accountWordsSignature = accountWords.join("\n").toLocaleLowerCase();
 
     for (const card of getTargetCards()) {
@@ -354,6 +374,7 @@
 
       const activeSignature = [
         accountInfo.key,
+        commonWordsSignature,
         accountWordsSignature,
         info.signature,
       ].join("\n---\n");
@@ -363,7 +384,7 @@
       }
 
       checkedSignatures.set(card, activeSignature);
-      setHidden(card, shouldHide(info, accountWords));
+      setHidden(card, shouldHide(info, commonWords, accountWords));
     }
   }
 
@@ -431,14 +452,20 @@
     closeSettingsModal();
 
     const accountInfo = getAccountInfo();
-    const words = readAccountWords(accountInfo.key);
+    const commonWords = readCommonWords();
+    const accountWords = readAccountWords(accountInfo.key);
     const overlay = document.createElement("div");
     const dialog = document.createElement("div");
     const header = document.createElement("div");
     const title = document.createElement("h2");
     const closeButton = document.createElement("button");
     const account = document.createElement("div");
-    const textarea = document.createElement("textarea");
+    const commonGroup = document.createElement("label");
+    const commonLabel = document.createElement("span");
+    const commonTextarea = document.createElement("textarea");
+    const accountGroup = document.createElement("label");
+    const accountLabel = document.createElement("span");
+    const accountTextarea = document.createElement("textarea");
     const actions = document.createElement("div");
     const cancelButton = document.createElement("button");
     const saveButton = document.createElement("button");
@@ -463,10 +490,25 @@
     account.className = `${SCRIPT_KEY}-account`;
     account.textContent = `現在のアカウント: ${accountInfo.label}`;
 
-    textarea.className = `${SCRIPT_KEY}-textarea`;
-    textarea.spellcheck = false;
-    textarea.setAttribute("aria-label", "非表示ワード");
-    textarea.value = words.join("\n");
+    commonGroup.className = `${SCRIPT_KEY}-field`;
+    commonLabel.className = `${SCRIPT_KEY}-field-label`;
+    commonLabel.textContent = "共通NGワード";
+
+    commonTextarea.className = `${SCRIPT_KEY}-textarea`;
+    commonTextarea.spellcheck = false;
+    commonTextarea.setAttribute("data-field", "common");
+    commonTextarea.setAttribute("aria-label", "共通NGワード");
+    commonTextarea.value = commonWords.join("\n");
+
+    accountGroup.className = `${SCRIPT_KEY}-field`;
+    accountLabel.className = `${SCRIPT_KEY}-field-label`;
+    accountLabel.textContent = "このアカウントのNGワード";
+
+    accountTextarea.className = `${SCRIPT_KEY}-textarea`;
+    accountTextarea.spellcheck = false;
+    accountTextarea.setAttribute("data-field", "account");
+    accountTextarea.setAttribute("aria-label", "このアカウントのNGワード");
+    accountTextarea.value = accountWords.join("\n");
 
     actions.className = `${SCRIPT_KEY}-actions`;
 
@@ -481,8 +523,10 @@
     saveButton.textContent = "保存";
 
     header.append(title, closeButton);
+    commonGroup.append(commonLabel, commonTextarea);
+    accountGroup.append(accountLabel, accountTextarea);
     actions.append(cancelButton, saveButton);
-    dialog.append(header, account, textarea, actions);
+    dialog.append(header, account, commonGroup, accountGroup, actions);
     overlay.append(dialog);
 
     overlay.addEventListener("click", (event) => {
@@ -497,16 +541,19 @@
       }
 
       if (target.closest("[data-action='save']")) {
-        const textarea = overlay.querySelector("textarea");
-        const nextWords = uniqueWordsFromText(textarea ? textarea.value : "");
-        writeAccountWords(nextWords, accountInfo.key);
+        const commonTextarea = overlay.querySelector("[data-field='common']");
+        const accountTextarea = overlay.querySelector("[data-field='account']");
+        const nextCommonWords = uniqueWordsFromText(commonTextarea ? commonTextarea.value : "");
+        const nextAccountWords = uniqueWordsFromText(accountTextarea ? accountTextarea.value : "");
+        writeCommonWords(nextCommonWords);
+        writeAccountWords(nextAccountWords, accountInfo.key);
         closeSettingsModal();
         refreshCards();
       }
     });
 
     document.body.appendChild(overlay);
-    textarea.focus();
+    commonTextarea.focus();
   }
 
   function installSettingsStyle() {
@@ -527,6 +574,8 @@
 
       .${SCRIPT_KEY}-dialog {
         width: min(560px, 100%);
+        max-height: calc(100vh - 48px);
+        overflow: auto;
         box-sizing: border-box;
         border-radius: 8px;
         background: #fff;
@@ -573,9 +622,23 @@
         overflow-wrap: anywhere;
       }
 
+      .${SCRIPT_KEY}-field {
+        display: block;
+        margin-top: 12px;
+      }
+
+      .${SCRIPT_KEY}-field-label {
+        display: block;
+        margin-bottom: 6px;
+        color: #0f0f0f;
+        font-size: 13px;
+        line-height: 1.4;
+        font-weight: 500;
+      }
+
       .${SCRIPT_KEY}-textarea {
         width: 100%;
-        min-height: 240px;
+        min-height: 150px;
         box-sizing: border-box;
         resize: vertical;
         border: 1px solid #c7c7c7;
