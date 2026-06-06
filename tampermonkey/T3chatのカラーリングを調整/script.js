@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         T3chatのカラーリングを調整
 // @namespace    https://tampermonkey.net/
-// @version      1.0.2
+// @version      1.0.3
 // @description  t3.chat の Boring Mode 時の配色を調整します
 // @match        https://t3.chat/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/T3chatのカラーリングを調整/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/T3chatのカラーリングを調整/script.js
-// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/T3chatのカラーリングを調整/icon_128.png
+// @icon         https://t3.chat/favicon.ico
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
