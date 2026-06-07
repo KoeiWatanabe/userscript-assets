@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのGeminiをリダイレクト
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      1.0.1
 // @description  YouTubeのAskボタン（動画下／概要欄内）を横取りし、Geminiを新規タブで開いて動画URL+改行2回を入力欄に投入する（送信はしない）
 // @author       You
 // @match        https://www.youtube.com/*
@@ -9,6 +9,7 @@
 // @run-at       document-start
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeのGeminiをリダイレクト/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeのGeminiをリダイレクト/script.js
+// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeのGeminiをリダイレクト/icon.svg
 // ==/UserScript==
 
 (function () {
