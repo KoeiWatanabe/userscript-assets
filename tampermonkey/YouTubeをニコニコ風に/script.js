@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風に
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.2.3
+// @version      2.2.4
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
@@ -568,7 +568,11 @@
   }
 
   function ensureDanmakuToggleButton() {
-    if (!document.querySelector('#chatframe')) {
+    // チャットパネルが存在しない、または非表示(collapsed)の場合はボタンを隠す
+    const chatContainer = document.querySelector('ytd-live-chat-frame#chat');
+    const chatFrame = document.querySelector('#chatframe');
+    const chatVisible = chatFrame && chatContainer && !chatContainer.hasAttribute('collapsed') && !chatContainer.hidden;
+    if (!chatVisible) {
       if (danmakuToggleButton && danmakuToggleButton.isConnected) danmakuToggleButton.remove();
       return false;
     }
