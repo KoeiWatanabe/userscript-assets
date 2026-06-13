@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      1.12.1
-// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替
+// @version      1.13.0
+// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト
 // @author       Gemini & Claude
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -152,6 +152,15 @@
   // ============================================================
   // 2. JavaScript による動的処理
   // ============================================================
+
+  /** プレミアム勧誘ページ (/i/premium_sign_up) ならホームへリダイレクト */
+  function redirectIfPremiumPage() {
+    if (location.pathname === '/i/premium_sign_up') {
+      location.replace('https://x.com/home');
+      return true;
+    }
+    return false;
+  }
 
   let lastUrl = location.href;
   // おすすめタブの wrapper をキャッシュ（DOM 内で非表示のまま → O(1) スキップ）
@@ -685,6 +694,8 @@
     }
 
     if (urlChanged) {
+      // プレミアム勧誘ページならホームへリダイレクト
+      if (redirectIfPremiumPage()) return;
       // URL 変化 → キャッシュをリセットして全体再スキャン
       forYouWrapper = null;
       const nextProfileHandle = getCurrentProfileHandleFromUrl();
@@ -722,6 +733,8 @@
   const observer = new MutationObserver(onMutation);
 
   function start() {
+    // 起動時にプレミアム勧誘ページならホームへリダイレクト
+    if (redirectIfPremiumPage()) return;
     currentProfileHandle = getCurrentProfileHandleFromUrl();
     hideProfileRetweets = getProfileRetweetsHidden(currentProfileHandle);
     window.addEventListener('scroll', scheduleRetweetToggleSync, { passive: true });
