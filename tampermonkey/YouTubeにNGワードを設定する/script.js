@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにNGワードを設定する
 // @namespace    https://tampermonkey.net/
-// @version      1.2.0
+// @version      1.2.1
 // @description  YouTubeのホームフィードと動画ページのおすすめから、設定したNGワードに一致する動画を非表示にします。
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにNGワードを設定する/script.js
@@ -50,6 +50,7 @@
   ];
 
   const CHANNEL_SELECTORS = [
+    "yt-content-metadata-view-model .ytContentMetadataViewModelMetadataRow:first-child .ytContentMetadataViewModelMetadataText",
     "ytd-channel-name a",
     "#channel-name a",
     "#text.ytd-channel-name",
