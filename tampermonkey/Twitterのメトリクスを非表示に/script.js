@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      1.14.0
+// @version      1.14.1
 // @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示
 // @author       Gemini & Claude
 // @match        https://x.com/*
 // @match        https://twitter.com/*
-// @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitterのレイアウト調整/script.js
-// @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitterのレイアウト調整/script.js
+// @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitterのメトリクスを非表示に/script.js
+// @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitterのメトリクスを非表示に/script.js
 // @icon         https://lh3.googleusercontent.com/1GU703pTRO0zps9AmDtoYtUlyDTeo_Cjj2mVzevaSHu-IIfOsiPXjMy5BLQdjt_SlSZCNDM3izGKGeEBDWsRbrizyg=s120
 // @grant        GM_addStyle
 // ==/UserScript==
