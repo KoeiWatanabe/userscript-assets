@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    http://tampermonkey.net/
-// @version      1.13.0
-// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト
+// @version      1.14.0
+// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示
 // @author       Gemini & Claude
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -671,6 +671,106 @@
     retryPendingButtons();
   }
 
+  /**
+   * ツイート詳細ページの「もっと見つける」(Discover more) セクションと
+   * その後に続くおすすめツイート群をすべて非表示にする。
+   * h2[role="heading"] のテキストを判定基点にし、該当する cellInnerDiv 以降の
+   * 兄弟 cellInnerDiv をまとめて display: none にする。
+   */
+  function cleanDiscoverMore() {
+    const DISCOVER_MORE_RE = /^(もっと見つける|Discover more)$/i;
+    const primaryColumn = document.querySelector('[data-testid="primaryColumn"]');
+    if (!primaryColumn) return;
+
+    const headings = primaryColumn.querySelectorAll('h2[role="heading"]');
+    for (const h2 of headings) {
+      if (!DISCOVER_MORE_RE.test(h2.textContent.trim())) continue;
+
+      // h2 を含む cellInnerDiv を特定
+      const cell = h2.closest('[data-testid="cellInnerDiv"]');
+      if (!cell) continue;
+
+      // この cellInnerDiv 自体と、以降の兄弟要素をすべて非表示
+      let sibling = cell;
+      while (sibling) {
+        if (sibling.style.display !== 'none') {
+          sibling.style.setProperty('display', 'none', 'important');
+        }
+        sibling = sibling.nextElementSibling;
+      }
+    }
+  }
+
+  /**
+   * 話題を検索ページ (/explore) の「本日のニュース」「おすすめユーザー」「おすすめ投稿」を非表示にする
+   */
+  function cleanExplorePage() {
+    if (!location.pathname.startsWith('/explore')) return;
+
+    const headingsToHide = {
+      news: ["本日のニュース", "Today's news", "Today's News", "What's happening", "いまどうしてる？"],
+      follow: ["おすすめユーザー", "Who to follow", "Who to Follow", "おすすめのユーザー"],
+      posts: ["おすすめ投稿", "おすすめの投稿", "おすすめのポスト", "Recommended posts", "Recommended Posts", "おすすめトレンド", "Recommended trends"]
+    };
+
+    const allHeadings = Object.values(headingsToHide).flat();
+    const timeRegex = /\d+\s*(時間前|分前|日前|hour|minute|day|h|m|d)s?/;
+
+    const cells = Array.from(document.querySelectorAll('[data-testid="cellInnerDiv"]'));
+    const hiddenIndices = new Set();
+
+    // First pass: Hide target headers, user cards, recommended posts, and news articles based on content
+    cells.forEach((cell, idx) => {
+      let shouldHide = false;
+
+      // 1. Check if it contains a target heading
+      const h2 = cell.querySelector('h2');
+      if (h2 && allHeadings.includes(h2.textContent.trim())) {
+        shouldHide = true;
+      }
+
+      // 2. Check if it contains UserCell (Who to Follow)
+      if (cell.querySelector('[data-testid="UserCell"]')) {
+        shouldHide = true;
+      }
+
+      // 3. Check if it contains "Show more" link for Who to Follow
+      if (cell.querySelector('a[href="/i/connect_people"]')) {
+        shouldHide = true;
+      }
+
+      // 4. Check if it contains tweet (Recommended Posts)
+      if (cell.querySelector('[data-testid="tweet"]')) {
+        shouldHide = true;
+      }
+
+      // 5. Check if it is a news trend (Today's News)
+      const trend = cell.querySelector('[data-testid="trend"]');
+      if (trend) {
+        const hasImg = !!trend.querySelector('img');
+        const hasTime = timeRegex.test(cell.textContent);
+        if (hasImg || hasTime) {
+          shouldHide = true;
+        }
+      }
+
+      if (shouldHide) {
+        cell.style.setProperty('display', 'none', 'important');
+        hiddenIndices.add(idx);
+      }
+    });
+
+    // Second pass: Hide empty spacer cells adjacent to hidden elements to clean up gaps
+    cells.forEach((cell, idx) => {
+      if (cell.textContent.trim() === '') {
+        if (hiddenIndices.has(idx - 1) || hiddenIndices.has(idx + 1)) {
+          cell.style.setProperty('display', 'none', 'important');
+          hiddenIndices.add(idx);
+        }
+      }
+    });
+  }
+
   // ============================================================
   // 3. MutationObserver（追加ノードのみ処理・RAF でバッチ化）
   // ============================================================
@@ -726,6 +826,8 @@
       cleanSidebarSections(roots);   // サイドバー変化時のみ
       syncRetweetToggleButtons(currentProfileHandle);
       applyProfileRetweetVisibility(roots);
+      cleanDiscoverMore();            // 「もっと見つける」非表示
+      cleanExplorePage();             // 「話題を検索」ページのクリーンアップ
       setTimeout(() => clickShowOriginalButtons(roots), 0); // ペイント後に遅延実行
     });
   }
@@ -749,6 +851,8 @@
     cleanSidebarSections(roots);
     syncRetweetToggleButtons(currentProfileHandle);
     applyProfileRetweetVisibility(roots);
+    cleanDiscoverMore();
+    cleanExplorePage();            // 「話題を検索」ページのクリーンアップ
     clickShowOriginalButtons(roots);
   }
 
