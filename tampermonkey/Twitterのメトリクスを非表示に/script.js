@@ -1,14 +1,14 @@
 // ==UserScript==
-// @name         Twitterのレイアウト調整
-// @namespace    http://tampermonkey.net/
-// @version      1.14.1
-// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示
+// @name         Twitterのメトリクスを非表示に
+// @namespace    https://tampermonkey.net/
+// @version      1.15.0
+// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示・プロフィールのおすすめユーザー非表示
 // @author       Gemini & Claude
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitterのメトリクスを非表示に/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitterのメトリクスを非表示に/script.js
-// @icon         https://lh3.googleusercontent.com/1GU703pTRO0zps9AmDtoYtUlyDTeo_Cjj2mVzevaSHu-IIfOsiPXjMy5BLQdjt_SlSZCNDM3izGKGeEBDWsRbrizyg=s120
+// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitterのメトリクスを非表示に/icon_128.png
 // @grant        GM_addStyle
 // ==/UserScript==
 
@@ -87,6 +87,15 @@
       [data-testid*="upsell"],
       [data-testid="placementTracking"]
     ) {
+      display: none !important;
+    }
+
+    /* ===== プロフィール: おすすめユーザー（カルーセル型 & トグルボタン）非表示 ===== */
+    [data-testid="primaryColumn"] aside[aria-label="おすすめユーザー"],
+    [data-testid="primaryColumn"] aside[aria-label="Who to follow"],
+    [data-testid="primaryColumn"] [data-testid="cellInnerDiv"]:has(aside[aria-label="おすすめユーザー"]),
+    [data-testid="primaryColumn"] [data-testid="cellInnerDiv"]:has(aside[aria-label="Who to follow"]),
+    [data-testid="primaryColumn"] button.r-wh3kqs {
       display: none !important;
     }
 
@@ -771,6 +780,75 @@
     });
   }
 
+  /**
+   * プロフィールページのタイムライン内「おすすめユーザー」(Who to follow) セクションを非表示にする
+   */
+  function cleanProfileRecommendations() {
+    if (!isProfilePagePath()) return;
+
+    const primaryColumn = document.querySelector('[data-testid="primaryColumn"]');
+    if (!primaryColumn) return;
+
+    // 1. カルーセル型 (aside) のクリーンアップ
+    const asides = primaryColumn.querySelectorAll('aside[aria-label="おすすめユーザー"], aside[aria-label="Who to follow"]');
+    asides.forEach(aside => {
+      const cell = aside.closest('[data-testid="cellInnerDiv"]') || aside;
+      if (cell.style.display !== 'none') {
+        cell.style.setProperty('display', 'none', 'important');
+      }
+    });
+
+    // 2. トグルボタンのクリーンアップ（トグル矢印ボタン）
+    const toggleBtns = primaryColumn.querySelectorAll('button.r-wh3kqs');
+    toggleBtns.forEach(btn => {
+      if (btn.style.display !== 'none') {
+        btn.style.setProperty('display', 'none', 'important');
+      }
+    });
+
+    // 3. フラットリスト型（タイムライン内のセル群）のクリーンアップ
+    const REC_HEADER_RE = /^(おすすめユーザー|Who to follow|おすすめのユーザー)$/i;
+    
+    // 常に primaryColumn 内の全 cellInnerDiv をスキャン
+    const cells = Array.from(primaryColumn.querySelectorAll('[data-testid="cellInnerDiv"]'));
+    cells.forEach((cell) => {
+      const h2 = cell.querySelector('h2');
+      if (h2 && REC_HEADER_RE.test(h2.textContent.trim())) {
+        // ヘッダーセルを非表示にする
+        if (cell.style.display !== 'none') {
+          cell.style.setProperty('display', 'none', 'important');
+        }
+
+        // 後続の関連セル（おすすめユーザー、「さらに表示」リンク、空スペース）を探索して非表示にする
+        let next = cell.nextElementSibling;
+        while (next) {
+          if (next.getAttribute('data-testid') === 'cellInnerDiv') {
+            const hasTweet = next.querySelector('[data-testid="tweet"]');
+            const hasUserCell = next.querySelector('[data-testid="UserCell"]');
+            const hasShowMore = next.querySelector('a[href*="/i/connect_people"]');
+            const isEmpty = next.textContent.trim() === '';
+
+            if (hasTweet) {
+              // ツイート（タイムライン再開）に達したら終了
+              break;
+            }
+
+            if (hasUserCell || hasShowMore || isEmpty) {
+              if (next.style.display !== 'none') {
+                next.style.setProperty('display', 'none', 'important');
+              }
+            } else {
+              break;
+            }
+          } else {
+            break;
+          }
+          next = next.nextElementSibling;
+        }
+      }
+    });
+  }
+
   // ============================================================
   // 3. MutationObserver（追加ノードのみ処理・RAF でバッチ化）
   // ============================================================
@@ -828,6 +906,7 @@
       applyProfileRetweetVisibility(roots);
       cleanDiscoverMore();            // 「もっと見つける」非表示
       cleanExplorePage();             // 「話題を検索」ページのクリーンアップ
+      cleanProfileRecommendations();  // プロフィールページの「おすすめユーザー」非表示
       setTimeout(() => clickShowOriginalButtons(roots), 0); // ペイント後に遅延実行
     });
   }
@@ -853,6 +932,7 @@
     applyProfileRetweetVisibility(roots);
     cleanDiscoverMore();
     cleanExplorePage();            // 「話題を検索」ページのクリーンアップ
+    cleanProfileRecommendations(); // プロフィールページの「おすすめユーザー」非表示
     clickShowOriginalButtons(roots);
   }
 
