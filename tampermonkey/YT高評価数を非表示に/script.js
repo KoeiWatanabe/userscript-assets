@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeのレイアウト調整
 // @namespace    https://example.com/
-// @version      3.9.0
-// @description  YouTubeのレイアウトを調整する（高評価数の表示制御、ライブチャット文字サイズ調整、プレイリスト位置調整、Hideボタンの非表示など）
+// @version      3.10.0
+// @description  YouTubeのレイアウトを調整する（高評価数の表示制御、ライブチャット文字サイズ調整、プレイリスト位置調整、Hideボタンの非表示、文字起こし文字サイズ調整など）
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_addStyle
@@ -17,6 +17,8 @@
   const HITBOX_PAD = 6;
   const OPEN_WIDTH = 100;
   const LIVE_CHAT_FONT_SIZE = '110%';
+  const TRANSCRIPT_FONT_SIZE = '1.6rem';
+  const TRANSCRIPT_LINE_HEIGHT = '2.2rem';
 
   const HOVER_DELAY = 80;
   const WIDTH_DURATION = 140;
@@ -165,6 +167,18 @@
       ${textSelector} {
         transition: none !important;
       }
+    }
+
+    /* =========================================================
+       8) 文字起こし（Transcript）パネルのフォントサイズ変更
+       ========================================================= */
+    ytd-transcript-segment-renderer .segment-text {
+      font-size: ${TRANSCRIPT_FONT_SIZE} !important;
+      line-height: ${TRANSCRIPT_LINE_HEIGHT} !important;
+    }
+
+    ytd-transcript-segment-renderer .segment-timestamp {
+      font-size: 1.3rem !important;
     }
   `;
 
