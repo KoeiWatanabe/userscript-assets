@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeコメント欄の名前をもとに戻す＋
 // @namespace    https://example.com/
-// @version      1.0.6
+// @version      1.0.7
 // @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
 // @match        https://www.youtube.com/*
 // @match        https://www.youtube.com/live_chat*
@@ -54,51 +54,13 @@
     'ytd-author-comment-badge-renderer a#name[href^="/@"]';
   const COMMENT_ATTRIBUTION_TEXT_SEL =
     'ytd-pinned-comment-badge-renderer #label';
-  const decodeCache = new Map();
-  const DECODE_CACHE_MAX = 2000;
 
   function decodeEntities(s) {
-    if (s == null) return '';
-    const text = String(s);
+    const text = String(s ?? '');
     if (!text.includes('&')) return text;
-
-    const cached = decodeCache.get(text);
-    if (cached !== undefined) return cached;
-
-    const named = {
-      amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00A0',
-      hellip: '…', ndash: '–', mdash: '—', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”',
-      laquo: '«', raquo: '»', middot: '·', bull: '•',
-      copy: '©', reg: '®', trade: '™', deg: '°', plusmn: '±', times: '×', divide: '÷', micro: 'µ',
-      yen: '¥', euro: '€', pound: '£', cent: '¢',
-      frac14: '¼', frac12: '½', frac34: '¾', sup1: '¹', sup2: '²', sup3: '³',
-    };
-
-    let decoded = text.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]+);/g, (match, entity) => {
-      if (entity[0] === '#') {
-        const isHex = (entity[1] || '').toLowerCase() === 'x';
-        const num = parseInt(isHex ? entity.slice(2) : entity.slice(1), isHex ? 16 : 10);
-        if (!Number.isFinite(num)) return match;
-        try { return String.fromCodePoint(num); } catch { return match; }
-      }
-      const key = entity.toLowerCase();
-      return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : match;
-    });
-
-    if (/&[a-zA-Z][a-zA-Z0-9]+;/.test(decoded)) {
-      try {
-        const doc = new DOMParser().parseFromString(`<textarea>${decoded}</textarea>`, 'text/html');
-        const textarea = doc && doc.querySelector('textarea');
-        if (textarea && typeof textarea.value === 'string') decoded = textarea.value;
-      } catch { }
-    }
-
-    decodeCache.set(text, decoded);
-    if (decodeCache.size > DECODE_CACHE_MAX) {
-      const firstKey = decodeCache.keys().next().value;
-      if (firstKey !== undefined) decodeCache.delete(firstKey);
-    }
-    return decoded;
+    const el = document.createElement('textarea');
+    el.innerHTML = text;
+    return el.value;
   }
 
   function normalizeDisplayName(name) {
@@ -124,10 +86,6 @@
   function extractHandleFromHref(href) {
     const m = href && href.match(/\/@([A-Za-z0-9._-]{2,})/);
     return m ? '@' + m[1] : null;
-  }
-
-  function replaceAllLiteral(text, needle, replacement) {
-    return String(text || '').split(needle).join(replacement);
   }
 
   class LRU {
@@ -387,7 +345,7 @@
     for (const label of commentRoot.querySelectorAll(COMMENT_ATTRIBUTION_TEXT_SEL)) {
       const text = label.textContent || '';
       if (!text.includes(handle)) continue;
-      label.textContent = replaceAllLiteral(text, handle, name);
+      label.textContent = text.replaceAll(handle, name);
       label.dataset.ytNameRestored = '1';
       label.dataset.originalHandle = handle;
     }
