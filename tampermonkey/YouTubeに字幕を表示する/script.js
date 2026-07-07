@@ -1192,7 +1192,7 @@
 
     const svg = createSvgIcon(
       LOAD_BUTTON_SVG_PATH,
-      "0 -960 960 960",
+      "-30 -960 1020 960",
       getLoadButtonPathTransform()
     );
     svg.setAttribute("class", "ytsrt-load-button__icon");
