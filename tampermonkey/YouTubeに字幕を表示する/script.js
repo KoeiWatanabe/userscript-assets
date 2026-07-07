@@ -1,14 +1,13 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      2.1.0
+// @version      2.2.0
 // @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
-// @grant        unsafeWindow
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/script.js
 // @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/icon_128.png
@@ -155,21 +154,6 @@
     };
   }
 
-  function waitForCurrentLiveBroadcastState(videoId, timeoutMs = 3000) {
-    return new Promise((resolve) => {
-      const deadline = Date.now() + timeoutMs;
-      const tick = () => {
-        const liveState = getPageLiveState();
-        if ((liveState.videoId === videoId && liveState.ready) || Date.now() >= deadline) {
-          resolve(liveState.videoId === videoId && liveState.ready && liveState.isLive);
-          return;
-        }
-        setTimeout(tick, 50);
-      };
-      tick();
-    });
-  }
-
   function isCustomCaptionDisabledForCurrentPage() {
     return state.currentPageIsLive;
   }
@@ -229,10 +213,6 @@
 
   function gmDelete(key) {
     try { GM_deleteValue(key); } catch { /* ignore */ }
-  }
-
-  function clearChildren(node) {
-    while (node.firstChild) node.removeChild(node.firstChild);
   }
 
   function stashAttribute(node, attributeName, datasetKey) {
@@ -313,7 +293,6 @@
       renderCurrentCue();
     } else {
       renderOverlay("");
-      if (mode !== CAPTION_MODE.CUSTOM) state.renderedBody = "";
     }
 
     syncSubtitlesButtonState();
@@ -350,7 +329,6 @@
 
     if (nextMode !== CAPTION_MODE.CUSTOM) {
       renderOverlay("");
-      state.renderedBody = "";
     }
 
     syncSubtitlesButtonState();
@@ -709,7 +687,7 @@
 
   // ── Body rendering ────────────────────────────────────────────────────────
   function renderBodyInto(container, body) {
-    clearChildren(container);
+    container.replaceChildren();
 
     const TAG_RE = /<(\/?)(i|b|u)\s*>|<\/?font\b[^>]*>|\n/gi;
     const stack = [container];
@@ -1163,7 +1141,7 @@
     const arrowNodes = Array.from(contentNode.children).filter((child) =>
       child.querySelector("svg, path")
     );
-    clearChildren(contentNode);
+    contentNode.replaceChildren();
 
     const summary = document.createElement("span");
     summary.className = "ytsrt-menuitem-status";
@@ -1175,7 +1153,7 @@
   function replaceMenuItemIcon(item, iconNode) {
     const icon = item?.querySelector(".ytp-menuitem-icon");
     if (!icon) return;
-    clearChildren(icon);
+    icon.replaceChildren();
     if (iconNode) icon.appendChild(iconNode);
   }
 
@@ -1273,30 +1251,11 @@
     });
   }
 
-  function forceSubtitlesButtonFillOpacity(button) {
-    button.querySelectorAll("[fill-opacity]").forEach((el) => {
-      if (!el.dataset.ytsrtOriginalFillOpacity) {
-        el.dataset.ytsrtOriginalFillOpacity = el.getAttribute("fill-opacity") || "";
-      }
-      el.setAttribute("fill-opacity", "1");
-    });
-  }
-
-  function restoreSubtitlesButtonFillOpacity(button) {
-    button.querySelectorAll("[data-ytsrt-original-fill-opacity]").forEach((el) => {
-      const original = el.dataset.ytsrtOriginalFillOpacity;
-      if (original) el.setAttribute("fill-opacity", original);
-      else el.removeAttribute("fill-opacity");
-      delete el.dataset.ytsrtOriginalFillOpacity;
-    });
-  }
-
   function hasManagedSubtitlesButtonState(button) {
     if (!button) return false;
     return button.dataset.ytsrtManaged === "1" ||
       button.dataset.ytsrtForcedActive === "1" ||
       !!getCustomSubtitlesButtonIcon(button) ||
-      !!button.querySelector("[data-ytsrt-original-fill-opacity]") ||
       SUBTITLES_BUTTON_STASHED_ATTRIBUTES.some(([, datasetKey]) => datasetKey in button.dataset);
   }
 
@@ -1332,7 +1291,6 @@
     button.classList.remove("ytp-button-disabled");
     button.tabIndex = 0;
     syncSubtitlesButtonIcon(button, customActive);
-    forceSubtitlesButtonFillOpacity(button);
     syncForcedSubtitlesButtonActiveState(button, active);
   }
 
@@ -1341,7 +1299,6 @@
     syncForcedSubtitlesButtonActiveState(button, false, resetActiveClass);
     restoreManagedSubtitlesButtonAttributes(button);
     button.removeAttribute("aria-disabled");
-    restoreSubtitlesButtonFillOpacity(button);
     delete button.dataset.ytsrtManaged;
   }
 
@@ -1549,7 +1506,7 @@
       renderBodyInto(inner, nextBody);
       overlay.classList.add("--visible");
     } else {
-      clearChildren(inner);
+      inner.replaceChildren();
       overlay.classList.remove("--visible");
     }
 
@@ -2102,18 +2059,6 @@
   }
 
   // ── Load / route handling ─────────────────────────────────────────────────
-  function waitForPlayer(timeoutMs = 10000) {
-    return new Promise((resolve) => {
-      const deadline = Date.now() + timeoutMs;
-      const tick = () => {
-        if (getPlayer() && getVideo()) return resolve(true);
-        if (Date.now() > deadline) return resolve(false);
-        setTimeout(tick, 150);
-      };
-      tick();
-    });
-  }
-
   async function loadCaptionText(raw, {
     persist = false,
     persistVideoId = state.currentVideoId,
@@ -2132,7 +2077,7 @@
     }
 
     if (
-      !await waitForPlayer() ||
+      !await waitForCondition(() => getPlayer() && getVideo(), 10000, 150) ||
       routeToken !== state.routeToken ||
       isCustomCaptionDisabledForCurrentPage()
     ) {
@@ -2240,10 +2185,14 @@
     if (!videoId) return;
 
     state.currentVideoId = videoId;
-    const ready = await waitForPlayer();
+    const ready = await waitForCondition(() => getPlayer() && getVideo(), 10000, 150);
     if (!ready || routeToken !== state.routeToken || videoId !== getVideoId()) return;
 
-    const pageIsLive = await waitForCurrentLiveBroadcastState(videoId);
+    const liveReady = await waitForCondition(() => {
+      const liveState = getPageLiveState();
+      return liveState.videoId === videoId && liveState.ready;
+    }, 3000, 50);
+    const pageIsLive = liveReady && getPageLiveState().isLive;
     if (routeToken !== state.routeToken || videoId !== getVideoId()) return;
 
     state.currentPageIsLive = pageIsLive;
@@ -2335,71 +2284,7 @@
   }
 
   // ── Startup ───────────────────────────────────────────────────────────────
-  function installPageLiveStateReader(pageWindow) {
-    if (!pageWindow) return false;
-    if (pageWindow.__ytsrtLiveStateReaderInstalled) return true;
-    pageWindow.__ytsrtLiveStateReaderInstalled = true;
-
-    const pageDocument = pageWindow.document;
-
-    const getVideoIdFromUrl = () => {
-      const q = new URLSearchParams(pageWindow.location.search).get("v");
-      if (q) return q;
-      const m = pageWindow.location.pathname.match(/^\/(?:live|embed)\/([^/?#]+)/);
-      return m ? m[1] : "";
-    };
-
-    const getPlayerResponse = () => {
-      const player = pageDocument.querySelector(PLAYER_SELECTOR);
-      if (typeof player?.getPlayerResponse === "function") {
-        try {
-          const response = player.getPlayerResponse();
-          if (response) return response;
-        } catch {
-          // Keep the bridge silent.
-        }
-      }
-      return pageWindow.ytInitialPlayerResponse || null;
-    };
-
-    const syncLiveState = () => {
-      const response = getPlayerResponse();
-      const liveDetails = response?.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
-      const videoId = response?.videoDetails?.videoId || getVideoIdFromUrl();
-      const isLiveNow = liveDetails?.isLiveNow === true;
-
-      pageDocument.documentElement.setAttribute(LIVE_STATE_ATTR, isLiveNow ? "1" : "0");
-      pageDocument.documentElement.setAttribute(LIVE_STATE_READY_ATTR, response ? "1" : "0");
-      if (videoId) {
-        pageDocument.documentElement.setAttribute(LIVE_STATE_VIDEO_ID_ATTR, videoId);
-      } else {
-        pageDocument.documentElement.removeAttribute(LIVE_STATE_VIDEO_ID_ATTR);
-      }
-    };
-
-    const scheduleLiveStateSync = () => {
-      syncLiveState();
-      pageWindow.setTimeout(syncLiveState, 250);
-      pageWindow.setTimeout(syncLiveState, 1000);
-      pageWindow.setTimeout(syncLiveState, 2000);
-      pageWindow.setTimeout(syncLiveState, 3000);
-    };
-
-    scheduleLiveStateSync();
-    pageWindow.addEventListener("yt-navigate-finish", scheduleLiveStateSync);
-    pageWindow.addEventListener("yt-page-data-updated", scheduleLiveStateSync);
-    return true;
-  }
-
   function injectPageLiveStateReader() {
-    try {
-      if (typeof unsafeWindow !== "undefined" && installPageLiveStateReader(unsafeWindow)) {
-        return;
-      }
-    } catch {
-      // Fall back to script-tag injection below.
-    }
-
     const script = document.createElement("script");
     script.textContent = `
 (() => {
