@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      2.2.0
+// @version      2.2.1
 // @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
+// @grant        unsafeWindow
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/script.js
 // @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeに字幕を表示する/icon_128.png
@@ -2284,7 +2285,71 @@
   }
 
   // ── Startup ───────────────────────────────────────────────────────────────
+  function installPageLiveStateReader(pageWindow) {
+    if (!pageWindow) return false;
+    if (pageWindow.__ytsrtLiveStateReaderInstalled) return true;
+    pageWindow.__ytsrtLiveStateReaderInstalled = true;
+
+    const pageDocument = pageWindow.document;
+
+    const getVideoIdFromUrl = () => {
+      const q = new URLSearchParams(pageWindow.location.search).get("v");
+      if (q) return q;
+      const m = pageWindow.location.pathname.match(/^\/(?:live|embed)\/([^/?#]+)/);
+      return m ? m[1] : "";
+    };
+
+    const getPlayerResponse = () => {
+      const player = pageDocument.querySelector(PLAYER_SELECTOR);
+      if (typeof player?.getPlayerResponse === "function") {
+        try {
+          const response = player.getPlayerResponse();
+          if (response) return response;
+        } catch {
+          // Keep the bridge silent.
+        }
+      }
+      return pageWindow.ytInitialPlayerResponse || null;
+    };
+
+    const syncLiveState = () => {
+      const response = getPlayerResponse();
+      const liveDetails = response?.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
+      const videoId = response?.videoDetails?.videoId || getVideoIdFromUrl();
+      const isLiveNow = liveDetails?.isLiveNow === true;
+
+      pageDocument.documentElement.setAttribute(LIVE_STATE_ATTR, isLiveNow ? "1" : "0");
+      pageDocument.documentElement.setAttribute(LIVE_STATE_READY_ATTR, response ? "1" : "0");
+      if (videoId) {
+        pageDocument.documentElement.setAttribute(LIVE_STATE_VIDEO_ID_ATTR, videoId);
+      } else {
+        pageDocument.documentElement.removeAttribute(LIVE_STATE_VIDEO_ID_ATTR);
+      }
+    };
+
+    const scheduleLiveStateSync = () => {
+      syncLiveState();
+      pageWindow.setTimeout(syncLiveState, 250);
+      pageWindow.setTimeout(syncLiveState, 1000);
+      pageWindow.setTimeout(syncLiveState, 2000);
+      pageWindow.setTimeout(syncLiveState, 3000);
+    };
+
+    scheduleLiveStateSync();
+    pageWindow.addEventListener("yt-navigate-finish", scheduleLiveStateSync);
+    pageWindow.addEventListener("yt-page-data-updated", scheduleLiveStateSync);
+    return true;
+  }
+
   function injectPageLiveStateReader() {
+    try {
+      if (typeof unsafeWindow !== "undefined" && installPageLiveStateReader(unsafeWindow)) {
+        return;
+      }
+    } catch {
+      // Fall back to script-tag injection below.
+    }
+
     const script = document.createElement("script");
     script.textContent = `
 (() => {
