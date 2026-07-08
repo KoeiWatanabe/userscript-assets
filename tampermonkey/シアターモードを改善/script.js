@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         シアターモードを改善
 // @namespace    https://tampermonkey.net/
-// @version      1.3.2
-// @description  YouTube のシアターモード（Theater mode）表示を Default view 相当に固定し、動画アスペクト比に追従して黒帯・クリップを排除する。シアターモード時のヘッダー強制ダーク化も抑制
+// @version      1.4.0
+// @description  YouTube のシアターモード（Theater mode）表示を Default view 相当に固定し、動画アスペクト比に追従して黒帯・クリップを排除する。プレイヤー周辺に Default view 相当の余白を確保し、チャット上部をプレイヤーに揃える。シアターモード時のヘッダー強制ダーク化も抑制
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/シアターモードを改善/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/シアターモードを改善/script.js
@@ -33,8 +33,8 @@ ytd-watch-flexy[theater] #player {
   display: block !important;
   position: absolute !important;
   top: 12px !important;
-  left: 0 !important;
-  right: var(--tdv-chat-w, 0px) !important;
+  left: var(--tdv-pad, 16px) !important;
+  right: calc(var(--tdv-chat-w, 0px) + var(--tdv-pad, 16px)) !important;
   margin: 0 !important;
   height: var(--tdv-h, 656px) !important;
 }
@@ -79,6 +79,11 @@ ytd-watch-flexy[theater] #movie_player .html5-main-video {
   width: 100% !important;
   height: 100% !important;
   object-fit: cover !important;
+}
+
+ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#chat {
+  margin-top: 12px !important;
+  height: calc(100vh - 56px - 12px) !important;
 }
 `;
 
@@ -162,7 +167,8 @@ ytd-watch-flexy[theater] #movie_player .html5-main-video {
 
       const chatW = chatWidth(flexy);
       flexy.style.setProperty('--tdv-chat-w', chatW + 'px');
-      const availW = Math.max(0, flexy.clientWidth - chatW);
+      flexy.style.setProperty('--tdv-pad', '16px');
+      const availW = Math.max(0, flexy.clientWidth - chatW - 32);
 
       const v = mp.querySelector('video');
       const size = sizeFor(v, availW);
