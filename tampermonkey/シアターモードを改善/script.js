@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         シアターモードを改善
 // @namespace    https://tampermonkey.net/
-// @version      1.4.0
+// @version      1.4.1
 // @description  YouTube のシアターモード（Theater mode）表示を Default view 相当に固定し、動画アスペクト比に追従して黒帯・クリップを排除する。プレイヤー周辺に Default view 相当の余白を確保し、チャット上部をプレイヤーに揃える。シアターモード時のヘッダー強制ダーク化も抑制
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/シアターモードを改善/script.js
@@ -91,12 +91,10 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     (document.head || document.documentElement).appendChild(s);
   }
 
-  // Default view 最大プレイヤー高: calc(100vh - 56px - 12px - 92px)
   function maxHeight() {
     return Math.max(320, window.innerHeight - 56 - 12 - 92);
   }
 
-  // チャットが expanded（右側に fixed 浮き出し）状態のときその幅を返す
   function chatWidth(flexy) {
     if (!flexy || !flexy.hasAttribute('live-chat-present-and-expanded')) return 0;
     const chat = document.querySelector('ytd-live-chat-frame#chat');
@@ -108,7 +106,7 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
   function sizeFor(video, availW) {
     if (!video || !video.videoWidth || !video.videoHeight) return null;
     const h = maxHeight();
-    const wHard = h * 2; // calc(...*(1/0.5))
+    const wHard = h * 2;
     const wMax = Math.min(wHard, Math.max(0, availW));
     const ratio = video.videoWidth / video.videoHeight;
     let w = ratio * h;
@@ -120,15 +118,15 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     return { w: Math.round(w * 100) / 100, h: Math.round(h2 * 100) / 100 };
   }
 
-  let originalParent = null; // Theater 化前の movie_player の本来の親（= `container`）
+  let originalParent = null;
   let vidHooked = null;
   let mastheadMo = null;
+  let mo = null;
+  // ponytail: flexy / mp / slot をキャッシュ。apply() 呼び出し毎の querySelector を省く
+  let flexyEl = null, mpEl = null, slotEl = null;
 
-  // Theater 中、YouTube は #masthead に dark 属性を強制付与してライトモードでも
-  // ヘッダーを暗色化する。これを除去すれば #background 以下が <html> の主题に追従し、
-  // ライト時は白、ダーク時は暗色（既定と同色）になる。
   function stripTheaterMastheadDark() {
-    const flexy = document.querySelector('ytd-watch-flexy');
+    const flexy = flexyEl || document.querySelector('ytd-watch-flexy');
     if (!flexy || !flexy.hasAttribute('theater')) return;
     const m = document.querySelector('ytd-masthead#masthead');
     if (m && m.hasAttribute('dark')) m.removeAttribute('dark');
@@ -144,15 +142,14 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
   }
 
   function apply() {
-    const flexy = document.querySelector('ytd-watch-flexy');
+    const flexy = flexyEl || document.querySelector('ytd-watch-flexy');
     if (!flexy) return;
-    const mp = document.querySelector('#movie_player');
+    const mp = mpEl || document.querySelector('#movie_player');
     if (!mp) return;
-    const slot = document.querySelector('#primary-inner > #player > #player-container-outer');
+    const slot = slotEl || document.querySelector('#primary-inner > #player > #player-container-outer');
     if (!slot) return;
 
     if (flexy.hasAttribute('theater')) {
-      // Theater 化時に一度だけ元の親を退避
       if (!originalParent && mp.parentElement && mp.parentElement !== slot) {
         originalParent = mp.parentElement;
       }
@@ -174,8 +171,6 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
         v.addEventListener('loadedmetadata', schedule, { once: true });
       }
     } else {
-      // Default に戻すとき本来の親へ復元
-      // ponytail: SPA遷移で originalParent が null になる場合、ytd-player>#container をフォールバック
       const defaultParent = originalParent || document.querySelector('ytd-player > #container');
       if (defaultParent && mp.parentElement !== defaultParent) {
         defaultParent.appendChild(mp);
@@ -183,25 +178,30 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     }
   }
 
-  // ponytail: rAF デバウンス。MO(subtree) / resize の連続発火を1フレーム1回に束ねる
+  // ponytail: rAF デバウンス。MO / resize の連続発火を1フレーム1回に束ねる
   let rafId = 0;
   function schedule() {
     if (rafId) return;
     rafId = requestAnimationFrame(() => { rafId = 0; apply(); });
   }
 
-  let mo = null;
   function watch() {
     const flexy = document.querySelector('ytd-watch-flexy');
     if (!flexy) return false;
+    flexyEl = flexy;
+    mpEl = document.querySelector('#movie_player');
+    slotEl = document.querySelector('#primary-inner > #player > #player-container-outer');
     watchMasthead();
     if (mo) mo.disconnect();
-    mo = new MutationObserver(schedule);
+    mo = new MutationObserver(() => {
+      schedule();
+      // ponytail: Polymer の dom-move が非同期の場合に備え遅延再適用。属性変化はユーザー操作時のみで稀
+      setTimeout(schedule, 100);
+    });
+    // ponytail: attributes のみ監視。subtree/childList を落とし再生中の無駄発火を排除
     mo.observe(flexy, {
       attributes: true,
       attributeFilter: ['theater', 'live-chat-present-and-expanded'],
-      childList: true,
-      subtree: true,
     });
     return true;
   }
@@ -222,9 +222,11 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     }
   }
 
-  // SPA 遷移。動画切り替えで #player-container が再構築されるため、originalParent は再取得させる
+  // SPA 遷移。動画切り替えで #player-container が再構築されるため、キャッシュと originalParent は再取得
   window.addEventListener('yt-navigate-finish', () => {
     originalParent = null;
+    vidHooked = null;
+    flexyEl = mpEl = slotEl = null;
     setTimeout(() => { watch(); schedule(); }, 50);
     setTimeout(schedule, 300);
     setTimeout(schedule, 1000);
