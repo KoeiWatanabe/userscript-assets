@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Twitterのメトリクスを非表示に
+// @name         Twitterのレイアウト調整
 // @namespace    https://tampermonkey.net/
 // @version      1.15.0
 // @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示・プロフィールのおすすめユーザー非表示
