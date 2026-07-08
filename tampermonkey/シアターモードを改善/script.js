@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         シアターモードを改善
 // @namespace    https://tampermonkey.net/
-// @version      1.3.1
+// @version      1.3.2
 // @description  YouTube のシアターモード（Theater mode）表示を Default view 相当に固定し、動画アスペクト比に追従して黒帯・クリップを排除する。シアターモード時のヘッダー強制ダーク化も抑制
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/シアターモードを改善/script.js
@@ -176,8 +176,10 @@ ytd-watch-flexy[theater] #movie_player .html5-main-video {
       return 'applied-theater';
     } else {
       // Default に戻すとき本来の親へ復元
-      if (originalParent && mp.parentElement !== originalParent) {
-        originalParent.appendChild(mp);
+      // ponytail: SPA遷移で originalParent が null になる場合、ytd-player>#container をフォールバック
+      const defaultParent = originalParent || document.querySelector('ytd-player > #container');
+      if (defaultParent && mp.parentElement !== defaultParent) {
+        defaultParent.appendChild(mp);
       }
       return 'kept-default';
     }
