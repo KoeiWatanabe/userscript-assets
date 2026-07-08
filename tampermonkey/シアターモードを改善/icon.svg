@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="256" height="256">
+  <!-- Open Movie Clapperboard and YouTube Logo Mashup (Fixed ViewBox Cutoff) -->
+  
+  <g transform="translate(0, 8)">
+    <!-- Group for the rotating Top Clapper Bar (hinged at bottom-left corner: 10, 35) -->
+    <g transform="rotate(-15 10 35)">
+      <!-- Top Bar Shape -->
+      <path d="M 10,35 L 10,27 A 10,10 0 0 1 20,17 L 80,17 A 10,10 0 0 1 90,27 L 90,35 Z" fill="none" stroke="#212121" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+      
+      <!-- Stripes on the Top Bar -->
+      <line x1="26" y1="35" x2="36" y2="17" stroke="#212121" stroke-width="6" stroke-linecap="round" />
+      <line x1="46" y1="35" x2="56" y2="17" stroke="#212121" stroke-width="6" stroke-linecap="round" />
+      <line x1="66" y1="35" x2="76" y2="17" stroke="#212121" stroke-width="6" stroke-linecap="round" />
+    </g>
+    
+    <!-- Bottom Board Shape -->
+    <path d="M 10,35 L 90,35 L 90,73 A 10,10 0 0 1 80,83 L 20,83 A 10,10 0 0 1 10,73 Z" fill="none" stroke="#212121" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+    
+    <!-- YouTube Logo -->
+    <rect x="26" y="43" width="48" height="32" rx="8" ry="8" fill="#FF0000" />
+    <polygon points="46,53 46,65 56,59" fill="#FFFFFF" />
+  </g>
+</svg>
