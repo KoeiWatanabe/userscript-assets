@@ -21,10 +21,6 @@ ytd-watch-flexy[theater] #cinematics-full-bleed-container,
 ytd-watch-flexy[theater] #panels-full-bleed-container,
 ytd-watch-flexy[theater] #player-full-bleed-container {
   display: none !important;
-  background: transparent !important;
-  position: static !important;
-  width: auto !important;
-  height: auto !important;
 }
 
 ytd-watch-flexy[theater] { position: relative !important; }
@@ -33,8 +29,8 @@ ytd-watch-flexy[theater] #player {
   display: block !important;
   position: absolute !important;
   top: 12px !important;
-  left: var(--tdv-pad, 16px) !important;
-  right: calc(var(--tdv-chat-w, 0px) + var(--tdv-pad, 16px)) !important;
+  left: 16px !important;
+  right: calc(var(--tdv-chat-w, 0px) + 16px) !important;
   margin: 0 !important;
   height: var(--tdv-h, 656px) !important;
 }
@@ -140,21 +136,20 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
 
   function watchMasthead() {
     const m = document.querySelector('ytd-masthead#masthead');
-    if (!m) return false;
+    if (!m) return;
     if (mastheadMo) mastheadMo.disconnect();
     mastheadMo = new MutationObserver(stripTheaterMastheadDark);
     mastheadMo.observe(m, { attributes: true, attributeFilter: ['dark'] });
     stripTheaterMastheadDark();
-    return true;
   }
 
   function apply() {
     const flexy = document.querySelector('ytd-watch-flexy');
-    if (!flexy) return 'no-flexy';
+    if (!flexy) return;
     const mp = document.querySelector('#movie_player');
-    if (!mp) return 'no-mp';
+    if (!mp) return;
     const slot = document.querySelector('#primary-inner > #player > #player-container-outer');
-    if (!slot) return 'no-slot';
+    if (!slot) return;
 
     if (flexy.hasAttribute('theater')) {
       // Theater 化時に一度だけ元の親を退避
@@ -167,7 +162,6 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
 
       const chatW = chatWidth(flexy);
       flexy.style.setProperty('--tdv-chat-w', chatW + 'px');
-      flexy.style.setProperty('--tdv-pad', '16px');
       const availW = Math.max(0, flexy.clientWidth - chatW - 32);
 
       const v = mp.querySelector('video');
@@ -177,9 +171,8 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
         flexy.style.setProperty('--tdv-h', size.h + 'px');
       } else if (v && v !== vidHooked) {
         vidHooked = v;
-        v.addEventListener('loadedmetadata', apply, { once: true });
+        v.addEventListener('loadedmetadata', schedule, { once: true });
       }
-      return 'applied-theater';
     } else {
       // Default に戻すとき本来の親へ復元
       // ponytail: SPA遷移で originalParent が null になる場合、ytd-player>#container をフォールバック
@@ -187,8 +180,14 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
       if (defaultParent && mp.parentElement !== defaultParent) {
         defaultParent.appendChild(mp);
       }
-      return 'kept-default';
     }
+  }
+
+  // ponytail: rAF デバウンス。MO(subtree) / resize の連続発火を1フレーム1回に束ねる
+  let rafId = 0;
+  function schedule() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => { rafId = 0; apply(); });
   }
 
   let mo = null;
@@ -197,7 +196,7 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     if (!flexy) return false;
     watchMasthead();
     if (mo) mo.disconnect();
-    mo = new MutationObserver(apply);
+    mo = new MutationObserver(schedule);
     mo.observe(flexy, {
       attributes: true,
       attributeFilter: ['theater', 'live-chat-present-and-expanded'],
@@ -214,24 +213,24 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
       const obs = new MutationObserver((_, o) => {
         if (watch()) {
           o.disconnect();
-          apply();
+          schedule();
         }
       });
       obs.observe(document.documentElement, { childList: true, subtree: true });
     } else {
-      apply();
+      schedule();
     }
   }
 
   // SPA 遷移。動画切り替えで #player-container が再構築されるため、originalParent は再取得させる
   window.addEventListener('yt-navigate-finish', () => {
     originalParent = null;
-    setTimeout(() => { watch(); apply(); }, 50);
-    setTimeout(apply, 300);
-    setTimeout(apply, 1000);
+    setTimeout(() => { watch(); schedule(); }, 50);
+    setTimeout(schedule, 300);
+    setTimeout(schedule, 1000);
   });
 
-  window.addEventListener('resize', apply);
+  window.addEventListener('resize', schedule);
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', bootstrap);
