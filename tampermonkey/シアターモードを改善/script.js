@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         シアターモードを改善
 // @namespace    https://tampermonkey.net/
-// @version      1.2.0
-// @description  YouTube のシアターモード（Theater mode）表示を Default view 相当に固定し、動画アスペクト比に追従して黒帯・クリップを排除する
+// @version      1.3.0
+// @description  YouTube のシアターモード（Theater mode）表示を Default view 相当に固定し、動画アスペクト比に追従して黒帯・クリップを排除する。シアターモード時のヘッダー強制ダーク化も抑制
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/シアターモードを改善/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/シアターモードを改善/script.js
@@ -119,6 +119,27 @@ ytd-watch-flexy[theater] #movie_player .html5-main-video {
 
   let originalParent = null; // Theater 化前の movie_player の本来の親（= `container`）
   let vidHooked = null;
+  let mastheadMo = null;
+
+  // Theater 中、YouTube は #masthead に dark 属性を強制付与してライトモードでも
+  // ヘッダーを暗色化する。これを除去すれば #background 以下が <html> の主题に追従し、
+  // ライト時は白、ダーク時は暗色（既定と同色）になる。
+  function stripTheaterMastheadDark() {
+    const flexy = document.querySelector('ytd-watch-flexy');
+    if (!flexy || !flexy.hasAttribute('theater')) return;
+    const m = document.querySelector('ytd-masthead#masthead');
+    if (m && m.hasAttribute('dark')) m.removeAttribute('dark');
+  }
+
+  function watchMasthead() {
+    const m = document.querySelector('ytd-masthead#masthead');
+    if (!m) return false;
+    if (mastheadMo) mastheadMo.disconnect();
+    mastheadMo = new MutationObserver(stripTheaterMastheadDark);
+    mastheadMo.observe(m, { attributes: true, attributeFilter: ['dark'] });
+    stripTheaterMastheadDark();
+    return true;
+  }
 
   function apply() {
     const flexy = document.querySelector('ytd-watch-flexy');
@@ -134,6 +155,8 @@ ytd-watch-flexy[theater] #movie_player .html5-main-video {
         originalParent = mp.parentElement;
       }
       if (mp.parentElement !== slot) slot.appendChild(mp);
+
+      stripTheaterMastheadDark();
 
       const chatW = chatWidth(flexy);
       flexy.style.setProperty('--tdv-chat-w', chatW + 'px');
@@ -162,6 +185,7 @@ ytd-watch-flexy[theater] #movie_player .html5-main-video {
   function watch() {
     const flexy = document.querySelector('ytd-watch-flexy');
     if (!flexy) return false;
+    watchMasthead();
     if (mo) mo.disconnect();
     mo = new MutationObserver(apply);
     mo.observe(flexy, {
@@ -175,6 +199,7 @@ ytd-watch-flexy[theater] #movie_player .html5-main-video {
 
   function bootstrap() {
     installStyle();
+    watchMasthead();
     if (!watch()) {
       const obs = new MutationObserver((_, o) => {
         if (watch()) {
