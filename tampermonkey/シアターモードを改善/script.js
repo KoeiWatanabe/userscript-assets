@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         シアターモードを改善
 // @namespace    https://tampermonkey.net/
-// @version      1.4.1
+// @version      1.6.0
 // @description  YouTube のシアターモード（Theater mode）表示を Default view 相当に固定し、動画アスペクト比に追従して黒帯・クリップを排除する。プレイヤー周辺に Default view 相当の余白を確保し、チャット上部をプレイヤーに揃える。シアターモード時のヘッダー強制ダーク化も抑制
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/シアターモードを改善/script.js
@@ -23,7 +23,14 @@ ytd-watch-flexy[theater] #player-full-bleed-container {
   display: none !important;
 }
 
-ytd-watch-flexy[theater] { position: relative !important; }
+ytd-watch-flexy[theater] {
+  position: relative !important;
+  container-type: inline-size;
+  --tdv-h-max: max(320px, calc(100vh - 56px - 12px - 92px));
+  --tdv-avail-w: calc(100cqw - var(--tdv-chat-w, 0px) - 32px);
+  --tdv-w: min(calc(var(--tdv-h-max) * var(--tdv-ratio, 1.77778)), calc(var(--tdv-h-max) * 2), var(--tdv-avail-w));
+  --tdv-h: calc(var(--tdv-w) / var(--tdv-ratio, 1.77778));
+}
 
 ytd-watch-flexy[theater] #player {
   display: block !important;
@@ -44,6 +51,7 @@ ytd-watch-flexy[theater] #player-container-outer {
   width: var(--tdv-w, 1166.22px) !important;
   height: var(--tdv-h, 656px) !important;
   max-width: var(--tdv-w, 1166.22px) !important;
+  min-width: 0 !important;
   position: relative !important;
   border-radius: 12px !important;
   overflow: hidden !important;
@@ -91,10 +99,6 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     (document.head || document.documentElement).appendChild(s);
   }
 
-  function maxHeight() {
-    return Math.max(320, window.innerHeight - 56 - 12 - 92);
-  }
-
   function chatWidth(flexy) {
     if (!flexy || !flexy.hasAttribute('live-chat-present-and-expanded')) return 0;
     const chat = document.querySelector('ytd-live-chat-frame#chat');
@@ -103,39 +107,28 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     return w > 0 ? Math.ceil(w) : 0;
   }
 
-  function sizeFor(video, availW) {
-    if (!video || !video.videoWidth || !video.videoHeight) return null;
-    const h = maxHeight();
-    const wHard = h * 2;
-    const wMax = Math.min(wHard, Math.max(0, availW));
-    const ratio = video.videoWidth / video.videoHeight;
-    let w = ratio * h;
-    let h2 = h;
-    if (w > wMax) {
-      w = wMax;
-      h2 = wMax / ratio;
-    }
-    return { w: Math.round(w * 100) / 100, h: Math.round(h2 * 100) / 100 };
-  }
-
   let originalParent = null;
   let vidHooked = null;
   let mastheadMo = null;
   let mo = null;
-  // ponytail: flexy / mp / slot をキャッシュ。apply() 呼び出し毎の querySelector を省く
-  let flexyEl = null, mpEl = null, slotEl = null;
+  // ponytail: 要素キャッシュ。apply() 呼び出し毎の querySelector を省く
+  let flexyEl = null, mpEl = null, slotEl = null, vidEl = null, mastheadEl = null;
+  // ponytail: チャット幅は属性変化/resize 時のみ再計測。apply() 毎の getBoundingClientRect を省く
+  let chatW = 0, chatWDirty = true;
+  let lastChatW = -1;
 
   function stripTheaterMastheadDark() {
     const flexy = flexyEl || document.querySelector('ytd-watch-flexy');
     if (!flexy || !flexy.hasAttribute('theater')) return;
-    const m = document.querySelector('ytd-masthead#masthead');
+    const m = mastheadEl || (mastheadEl = document.querySelector('ytd-masthead#masthead'));
     if (m && m.hasAttribute('dark')) m.removeAttribute('dark');
   }
 
   function watchMasthead() {
-    const m = document.querySelector('ytd-masthead#masthead');
+    const m = mastheadEl || (mastheadEl = document.querySelector('ytd-masthead#masthead'));
     if (!m) return;
-    if (mastheadMo) mastheadMo.disconnect();
+    // ponytail: 既に観測中なら再観測しない（SPA 遷移で masthead は持続するため再取得不要）
+    if (mastheadMo) return;
     mastheadMo = new MutationObserver(stripTheaterMastheadDark);
     mastheadMo.observe(m, { attributes: true, attributeFilter: ['dark'] });
     stripTheaterMastheadDark();
@@ -157,18 +150,33 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
 
       stripTheaterMastheadDark();
 
-      const chatW = chatWidth(flexy);
-      flexy.style.setProperty('--tdv-chat-w', chatW + 'px');
-      const availW = Math.max(0, flexy.clientWidth - chatW - 32);
+      // ponytail: チャット幅は dirty 時のみ再計測
+      if (chatWDirty) {
+        chatW = chatWidth(flexy);
+        chatWDirty = false;
+      }
+      if (chatW !== lastChatW) {
+        flexy.style.setProperty('--tdv-chat-w', chatW + 'px');
+        lastChatW = chatW;
+      }
 
-      const v = mp.querySelector('video');
-      const size = sizeFor(v, availW);
-      if (size) {
-        flexy.style.setProperty('--tdv-w', size.w + 'px');
-        flexy.style.setProperty('--tdv-h', size.h + 'px');
-      } else if (v && v !== vidHooked) {
+      // ponytail: サイズ計算は CSS（min/calc/100cqw）が算出。JS は ratio のみ設定
+      let v = vidEl;
+      if (!v || !mp.contains(v)) {
+        v = mp.querySelector('video');
+        vidEl = v;
+      }
+      if (v && v !== vidHooked) {
         vidHooked = v;
-        v.addEventListener('loadedmetadata', schedule, { once: true });
+        if (v.videoWidth && v.videoHeight) {
+          flexy.style.setProperty('--tdv-ratio', String(v.videoWidth / v.videoHeight));
+        } else {
+          v.addEventListener('loadedmetadata', () => {
+            if (v.videoWidth && v.videoHeight) {
+              flexy.style.setProperty('--tdv-ratio', String(v.videoWidth / v.videoHeight));
+            }
+          }, { once: true });
+        }
       }
     } else {
       const defaultParent = originalParent || document.querySelector('ytd-player > #container');
@@ -194,9 +202,9 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     watchMasthead();
     if (mo) mo.disconnect();
     mo = new MutationObserver(() => {
+      // ponytail: チャット展開/折畳で幅が変わるので dirty 化
+      chatWDirty = true;
       schedule();
-      // ponytail: Polymer の dom-move が非同期の場合に備え遅延再適用。属性変化はユーザー操作時のみで稀
-      setTimeout(schedule, 100);
     });
     // ponytail: attributes のみ監視。subtree/childList を落とし再生中の無駄発火を排除
     mo.observe(flexy, {
@@ -206,33 +214,30 @@ ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#cha
     return true;
   }
 
-  function bootstrap() {
-    installStyle();
-    watchMasthead();
-    if (!watch()) {
-      const obs = new MutationObserver((_, o) => {
-        if (watch()) {
-          o.disconnect();
-          schedule();
-        }
-      });
-      obs.observe(document.documentElement, { childList: true, subtree: true });
-    } else {
-      schedule();
-    }
+  // ponytail: subtree MO 廃止。ナビ遷移後〜0.5s だけ rAF で試行、以降は yt-navigate-finish 待ち
+  function retryWatch(n) {
+    if (watch()) { schedule(); return; }
+    if (n < 30) requestAnimationFrame(() => retryWatch(n + 1));
   }
 
-  // SPA 遷移。動画切り替えで #player-container が再構築されるため、キャッシュと originalParent は再取得
-  window.addEventListener('yt-navigate-finish', () => {
+  function onNavigate() {
     originalParent = null;
     vidHooked = null;
+    vidEl = null;
     flexyEl = mpEl = slotEl = null;
-    setTimeout(() => { watch(); schedule(); }, 50);
-    setTimeout(schedule, 300);
-    setTimeout(schedule, 1000);
-  });
+    chatWDirty = true;
+    lastChatW = -1;
+    retryWatch(0);
+    schedule();
+  }
 
-  window.addEventListener('resize', schedule);
+  function bootstrap() {
+    installStyle();
+    window.addEventListener('yt-navigate-finish', onNavigate);
+    retryWatch(0);
+  }
+
+  window.addEventListener('resize', () => { chatWDirty = true; schedule(); });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', bootstrap);
