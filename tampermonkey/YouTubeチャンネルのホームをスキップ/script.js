@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeチャンネルのホームをスキップ
 // @namespace    http://tampermonkey.net/
-// @version      3.5
+// @version      3.6
 // @description  YouTubeチャンネルページを自動的に/videos・/streams・/shortsのいずれかへリダイレクト。動画視聴中の投稿主/コラボレーター遷移は動画タイプに合わせ、その他は件数比較で決定。
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -15,204 +15,445 @@
     'use strict';
 
     const MAX_RACE_ROUNDS = 15;
-
+    const CACHE_PREFIX = 'yt-channel-home-skip:3.6:';
     const channelPattern = /^\/(@[^/]+|channel\/[^/]+|c\/[^/]+)\/?$/;
 
-    // ---- ユーティリティ ----
+    const TABS = [
+        { suffix: '/videos',  params: 'EgZ2aWRlb3PyBgQKAjoA' },
+        { suffix: '/streams', params: 'EgdzdHJlYW1z8gYECgJ6AA==' },
+        { suffix: '/shorts',  params: 'EgZzaG9ydHPyBgUKA5oBAA==' },
+    ];
+
+    const TAB_PARAMS = Object.fromEntries(TABS.map(({ suffix, params }) => [suffix, params]));
+
+    const RESOLVE_FIELD_MASK = 'endpoint.browseEndpoint.browseId';
+    const FIRST_PAGE_FIELD_MASK = [
+        'contents.twoColumnBrowseResultsRenderer.tabs.tabRenderer.selected',
+        'contents.twoColumnBrowseResultsRenderer.tabs.tabRenderer.content.richGridRenderer.contents.richItemRenderer.trackingParams',
+        'contents.twoColumnBrowseResultsRenderer.tabs.tabRenderer.content.richGridRenderer.contents.continuationItemRenderer.continuationEndpoint.continuationCommand.token',
+    ].join(',');
+    const CONTINUATION_FIELD_MASK = [
+        'onResponseReceivedActions.appendContinuationItemsAction.continuationItems.richItemRenderer.trackingParams',
+        'onResponseReceivedActions.appendContinuationItemsAction.continuationItems.continuationItemRenderer.continuationEndpoint.continuationCommand.token',
+    ].join(',');
+
+    let apiConfigPromise = null;
+    let activeDecision = null;
+    let pendingNavigation = null;
+    let navigationSerial = 0;
 
     function getChannelBase(pathname) {
-        const m = pathname.match(channelPattern);
-        return m ? '/' + m[1] : null;
+        const match = pathname.match(channelPattern);
+        return match ? '/' + match[1] : null;
+    }
+
+    function getBrowseIdFromPath(channelBase) {
+        return channelBase.startsWith('/channel/') ? channelBase.slice(9) : null;
+    }
+
+    function isAbortError(error) {
+        return error instanceof DOMException && error.name === 'AbortError';
     }
 
     function isWatchingStream() {
-        const liveBadge = document.querySelector('.ytp-live-badge');
-        if (liveBadge && liveBadge.offsetParent !== null) return true;
-        const dateText = document.querySelector('#info-strings yt-formatted-string')?.textContent ?? '';
-        if (/streamed|配信済み/i.test(dateText)) return true;
-        return false;
-    }
-
-    function closestElement(target, selector) {
-        return target instanceof Element ? target.closest(selector) : null;
-    }
-
-    // ---- InnerTube API ----
-
-    function extractApiInfo(html) {
-        const apiKey = (html.match(/"INNERTUBE_API_KEY":"([^"]+)"/) ?? [])[1] ?? '';
-        const clientVersion = (html.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/) ?? [])[1] ?? '2.20260401.08.00';
-        return { apiKey, clientVersion };
-    }
-
-    async function fetchContinuation(token, apiKey, clientVersion) {
         try {
-            const resp = await fetch(`/youtubei/v1/browse?key=${apiKey}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+            return document.getElementById('movie_player')
+                ?.getPlayerResponse()
+                ?.videoDetails
+                ?.isLiveContent === true;
+        } catch {
+            return false;
+        }
+    }
+
+    async function getApiConfig() {
+        if (!apiConfigPromise) {
+            apiConfigPromise = (async () => {
+                if (!globalThis.ytcfg?.get) {
+                    await customElements.whenDefined('ytd-app');
+                }
+
+                const apiKey = globalThis.ytcfg?.get('INNERTUBE_API_KEY');
+                const clientVersion = globalThis.ytcfg?.get('INNERTUBE_CLIENT_VERSION');
+                if (!apiKey || !clientVersion) throw new Error('InnerTube config is unavailable');
+
+                return {
+                    apiKey,
                     context: { client: { clientName: 'WEB', clientVersion } },
-                    continuation: token,
-                }),
+                };
+            })();
+        }
+
+        return apiConfigPromise;
+    }
+
+    async function postInnerTube(endpoint, payload, fieldMask, signal) {
+        const { apiKey, context } = await getApiConfig();
+        const response = await fetch(
+            '/youtubei/v1/' + endpoint + '?key=' + encodeURIComponent(apiKey) + '&prettyPrint=false',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-FieldMask': fieldMask,
+                },
+                body: JSON.stringify({ context, ...payload }),
                 credentials: 'include',
-            });
-            if (!resp.ok) return { count: 0, token: null };
-            const data = await resp.json();
-            const items = data?.onResponseReceivedActions?.[0]
-                ?.appendContinuationItemsAction?.continuationItems ?? [];
-            const count = items.filter(c => c.richItemRenderer).length;
-            const nextToken = items.find(c => c.continuationItemRenderer)
-                ?.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token ?? null;
-            return { count, token: nextToken };
-        } catch {
-            return { count: 0, token: null };
+                signal,
+            }
+        );
+
+        if (!response.ok) {
+            throw new Error('InnerTube ' + endpoint + ' failed: ' + response.status);
         }
+        return response.json();
     }
 
-    async function fetchTabFirstPage(url) {
-        try {
-            const resp = await fetch(url, { credentials: 'include' });
-            if (!resp.ok) return null;
-            const html = await resp.text();
-            const m = html.match(/var ytInitialData\s*=\s*(\{.+?\});\s*<\/script>/s);
-            if (!m) return null;
-            const data = JSON.parse(m[1]);
-            const tabs = data?.contents?.twoColumnBrowseResultsRenderer?.tabs ?? [];
-            const selected = tabs.find(t => t.tabRenderer?.selected);
-            const contents = selected?.tabRenderer?.content?.richGridRenderer?.contents ?? [];
-            const count = contents.filter(c => c.richItemRenderer).length;
-            const token = contents.find(c => c.continuationItemRenderer)
-                ?.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token ?? null;
-            return { count, token, apiInfo: extractApiInfo(html) };
-        } catch {
-            return null;
-        }
+    async function resolveBrowseId(channelBase, signal) {
+        const directId = getBrowseIdFromPath(channelBase);
+        if (directId) return directId;
+
+        const data = await postInnerTube(
+            'navigation/resolve_url',
+            { url: location.origin + channelBase },
+            RESOLVE_FIELD_MASK,
+            signal
+        );
+        const browseId = data?.endpoint?.browseEndpoint?.browseId;
+        if (!browseId) throw new Error('Channel browseId was not resolved');
+        return browseId;
     }
 
-    // ---- 競争方式の件数比較 ----
-    // videos / streams / shorts の3候補で件数競争を行う。
-    // 各ラウンドで「まだ継続トークンを持っている候補 = 今後もさらに増える候補」とみなし、
-    // トークンを持つ候補が1つだけになったらそれを優勝とする。全員トークンが尽きたら最大件数で決定。
+    function countItems(items) {
+        let count = 0;
+        let token = null;
+
+        for (const item of items) {
+            if (item.richItemRenderer) {
+                count++;
+            } else if (item.continuationItemRenderer) {
+                token = item.continuationItemRenderer
+                    ?.continuationEndpoint
+                    ?.continuationCommand
+                    ?.token ?? null;
+            }
+        }
+
+        return { count, token };
+    }
+
+    async function fetchFirstPage(browseId, candidate, signal) {
+        const data = await postInnerTube(
+            'browse',
+            { browseId, params: candidate.params },
+            FIRST_PAGE_FIELD_MASK,
+            signal
+        );
+        const tabs = data?.contents?.twoColumnBrowseResultsRenderer?.tabs;
+        if (!Array.isArray(tabs)) throw new Error('Channel tabs were not returned');
+
+        const selected = tabs.find(tab => tab.tabRenderer?.selected)?.tabRenderer;
+        if (!selected) throw new Error('Selected channel tab was not returned');
+
+        const items = selected.content?.richGridRenderer?.contents;
+        const page = Array.isArray(items) ? countItems(items) : { count: 0, token: null };
+        return { ...candidate, ...page };
+    }
+
+    async function fetchContinuation(token, signal) {
+        const data = await postInnerTube(
+            'browse',
+            { continuation: token },
+            CONTINUATION_FIELD_MASK,
+            signal
+        );
+        const items = data?.onResponseReceivedActions?.[0]
+            ?.appendContinuationItemsAction
+            ?.continuationItems;
+        if (!Array.isArray(items)) throw new Error('Continuation items were not returned');
+        return countItems(items);
+    }
 
     function pickMaxCount(candidates) {
-        // 同数の場合は candidates の順序（videos > streams > shorts）を優先。
-        return candidates.reduce((a, b) => b.count > a.count ? b : a).suffix;
+        return candidates.reduce((best, candidate) =>
+            candidate.count > best.count ? candidate : best
+        ).suffix;
     }
 
-    async function decideSuffix(channelBase) {
-        const base = location.origin + channelBase;
+    async function decideTarget(channelBase, signal) {
+        let browseId = getBrowseIdFromPath(channelBase);
 
-        const [videosPage, streamsPage, shortsPage] = await Promise.all([
-            fetchTabFirstPage(base + '/videos'),
-            fetchTabFirstPage(base + '/streams'),
-            fetchTabFirstPage(base + '/shorts'),
-        ]);
+        try {
+            browseId ||= await resolveBrowseId(channelBase, signal);
 
-        const rawCandidates = [
-            { suffix: '/videos',  page: videosPage  },
-            { suffix: '/streams', page: streamsPage },
-            { suffix: '/shorts',  page: shortsPage  },
-        ];
-
-        // 空 or 失敗した候補は除外（件数0かつ継続トークンなし = 実質的に存在しない／空タブ）
-        const candidates = rawCandidates
-            .filter(({ page }) => page && (page.count > 0 || page.token))
-            .map(({ suffix, page }) => ({
-                suffix,
-                count: page.count,
-                token: page.token,
-                apiInfo: page.apiInfo,
-            }));
-
-        if (candidates.length === 0) return '/videos';
-        if (candidates.length === 1) return candidates[0].suffix;
-
-        const { apiKey, clientVersion } = candidates[0].apiInfo;
-
-        // 1回目のレース前の早期判定
-        const activeInit = candidates.filter(c => c.token);
-        if (activeInit.length === 0) return pickMaxCount(candidates);
-        if (activeInit.length === 1) return activeInit[0].suffix;
-
-        for (let round = 0; round < MAX_RACE_ROUNDS; round++) {
-            const active = candidates.filter(c => c.token);
-            const results = await Promise.all(
-                active.map(c => fetchContinuation(c.token, apiKey, clientVersion))
+            const pages = await Promise.all(
+                TABS.map(candidate => fetchFirstPage(browseId, candidate, signal))
             );
-            active.forEach((c, i) => {
-                c.count += results[i].count;
-                c.token = results[i].token;
-            });
+            const candidates = pages.filter(page => page.count > 0 || page.token);
 
-            const stillActive = candidates.filter(c => c.token);
-            if (stillActive.length === 0) return pickMaxCount(candidates);
-            if (stillActive.length === 1) return stillActive[0].suffix;
+            if (candidates.length === 0) {
+                return { browseId, suffix: '/videos', cacheable: true };
+            }
+            if (candidates.length === 1) {
+                return { browseId, suffix: candidates[0].suffix, cacheable: true };
+            }
+
+            let active = candidates.filter(candidate => candidate.token);
+            if (active.length === 0) {
+                return { browseId, suffix: pickMaxCount(candidates), cacheable: true };
+            }
+            if (active.length === 1) {
+                return { browseId, suffix: active[0].suffix, cacheable: true };
+            }
+
+            for (let round = 0; round < MAX_RACE_ROUNDS; round++) {
+                const results = await Promise.all(
+                    active.map(candidate => fetchContinuation(candidate.token, signal))
+                );
+
+                for (let index = 0; index < active.length; index++) {
+                    active[index].count += results[index].count;
+                    active[index].token = results[index].token;
+                }
+
+                active = candidates.filter(candidate => candidate.token);
+                if (active.length === 0) {
+                    return { browseId, suffix: pickMaxCount(candidates), cacheable: true };
+                }
+                if (active.length === 1) {
+                    return { browseId, suffix: active[0].suffix, cacheable: true };
+                }
+            }
+
+            return { browseId, suffix: pickMaxCount(candidates), cacheable: true };
+        } catch (error) {
+            if (isAbortError(error)) throw error;
+            return { browseId, suffix: '/videos', cacheable: false };
+        }
+    }
+
+    function cacheKey(channelBase) {
+        return CACHE_PREFIX + channelBase;
+    }
+
+    function readCachedTarget(channelBase) {
+        try {
+            const cached = JSON.parse(sessionStorage.getItem(cacheKey(channelBase)));
+            if (
+                typeof cached?.browseId === 'string' &&
+                Object.hasOwn(TAB_PARAMS, cached?.suffix)
+            ) {
+                return cached;
+            }
+        } catch {}
+        return null;
+    }
+
+    function writeCachedTarget(channelBase, target) {
+        try {
+            sessionStorage.setItem(
+                cacheKey(channelBase),
+                JSON.stringify({ browseId: target.browseId, suffix: target.suffix })
+            );
+        } catch {}
+    }
+
+    function cancelActiveDecisionExcept(channelBase) {
+        if (activeDecision && activeDecision.channelBase !== channelBase) {
+            activeDecision.controller.abort();
+        }
+    }
+
+    function getDecision(channelBase) {
+        cancelActiveDecisionExcept(channelBase);
+
+        const cached = readCachedTarget(channelBase);
+        if (cached) return Promise.resolve(cached);
+        if (activeDecision?.channelBase === channelBase) return activeDecision.promise;
+
+        const controller = new AbortController();
+        const entry = { channelBase, controller, promise: null };
+        entry.promise = decideTarget(channelBase, controller.signal)
+            .then(target => {
+                if (target.cacheable) writeCachedTarget(channelBase, target);
+                return { browseId: target.browseId, suffix: target.suffix };
+            })
+            .finally(() => {
+                if (activeDecision === entry) activeDecision = null;
+            });
+        activeDecision = entry;
+        return entry.promise;
+    }
+
+    async function getContextualTarget(channelBase, browseId) {
+        const suffix = isWatchingStream() ? '/streams' : '/videos';
+        if (browseId) return { browseId, suffix };
+
+        try {
+            return { browseId: await resolveBrowseId(channelBase), suffix };
+        } catch {
+            return { browseId: null, suffix };
+        }
+    }
+
+    function buildTargetUrl(channelBase, suffix, search = '') {
+        return location.origin + channelBase + suffix + search;
+    }
+
+    function navigateWithYouTube(channelBase, target, search = '') {
+        const url = channelBase + target.suffix + search;
+        const app = document.querySelector('ytd-app');
+
+        if (!app || !target.browseId) {
+            location.href = location.origin + url;
+            return;
         }
 
-        // 最大ラウンドに到達した場合は現時点の件数で決定
-        return pickMaxCount(candidates);
+        app.dispatchEvent(new CustomEvent('yt-navigate', {
+            bubbles: true,
+            composed: true,
+            detail: {
+                endpoint: {
+                    commandMetadata: {
+                        webCommandMetadata: {
+                            url,
+                            webPageType: 'WEB_PAGE_TYPE_CHANNEL',
+                            rootVe: 3611,
+                            apiUrl: '/youtubei/v1/browse',
+                        },
+                    },
+                    browseEndpoint: {
+                        browseId: target.browseId,
+                        params: TAB_PARAMS[target.suffix],
+                        canonicalBaseUrl: channelBase,
+                    },
+                },
+            },
+        }));
     }
 
-    // ---- 重複フェッチ防止 ----
+    function getPopupChannel(target) {
+        if (location.pathname !== '/watch') return null;
 
-    const inflight = new Map();
+        const item = target.closest('yt-list-item-view-model');
+        if (!item?.closest('yt-dialog-view-model')) return null;
 
-    function warmDecision(channelBase) {
-        if (inflight.has(channelBase)) return inflight.get(channelBase);
+        const command = item.data
+            ?.rendererContext
+            ?.commandContext
+            ?.onTap
+            ?.innertubeCommand;
+        const path = command?.commandMetadata?.webCommandMetadata?.url;
+        if (!path) return null;
 
-        const p = decideSuffix(channelBase)
-            .then((suffix) => {
-                inflight.delete(channelBase);
-                return suffix;
-            })
-            .catch((err) => {
-                inflight.delete(channelBase);
-                throw err;
-            });
+        const url = new URL(path, location.origin);
+        const channelBase = getChannelBase(url.pathname);
+        if (!channelBase) return null;
 
-        inflight.set(channelBase, p);
-        return p;
+        return {
+            channelBase,
+            browseId: command?.browseEndpoint?.browseId ?? getBrowseIdFromPath(channelBase),
+            search: url.search,
+            contextual: true,
+        };
     }
 
-    // ---- リダイレクト処理 ----
+    function getLiveAvatarChannel(target) {
+        const ring = target.closest('.ytSpecAvatarShapeLiveRing');
+        const container = ring?.closest('yt-lockup-view-model');
+        const link = container?.querySelector(
+            'a[href^="/@"], a[href^="/channel/"], a[href^="/c/"]'
+        );
+        if (!(link instanceof HTMLAnchorElement)) return null;
 
-    let pendingChannelBase = null;
-    let fromWatchStreamState = null;
+        const channelBase = getChannelBase(link.pathname);
+        if (!channelBase) return null;
 
-    window.addEventListener('yt-navigate-start', () => {
-        fromWatchStreamState = location.pathname.startsWith('/watch')
-            ? isWatchingStream()
+        return {
+            channelBase,
+            browseId: getBrowseIdFromPath(channelBase),
+            search: link.search,
+            contextual: false,
+        };
+    }
+
+    function getAnchorChannel(target) {
+        const anchor = target.closest('a[href]');
+        if (!(anchor instanceof HTMLAnchorElement) || anchor.origin !== location.origin) return null;
+
+        const channelBase = getChannelBase(anchor.pathname);
+        if (!channelBase) return null;
+
+        const owner = location.pathname === '/watch'
+            ? anchor.closest('ytd-video-owner-renderer')
             : null;
-    });
 
-    async function handleChannelNavigation(currentPathname) {
-        const channelBase = getChannelBase(currentPathname);
-        if (!channelBase) return;
-        if (pendingChannelBase === channelBase) return;
+        return {
+            channelBase,
+            browseId: owner?.data?.navigationEndpoint?.browseEndpoint?.browseId
+                ?? getBrowseIdFromPath(channelBase),
+            search: anchor.search,
+            contextual: Boolean(owner),
+        };
+    }
 
-        pendingChannelBase = channelBase;
+    document.addEventListener('click', async event => {
+        if (!(event.target instanceof Element)) return;
+
+        const channel = getPopupChannel(event.target)
+            ?? getLiveAvatarChannel(event.target)
+            ?? getAnchorChannel(event.target);
+        if (!channel) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        const serial = ++navigationSerial;
+        cancelActiveDecisionExcept(channel.channelBase);
+
+        try {
+            const target = channel.contextual
+                ? await getContextualTarget(channel.channelBase, channel.browseId)
+                : await getDecision(channel.channelBase);
+
+            if (serial !== navigationSerial) return;
+
+            const url = buildTargetUrl(channel.channelBase, target.suffix, channel.search);
+            if (event.ctrlKey || event.metaKey || event.button === 1) {
+                window.open(url, '_blank');
+            } else {
+                navigateWithYouTube(channel.channelBase, target, channel.search);
+            }
+        } catch (error) {
+            if (!isAbortError(error) && serial === navigationSerial) {
+                location.href = buildTargetUrl(channel.channelBase, '/videos', channel.search);
+            }
+        }
+    }, true);
+
+    async function handleChannelNavigation(pathname) {
+        const channelBase = getChannelBase(pathname);
+        if (!channelBase || pendingNavigation?.channelBase === channelBase) return;
+
+        const token = { channelBase };
+        const serial = ++navigationSerial;
+        pendingNavigation = token;
         document.documentElement.style.visibility = 'hidden';
 
         try {
-            // yt-navigate-start で保存した状態があればそちらを優先（@handleなしチャンネルのフォールバック）
-            // なければ競争ロジックで決定
-            const watchStream = fromWatchStreamState;
-            fromWatchStreamState = null;
-            const suffix = (watchStream !== null)
-                ? (watchStream ? '/streams' : '/videos')
-                : await warmDecision(channelBase);
+            const target = await getDecision(channelBase);
+            if (serial !== navigationSerial || location.pathname !== pathname) return;
 
-            if (location.pathname !== currentPathname) return;
-
-            window.location.replace(location.origin + channelBase + suffix + location.search);
-        } catch {
-            document.documentElement.style.visibility = '';
+            location.replace(buildTargetUrl(channelBase, target.suffix, location.search));
+        } catch (error) {
+            if (!isAbortError(error) && location.pathname === pathname) {
+                document.documentElement.style.visibility = '';
+            }
         } finally {
-            pendingChannelBase = null;
+            if (pendingNavigation === token) pendingNavigation = null;
         }
     }
-
-    // ---- 初回ロード時 ----
 
     if (channelPattern.test(location.pathname)) {
         handleChannelNavigation(location.pathname);
@@ -222,178 +463,7 @@
         if (channelPattern.test(location.pathname)) {
             handleChannelNavigation(location.pathname);
         } else {
-            // チャンネルホーム以外に着地した場合、fromWatchStreamState は用済みなのでクリア。
-            // （例: /watch → popup → /@channelA/videos と直接遷移した際に
-            //   yt-navigate-start が false をセットするが、handleChannelNavigation が
-            //   呼ばれないため残留し、次の遷移で誤って使われるのを防ぐ）
-            fromWatchStreamState = null;
+            document.documentElement.style.visibility = '';
         }
     });
-
-    // ---- ホームフィードのライブアバタークリック ----
-
-    document.addEventListener('click', async (e) => {
-        const liveAvatar = closestElement(e.target, [
-            '.yt-spec-avatar-shape--live-ring',
-            '.ytSpecAvatarShapeLiveRing',
-            '.ytSpecAvatarShapeLiveBadge',
-            '.ytSpecAvatarShapeHost[aria-label*="watch live" i]',
-        ].join(', '));
-        if (!liveAvatar) return;
-
-        const container = liveAvatar.closest(
-            'yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-rich-grid-media'
-        );
-        if (!container) return;
-
-        const channelLink = container.querySelector('a[href^="/@"], a[href^="/channel/"], a[href^="/c/"]');
-        if (!channelLink) return;
-
-        const href = channelLink.getAttribute('href');
-        const m = href.match(channelPattern);
-        if (!m) return;
-
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-
-        const channelBase = '/' + m[1];
-        const suffix = await warmDecision(channelBase);
-        window.location.href = location.origin + channelBase + suffix;
-    }, true);
-
-
-    // ---- 【修正版】リンククリックのインターセプト ----
-
-    document.addEventListener('click', async (e) => {
-        // 1. 動画ページ（/watch）限定の処理
-        if (location.pathname.startsWith('/watch')) {
-
-            // A. ポップアップ内アイテムの検知（ユーザー提案のロジックを改良）
-            // ターゲット: チャンネルアイコンクリック時に出るポップアップリスト
-            const popupItem = closestElement(e.target, 'yt-list-item-view-model');
-            if (popupItem && popupItem.closest('yt-dialog-view-model')) {
-                // チャンネル特定処理
-                let channelBase = null;
-
-                // 方法1: 中に<a>タグが隠れていないか探す（最優先・確実）
-                const hiddenLink = popupItem.querySelector('a[href^="/@"], a[href^="/channel/"], a[href^="/c/"]');
-                if (hiddenLink) {
-                    channelBase = getChannelBase(hiddenLink.getAttribute('href'));
-                }
-                // 方法2: <a>タグがない場合、字幕テキストから@ハンドルを抽出（ユーザー提案のフォールバック）
-                else {
-                    const subtitle = popupItem.querySelector('.yt-list-item-view-model__subtitle');
-                    // @handle 形式を抽出
-                    const handle = subtitle?.textContent?.match(/@[\w.-]+/)?.[0];
-                    if (handle) {
-                        channelBase = '/' + handle;
-                    }
-                }
-
-                // チャンネルが特定できればリダイレクト
-                if (channelBase) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-
-                    // 【重要】投稿主・コラボレーターなので「動画判定ロジック」を使う
-                    const suffix = isWatchingStream() ? '/streams' : '/videos';
-
-                    const newUrl = location.origin + channelBase + suffix;
-                    if (e.ctrlKey || e.metaKey || e.button === 1) {
-                        window.open(newUrl, '_blank');
-                    } else {
-                        window.location.href = newUrl;
-                    }
-                    return; // 処理終了
-                }
-            }
-
-            // B. 通常のリンククリック（投稿主エリアなど）
-            const anchor = closestElement(e.target, 'a');
-            if (anchor) {
-                try {
-                    const url = new URL(anchor.href, location.origin);
-                    if (url.origin !== location.origin) return;
-
-                    const m = url.pathname.match(channelPattern);
-                    if (!m) return;
-
-                    const clickedChannelBase = '/' + m[1];
-
-                    // 投稿主エリア（動画下のチャンネル名/アイコン）からのクリックか判定
-                    const isOwnerArea = anchor.closest('#owner, ytd-video-owner-renderer, #upload-info');
-
-                    if (isOwnerArea) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        e.stopImmediatePropagation();
-
-                        // 【重要】投稿主なので「動画判定ロジック」を使う
-                        const suffix = isWatchingStream() ? '/streams' : '/videos';
-                        const newUrl = url.origin + clickedChannelBase + suffix + url.search;
-
-                        if (e.ctrlKey || e.metaKey || e.button === 1) {
-                            window.open(newUrl, '_blank');
-                        } else {
-                            window.location.href = newUrl;
-                        }
-                        return;
-                    }
-
-                    // C. /watchページ内だが、関係ないチャンネルリンク（コメント欄、サイドバーなど）
-                    // -> 処理がここに来た = isOwnerAreaではない
-
-                    // 【重要】関係ないチャンネルなので「競争ロジック」を使う
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-
-                    const openInNewTab = e.ctrlKey || e.metaKey || e.button === 1;
-                    const suffix = await warmDecision(clickedChannelBase);
-                    const newUrl = url.origin + clickedChannelBase + suffix + url.search;
-
-                    if (openInNewTab) {
-                        window.open(newUrl, '_blank');
-                    } else {
-                        window.location.href = newUrl;
-                    }
-
-                } catch (_) {}
-            }
-
-        } else {
-            // 2. /watch 以外のページ（ホーム、トレンドなど）
-            // すべてのチャンネルリンクで「競争ロジック」を使う
-
-            const anchor = closestElement(e.target, 'a');
-            if (!anchor) return;
-
-            try {
-                const url = new URL(anchor.href, location.origin);
-                if (url.origin !== location.origin) return;
-
-                const m = url.pathname.match(channelPattern);
-                if (!m) return;
-
-                const clickedChannelBase = '/' + m[1];
-
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-
-                const suffix = await warmDecision(clickedChannelBase);
-                const newUrl = url.origin + clickedChannelBase + suffix + url.search;
-
-                if (e.ctrlKey || e.metaKey || e.button === 1) {
-                    window.open(newUrl, '_blank');
-                } else {
-                    window.location.href = newUrl;
-                }
-
-            } catch (_) {}
-        }
-    }, true);
-
 })();
