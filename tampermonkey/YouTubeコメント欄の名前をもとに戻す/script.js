@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeコメント欄の名前をもとに戻す＋
 // @namespace    https://example.com/
-// @version      1.0.7
+// @version      1.0.9
 // @description  YouTubeのコメント欄・ライブチャット欄の名前をハンドル(@...)からユーザー名に書き換えます。
 // @match        https://www.youtube.com/*
 // @match        https://www.youtube.com/live_chat*
@@ -16,27 +16,23 @@
 (() => {
   'use strict';
 
+  const DAY = 24 * 60 * 60 * 1000;
   const CFG = {
-    memCacheMax: 20000,
-    lsCacheMax: 3000,
-    negCacheMax: 20000,
-    negativeTTL: 5 * 60 * 1000,
-    reattachInterval: 900,
-    startupReattachMs: 15000,
-    navigateReattachMs: 12000,
-    actionReattachMs: 4000,
+    cacheMax: 5000,
+    persistMax: 3000,
+    cacheTTL: 30 * DAY,
+    negativeTTL: 10 * 60 * 1000,
+    cooldownMs: 10 * 60 * 1000,
+    cooldownAfterFailures: 3,
     maxConcurrentFetches: 4,
     fetchTimeout: 7000,
     maxBytesToScan: 700 * 1024,
-    maxChunks: 80,
-    persistDebounce: 5000,
-    scanDebounceMs: 120,
-    scanMaxPerPass: 1200,
+    maxChunks: 100,
+    persistDelay: 5000,
   };
 
   const now = () => Date.now();
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const isElement = (n) => n && n.nodeType === 1;
+  const isElement = (node) => node && node.nodeType === Node.ELEMENT_NODE;
 
   const TICKER_ITEM_SEL =
     'yt-live-chat-ticker-paid-message-item-renderer,' +
@@ -52,15 +48,16 @@
     'a#author-text[href^="/@"],' +
     'a#author-name[href^="/@"],' +
     'ytd-author-comment-badge-renderer a#name[href^="/@"]';
-  const COMMENT_ATTRIBUTION_TEXT_SEL =
-    'ytd-pinned-comment-badge-renderer #label';
+  const COMMENT_ATTRIBUTION_TEXT_SEL = 'ytd-pinned-comment-badge-renderer #label';
+  const COMMENT_ROOT_SEL = 'ytd-comments, #comments, ytd-engagement-panel-section-list-renderer';
 
-  function decodeEntities(s) {
-    const text = String(s ?? '');
+  let entityDecoder = null;
+  function decodeEntities(value) {
+    const text = String(value ?? '');
     if (!text.includes('&')) return text;
-    const el = document.createElement('textarea');
-    el.innerHTML = text;
-    return el.value;
+    entityDecoder ||= document.createElement('textarea');
+    entityDecoder.innerHTML = text;
+    return entityDecoder.value;
   }
 
   function normalizeDisplayName(name) {
@@ -70,285 +67,310 @@
       if (decoded === normalized) break;
       normalized = decoded;
     }
-    return normalized.trim();
-  }
-
-  function isHandleText(s) {
-    const t = (s || '').trim();
-    return t.startsWith('@') && t.length >= 3;
+    return normalized.replace(/\s+-\s+YouTube\s*$/i, '').trim();
   }
 
   function extractHandleFromText(text) {
-    const t = (text || '').trim();
-    return isHandleText(t) ? t.replace(/\s+/g, '') : null;
+    const value = (text || '').trim();
+    return value.startsWith('@') && value.length >= 3 ? value.replace(/\s+/g, '') : null;
   }
 
   function extractHandleFromHref(href) {
-    const m = href && href.match(/\/@([A-Za-z0-9._-]{2,})/);
-    return m ? '@' + m[1] : null;
+    const match = href && href.match(/\/@([A-Za-z0-9._-]{2,})/);
+    return match ? `@${match[1]}` : null;
   }
 
   class LRU {
-    constructor(max) { this.max = max; this.map = new Map(); }
-    get(key) {
-      const v = this.map.get(key);
-      if (v === undefined) return undefined;
-      this.map.delete(key);
-      this.map.set(key, v);
-      return v;
+    constructor(max) {
+      this.max = max;
+      this.map = new Map();
     }
-    set(key, val) {
+
+    get(key) {
+      const value = this.map.get(key);
+      if (value === undefined) return undefined;
+      this.map.delete(key);
+      this.map.set(key, value);
+      return value;
+    }
+
+    peek(key) {
+      return this.map.get(key);
+    }
+
+    set(key, value) {
       if (this.map.has(key)) this.map.delete(key);
-      this.map.set(key, val);
+      this.map.set(key, value);
       if (this.map.size > this.max) this.map.delete(this.map.keys().next().value);
     }
-    entries() { return Array.from(this.map.entries()); }
+
+    delete(key) {
+      this.map.delete(key);
+    }
+
     load(entries) {
       this.map.clear();
-      for (const [k, v] of entries) this.map.set(k, v);
-      while (this.map.size > this.max) this.map.delete(this.map.keys().next().value);
+      for (const [key, value] of entries) this.set(key, value);
+    }
+
+    recentEntries(limit) {
+      const entries = Array.from(this.map.entries());
+      return entries.length > limit ? entries.slice(entries.length - limit) : entries;
     }
   }
 
-  // handle -> displayName (string)
-  const memCache = new LRU(CFG.memCacheMax);
-  const lsCache = new LRU(CFG.lsCacheMax);
-  // handle -> timestamp (ms)
-  const negCache = new LRU(CFG.negCacheMax);
+  /**********************
+   * Cache
+   **********************/
+  const LS_KEY = 'yt_handle_to_display_name_cache_v3';
+  const LEGACY_LS_KEY = 'yt_handle_to_display_name_cache_v2';
+  const nameCache = new LRU(CFG.cacheMax); // handle -> { name, fetchedAt }
+  const negativeCache = new LRU(CFG.cacheMax); // handle -> retryAt
+  let cacheDirty = false;
+  let removeLegacyAfterPersist = false;
+  let persistHandle = null;
+  let persistUsesIdleCallback = false;
 
-  const LS_KEY = 'yt_handle_to_display_name_cache_v2';
-  let persistTimer = null;
+  function parseV3Entries(parsed) {
+    if (!parsed || parsed.v !== 3 || !Array.isArray(parsed.entries)) return null;
+    const entries = [];
+    for (const item of parsed.entries) {
+      if (!Array.isArray(item) || item.length < 3) continue;
+      const [handle, rawName, fetchedAt] = item;
+      const name = normalizeDisplayName(rawName);
+      if (!extractHandleFromText(handle) || !name || !Number.isFinite(fetchedAt)) continue;
+      entries.push([handle, { name, fetchedAt }]);
+    }
+    return entries;
+  }
 
   function loadPersistentCache() {
     try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
+      const rawV3 = localStorage.getItem(LS_KEY);
+      if (rawV3) {
+        const entries = parseV3Entries(JSON.parse(rawV3));
+        if (entries) {
+          nameCache.load(entries);
+          return;
+        }
+      }
+
+      const rawV2 = localStorage.getItem(LEGACY_LS_KEY);
+      if (!rawV2) return;
+      const parsed = JSON.parse(rawV2);
       if (!parsed || parsed.v !== 2 || !Array.isArray(parsed.entries)) return;
-      let changed = false;
-      const entries = parsed.entries.map(([handle, name]) => {
-        const normalizedName = normalizeDisplayName(name);
-        if (normalizedName !== name) changed = true;
-        return [handle, normalizedName];
-      });
-      lsCache.load(entries);
-      if (changed) schedulePersist();
+
+      const migratedAt = now();
+      const entries = [];
+      for (const item of parsed.entries) {
+        if (!Array.isArray(item) || item.length < 2) continue;
+        const [handle, rawName] = item;
+        const name = normalizeDisplayName(rawName);
+        if (!extractHandleFromText(handle) || !name) continue;
+        entries.push([handle, { name, fetchedAt: migratedAt }]);
+      }
+      nameCache.load(entries);
+      cacheDirty = true;
+      removeLegacyAfterPersist = true;
+    } catch { }
+  }
+
+  function cancelScheduledPersist() {
+    if (persistHandle === null) return;
+    if (persistUsesIdleCallback && typeof cancelIdleCallback === 'function') cancelIdleCallback(persistHandle);
+    else clearTimeout(persistHandle);
+    persistHandle = null;
+    persistUsesIdleCallback = false;
+  }
+
+  function persistNow() {
+    cancelScheduledPersist();
+    if (!cacheDirty) return;
+    try {
+      const entries = nameCache.recentEntries(CFG.persistMax)
+        .map(([handle, record]) => [handle, record.name, record.fetchedAt]);
+      localStorage.setItem(LS_KEY, JSON.stringify({ v: 3, entries }));
+      if (removeLegacyAfterPersist) {
+        localStorage.removeItem(LEGACY_LS_KEY);
+        removeLegacyAfterPersist = false;
+      }
+      cacheDirty = false;
     } catch { }
   }
 
   function schedulePersist() {
-    if (persistTimer) return;
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      try {
-        localStorage.setItem(LS_KEY, JSON.stringify({ v: 2, entries: lsCache.entries() }));
-      } catch { }
-    }, CFG.persistDebounce);
+    cacheDirty = true;
+    if (persistHandle !== null) return;
+    if (typeof requestIdleCallback === 'function') {
+      persistUsesIdleCallback = true;
+      persistHandle = requestIdleCallback(persistNow, { timeout: CFG.persistDelay });
+    } else {
+      persistHandle = setTimeout(persistNow, CFG.persistDelay);
+    }
+  }
+
+  function mergeCacheFromStorage(event) {
+    if (event.key !== LS_KEY || !event.newValue) return;
+    try {
+      const entries = parseV3Entries(JSON.parse(event.newValue));
+      if (!entries) return;
+      for (const [handle, incoming] of entries) {
+        const current = nameCache.peek(handle);
+        if (current && incoming.fetchedAt <= current.fetchedAt) continue;
+        nameCache.set(handle, incoming);
+        if ((now() - incoming.fetchedAt) < CFG.cacheTTL) {
+          queuedHandles.delete(handle);
+          applyNameToHandleTargets(handle, incoming.name);
+          clearHandleTargets(handle);
+        }
+      }
+    } catch { }
   }
 
   loadPersistentCache();
+  if (cacheDirty) schedulePersist();
+  addEventListener('storage', mergeCacheFromStorage);
+  addEventListener('pagehide', persistNow);
 
-  const inFlight = new Map(); // handle -> Promise<string|null>
-  const fetchQueue = [];
-  let activeFetchCount = 0;
-  const authorQueue = new Set();
-  const authorState = new WeakMap(); // Element -> { handle, pending?, checkedAt? }
-  let authorQueueScheduled = false;
+  /**********************
+   * Author candidates
+   **********************/
+  let authorState = new WeakMap(); // Element -> { handle }
+  let targetInfo = new WeakMap(); // Element -> { handle, ref }
+  const targetsByHandle = new Map(); // handle -> Set<WeakRef<Element>>
+  const attributionState = new WeakMap(); // label -> { handle, template }
 
-  const OG_TITLE_RE = /<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i;
-  function extractOgTitleFromHtml(html) {
-    if (!html) return null;
-    const m = html.match(OG_TITLE_RE);
-    if (!m) return null;
-    const name = normalizeDisplayName(m[1] || '').replace(/\s+-\s+YouTube\s*$/i, '').trim();
-    if (!name || /^YouTube$/i.test(name)) return null;
-    return name;
-  }
-
-  function scheduleAuthorQueueFlush() {
-    if (authorQueueScheduled) return;
-    authorQueueScheduled = true;
-    requestAnimationFrame(() => {
-      authorQueueScheduled = false;
-      const batch = Array.from(authorQueue);
-      authorQueue.clear();
-      for (const el of batch) processAuthorElement(el);
-    });
-  }
-
-  function enqueueAuthorElement(el) {
-    if (!isElement(el)) return;
-    authorQueue.add(el);
-    scheduleAuthorQueueFlush();
-  }
-
-  function pumpFetchQueue() {
-    while (activeFetchCount < CFG.maxConcurrentFetches && fetchQueue.length) {
-      const job = fetchQueue.shift();
-      activeFetchCount++;
-      fetchDisplayNameFromNetwork(job.handle)
-        .then(job.resolve, () => job.resolve(null))
-        .finally(() => {
-          activeFetchCount--;
-          pumpFetchQueue();
-        });
-    }
-  }
-
-  async function fetchDisplayNameFromNetwork(handle) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => { try { controller.abort(); } catch { } }, CFG.fetchTimeout);
-    try {
-      const res = await fetch(`https://www.youtube.com/${handle}`, {
-        credentials: 'include',
-        signal: controller.signal,
-      });
-
-      const body = res.body;
-      if (!body || !body.getReader) {
-        return extractOgTitleFromHtml(await res.text());
+  function forEachHandleTarget(handle, callback) {
+    const refs = targetsByHandle.get(handle);
+    if (!refs) return false;
+    let foundConnected = false;
+    for (const ref of Array.from(refs)) {
+      const element = ref.deref();
+      if (!element) {
+        refs.delete(ref);
+        continue;
       }
-
-      const reader = body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let scannedBytes = 0, scannedChunks = 0, buffer = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        scannedChunks++;
-        scannedBytes += value.byteLength;
-        buffer += decoder.decode(value, { stream: true });
-
-        const name = extractOgTitleFromHtml(buffer);
-        if (name) {
-          try { controller.abort(); } catch { }
-          return name;
-        }
-
-        if (scannedBytes > CFG.maxBytesToScan || scannedChunks > CFG.maxChunks) break;
-        if (buffer.length > 250000) buffer = buffer.slice(-120000);
-      }
-
-      return extractOgTitleFromHtml(buffer);
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timeoutId);
+      if (!element.isConnected) continue;
+      foundConnected = true;
+      callback(element);
     }
+    if (!refs.size) targetsByHandle.delete(handle);
+    return foundConnected;
   }
 
-  async function fetchDisplayNameByHandle(handle) {
-    const mc = memCache.get(handle);
-    if (mc) return normalizeDisplayName(mc);
-
-    const lc = lsCache.get(handle);
-    if (lc) {
-      const name = normalizeDisplayName(lc);
-      memCache.set(handle, name);
-      if (name !== lc) {
-        lsCache.set(handle, name);
-        schedulePersist();
-      }
-      return name;
+  function removeTarget(element) {
+    const info = targetInfo.get(element);
+    if (!info) return;
+    const refs = targetsByHandle.get(info.handle);
+    if (refs) {
+      refs.delete(info.ref);
+      if (!refs.size) targetsByHandle.delete(info.handle);
     }
-
-    const nts = negCache.get(handle);
-    if (nts && (now() - nts) < CFG.negativeTTL) return null;
-
-    if (inFlight.has(handle)) return inFlight.get(handle);
-
-    const p = new Promise((resolve) => {
-      fetchQueue.push({ handle, resolve });
-      pumpFetchQueue();
-    });
-
-    inFlight.set(handle, p);
-    try {
-      const name = await p;
-      if (name) {
-        const normalizedName = normalizeDisplayName(name);
-        memCache.set(handle, normalizedName);
-        lsCache.set(handle, normalizedName);
-        schedulePersist();
-        return normalizedName;
-      }
-      negCache.set(handle, now());
-      return null;
-    } finally {
-      inFlight.delete(handle);
-    }
+    targetInfo.delete(element);
   }
 
-  async function processAuthorElement(authorEl) {
-    if (!isElement(authorEl)) return;
-
-    const text = (authorEl.textContent || '').trim();
-    if (!isHandleText(text)) return;
-
-    let handle = extractHandleFromText(text);
-    if (!handle) {
-      const anchor = authorEl.closest('a');
-      const href = anchor ? anchor.getAttribute('href') : authorEl.getAttribute('href');
-      handle = extractHandleFromHref(href);
-    }
-    if (!handle) {
-      const tickerItem = authorEl.closest(TICKER_ITEM_SEL);
-      if (tickerItem) {
-        const link = tickerItem.querySelector('a[href*="/@"]');
-        if (link) handle = extractHandleFromHref(link.getAttribute('href'));
-      }
-    }
-    if (!handle) return;
-
-    const state = authorState.get(authorEl);
-    if (state && state.handle === handle) {
-      if (state.pending) return;
-      if (state.checkedAt && (now() - state.checkedAt) < CFG.negativeTTL) return;
-    }
-
-    authorState.set(authorEl, { handle, pending: true });
-    const name = await fetchDisplayNameByHandle(handle);
-
-    const latestState = authorState.get(authorEl);
-    if (!latestState || latestState.handle !== handle || !latestState.pending) return;
-    if (!name) {
-      authorState.set(authorEl, { handle, checkedAt: now() });
+  function addTarget(element, handle) {
+    const existing = targetInfo.get(element);
+    if (existing?.handle === handle) {
+      queueHandleFetch(handle);
       return;
     }
+    if (existing) removeTarget(element);
 
-    const latestText = (authorEl.textContent || '').trim();
-    if (extractHandleFromText(latestText) !== handle) {
-      authorState.delete(authorEl);
-      return;
-    }
-
-    authorEl.textContent = name;
-    authorEl.dataset.ytNameRestored = '1';
-    authorEl.dataset.originalHandle = handle;
-    try { authorEl.setAttribute('title', handle); } catch { }
-    updateRelatedCommentAttributionLabels(authorEl, handle, name);
-    authorState.delete(authorEl);
+    const ref = new WeakRef(element);
+    let refs = targetsByHandle.get(handle);
+    if (!refs) targetsByHandle.set(handle, refs = new Set());
+    refs.add(ref);
+    targetInfo.set(element, { handle, ref });
+    queueHandleFetch(handle);
   }
 
-  function queueAuthorCandidatesUnder(root, selector) {
-    if (!isElement(root)) return;
-    if (root.matches(selector)) enqueueAuthorElement(root);
-    for (const el of root.querySelectorAll(selector)) enqueueAuthorElement(el);
+  function hasConnectedTarget(handle) {
+    return forEachHandleTarget(handle, () => { });
   }
 
-  function updateRelatedCommentAttributionLabels(authorEl, handle, name) {
-    const commentRoot = authorEl.closest('ytd-comment-view-model, ytd-comment-thread-renderer');
+  function clearHandleTargets(handle) {
+    forEachHandleTarget(handle, removeTarget);
+    targetsByHandle.delete(handle);
+  }
+
+  function updateRelatedCommentAttributionLabels(authorElement, handle, name) {
+    const commentRoot = authorElement.closest('ytd-comment-view-model, ytd-comment-thread-renderer');
     if (!commentRoot) return;
 
     for (const label of commentRoot.querySelectorAll(COMMENT_ATTRIBUTION_TEXT_SEL)) {
-      const text = label.textContent || '';
-      if (!text.includes(handle)) continue;
-      label.textContent = text.replaceAll(handle, name);
+      let state = attributionState.get(label);
+      if (!state) {
+        const template = label.textContent || '';
+        if (!template.includes(handle)) continue;
+        state = { handle, template };
+        attributionState.set(label, state);
+      }
+      if (state.handle !== handle) continue;
+      const nextText = state.template.replaceAll(handle, name);
+      if (label.textContent !== nextText) label.textContent = nextText;
       label.dataset.ytNameRestored = '1';
       label.dataset.originalHandle = handle;
     }
+  }
+
+  function applyDisplayName(authorElement, handle, name) {
+    if (!authorElement.isConnected) return false;
+    const state = authorState.get(authorElement);
+    const currentHandle = authorElement.dataset.originalHandle
+      || extractHandleFromText(authorElement.textContent);
+    if (state?.handle !== handle && currentHandle !== handle) return false;
+
+    if ((authorElement.textContent || '').trim() !== name) authorElement.textContent = name;
+    authorElement.dataset.ytNameRestored = '1';
+    authorElement.dataset.originalHandle = handle;
+    if (authorElement.getAttribute('title') !== handle) authorElement.setAttribute('title', handle);
+    authorState.set(authorElement, { handle });
+    updateRelatedCommentAttributionLabels(authorElement, handle, name);
+    return true;
+  }
+
+  function applyNameToHandleTargets(handle, name) {
+    forEachHandleTarget(handle, (element) => applyDisplayName(element, handle, name));
+  }
+
+  function findHandleForAuthor(authorElement, explicitHandle) {
+    const textHandle = extractHandleFromText(authorElement.textContent);
+    if (explicitHandle && textHandle === explicitHandle) return explicitHandle;
+    if (textHandle) return textHandle;
+
+    const anchor = authorElement.closest('a');
+    const hrefHandle = extractHandleFromHref(anchor?.getAttribute('href') || authorElement.getAttribute('href'));
+    if (hrefHandle) return hrefHandle;
+
+    const tickerItem = authorElement.closest(TICKER_ITEM_SEL);
+    return tickerItem
+      ? extractHandleFromHref(tickerItem.querySelector('a[href*="/@"]')?.getAttribute('href'))
+      : null;
+  }
+
+  function considerAuthorElement(authorElement, explicitHandle = null) {
+    if (!isElement(authorElement)) return;
+    const handle = findHandleForAuthor(authorElement, explicitHandle);
+    if (!handle) return;
+
+    const visibleHandle = extractHandleFromText(authorElement.textContent);
+    const restoredHandle = authorElement.dataset.originalHandle;
+    if (visibleHandle !== handle && restoredHandle !== handle) return;
+
+    const previous = authorState.get(authorElement);
+    if (previous && previous.handle !== handle) removeTarget(authorElement);
+    authorState.set(authorElement, { handle });
+
+    const record = nameCache.get(handle);
+    if (record) {
+      applyDisplayName(authorElement, handle, record.name);
+      if ((now() - record.fetchedAt) < CFG.cacheTTL) {
+        removeTarget(authorElement);
+        return;
+      }
+    }
+    addTarget(authorElement, handle);
   }
 
   function getCommentAuthorTarget(link) {
@@ -360,318 +382,393 @@
       ) || link;
     }
 
-    let child = link.firstElementChild;
-    while (child) {
-      const tag = child.localName;
-      if (tag === 'span' || tag === 'yt-formatted-string') return child;
-      child = child.nextElementSibling;
+    for (let child = link.firstElementChild; child; child = child.nextElementSibling) {
+      if (child.localName === 'span' || child.localName === 'yt-formatted-string') return child;
     }
     return link;
   }
 
-  function queueCommentAuthorsUnder(root, remaining = Infinity) {
-    if (!isElement(root) || remaining <= 0) return remaining;
+  function scanLiveChatRoot(root) {
+    if (!isElement(root)) return;
+    if (root.matches(LIVE_CHAT_SCAN_SEL)) considerAuthorElement(root);
+    for (const element of root.querySelectorAll(LIVE_CHAT_SCAN_SEL)) considerAuthorElement(element);
+  }
 
+  function scanCommentRoot(root) {
+    if (!isElement(root)) return;
     if (root.matches(COMMENT_AUTHOR_LINK_SEL)) {
-      enqueueAuthorElement(getCommentAuthorTarget(root));
-      remaining--;
+      considerAuthorElement(getCommentAuthorTarget(root), extractHandleFromHref(root.getAttribute('href')));
     }
-    if (remaining <= 0) return remaining;
-
     for (const link of root.querySelectorAll(COMMENT_AUTHOR_LINK_SEL)) {
-      enqueueAuthorElement(getCommentAuthorTarget(link));
-      remaining--;
-      if (remaining <= 0) break;
+      considerAuthorElement(getCommentAuthorTarget(link), extractHandleFromHref(link.getAttribute('href')));
     }
-    return remaining;
+  }
+
+  function createScanBatcher(scan) {
+    const roots = new Set();
+    let scheduled = false;
+
+    function flush() {
+      scheduled = false;
+      const candidates = Array.from(roots).filter((root) => root.isConnected);
+      roots.clear();
+      const topmost = candidates.filter((root, index) =>
+        !candidates.some((other, otherIndex) => otherIndex !== index && other.contains(root))
+      );
+      for (const root of topmost) scan(root);
+    }
+
+    return {
+      enqueue(root) {
+        if (!isElement(root)) return;
+        roots.add(root);
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(flush);
+      },
+      clear() {
+        roots.clear();
+      },
+    };
   }
 
   /**********************
-   * Live Chat Module
+   * Network queue
    **********************/
-  const LiveChat = (() => {
-    const REPLY_PANEL_SEL = 'ytd-engagement-panel-section-list-renderer[target-id="PAreply_thread"]';
-    const WATCH = [
-      { sel: '#item-list #items', opts: { childList: true, subtree: false } },
-      { sel: 'yt-live-chat-banner-manager', opts: { childList: true, subtree: true } },
-      { sel: 'yt-live-chat-ticker-renderer #ticker-items', opts: { childList: true, subtree: true } },
-      { sel: 'yt-live-chat-pinned-message-renderer#pinned-message', opts: { childList: true, subtree: true } },
-      {
-        sel: REPLY_PANEL_SEL,
-        opts: { childList: true, subtree: true, attributes: true, attributeFilter: ['visibility'] },
-        watchAttrs: true,
-      },
-    ];
-    const slots = WATCH.map(() => ({ el: null, mo: null }));
-    let rootObserver = null;
-    let rootObserverTarget = null;
+  const inFlight = new Map();
+  const queuedHandles = new Set();
+  const fetchQueue = [];
+  let activeFetchCount = 0;
+  let consecutiveFailures = 0;
+  let cooldownUntil = 0;
 
-    const nodeQueue = new Set();
-    let rafScheduled = false;
+  function readAttribute(tag, attribute) {
+    const match = tag.match(new RegExp(`\\b${attribute}\\s*=\\s*(["'])(.*?)\\1`, 'i'));
+    return match ? match[2] : null;
+  }
 
-    function enqueueNode(node) {
-      if (!node) return;
-      nodeQueue.add(node);
-      if (rafScheduled) return;
-      rafScheduled = true;
-      requestAnimationFrame(() => {
-        rafScheduled = false;
-        const nodes = Array.from(nodeQueue);
-        nodeQueue.clear();
-        for (const n of nodes) scanAndProcessAuthorElements(n);
+  function findOgTitleIncrementally(html, fromIndex) {
+    const metaPattern = /<meta\b[^>]*>/gi;
+    metaPattern.lastIndex = fromIndex;
+    let match;
+    while ((match = metaPattern.exec(html))) {
+      const tag = match[0];
+      if ((readAttribute(tag, 'property') || '').toLowerCase() !== 'og:title') continue;
+      const name = normalizeDisplayName(readAttribute(tag, 'content'));
+      return { name: name && !/^YouTube$/i.test(name) ? name : null, found: true };
+    }
+    return { name: null, found: false };
+  }
+
+  async function fetchDisplayNameFromNetwork(handle) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CFG.fetchTimeout);
+    try {
+      const response = await fetch(`https://www.youtube.com/${handle}`, {
+        credentials: 'same-origin',
+        signal: controller.signal,
       });
-    }
-
-    function scanAndProcessAuthorElements(root) {
-      queueAuthorCandidatesUnder(root, LIVE_CHAT_SCAN_SEL);
-    }
-
-    function makeObserver(watchAttrs) {
-      return new MutationObserver((mutList) => {
-        for (const mut of mutList) {
-          for (const node of mut.addedNodes) {
-            if (isElement(node)) enqueueNode(node);
-          }
-          if (watchAttrs && mut.type === 'attributes' && isElement(mut.target)) enqueueNode(mut.target);
-        }
-      });
-    }
-
-    function findRelatedReplyPanel(node) {
-      if (!isElement(node)) return null;
-      if (node.matches(REPLY_PANEL_SEL)) return node;
-      const closest = node.closest(REPLY_PANEL_SEL);
-      if (closest) return closest;
-      return node.querySelector(REPLY_PANEL_SEL);
-    }
-
-    function attachRootObserverIfNeeded() {
-      const root = document.querySelector('yt-live-chat-app') || document.body || document.documentElement;
-      if (!root || rootObserverTarget === root) return;
-
-      if (rootObserver) { try { rootObserver.disconnect(); } catch { } }
-      rootObserverTarget = root;
-      rootObserver = new MutationObserver((mutList) => {
-        let shouldAttach = false;
-        for (const mut of mutList) {
-          if (mut.type === 'attributes') {
-            const panel = findRelatedReplyPanel(mut.target);
-            if (panel) {
-              shouldAttach = true;
-              enqueueNode(panel);
-            }
-          }
-          for (const node of mut.addedNodes) {
-            const panel = findRelatedReplyPanel(node);
-            if (!panel) continue;
-            shouldAttach = true;
-            enqueueNode(panel);
-          }
-        }
-        if (shouldAttach) attachObserverIfNeeded();
-      });
-      rootObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['visibility'] });
-    }
-
-    function attachObserverIfNeeded() {
-      attachRootObserverIfNeeded();
-      for (let i = 0; i < WATCH.length; i++) {
-        const spec = WATCH[i];
-        const slot = slots[i];
-        const found = document.querySelector(spec.sel);
-        if (!found || (slot.el === found && slot.mo)) continue;
-        if (slot.mo) { try { slot.mo.disconnect(); } catch { } }
-        slot.el = found;
-        slot.mo = makeObserver(spec.watchAttrs);
-        slot.mo.observe(found, spec.opts);
-        enqueueNode(found);
+      if (!response.ok) {
+        return { name: null, status: response.status, kind: 'http' };
       }
-    }
 
-    function reset() {
-      for (const slot of slots) {
-        if (slot.mo) { try { slot.mo.disconnect(); } catch { } }
-        slot.el = null;
-        slot.mo = null;
+      if (!response.body?.getReader) {
+        const html = (await response.text()).slice(0, CFG.maxBytesToScan);
+        return { ...findOgTitleIncrementally(html, 0), status: response.status, kind: 'content' };
       }
-      if (rootObserver) { try { rootObserver.disconnect(); } catch { } }
-      rootObserver = null;
-      rootObserverTarget = null;
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let html = '';
+      let scannedBytes = 0;
+      let scannedChunks = 0;
+      let searchFrom = 0;
+
+      while (scannedBytes <= CFG.maxBytesToScan && scannedChunks < CFG.maxChunks) {
+        const { value, done } = await reader.read();
+        if (done) {
+          html += decoder.decode();
+          const result = findOgTitleIncrementally(html, searchFrom);
+          return { name: result.name, status: response.status, kind: 'content' };
+        }
+
+        scannedBytes += value.byteLength;
+        scannedChunks++;
+        html += decoder.decode(value, { stream: true });
+
+        const result = findOgTitleIncrementally(html, searchFrom);
+        if (result.found) {
+          await reader.cancel();
+          return { name: result.name, status: response.status, kind: 'content' };
+        }
+        searchFrom = Math.max(0, html.length - 512);
+      }
+
+      await reader.cancel();
+      return { name: null, status: response.status, kind: 'content' };
+    } catch (error) {
+      return { name: null, status: 0, kind: error?.name === 'AbortError' ? 'timeout' : 'network' };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  function isFetchSuppressed(handle) {
+    const retryAt = negativeCache.get(handle);
+    if (retryAt) {
+      if (retryAt > now()) return true;
+      negativeCache.delete(handle);
+    }
+    return cooldownUntil > now();
+  }
+
+  function queueHandleFetch(handle) {
+    const record = nameCache.peek(handle);
+    if (record && (now() - record.fetchedAt) < CFG.cacheTTL) {
+      applyNameToHandleTargets(handle, record.name);
+      clearHandleTargets(handle);
+      return;
+    }
+    if (isFetchSuppressed(handle) || queuedHandles.has(handle) || inFlight.has(handle)) return;
+    if (!hasConnectedTarget(handle)) return;
+
+    queuedHandles.add(handle);
+    fetchQueue.push(handle);
+    pumpFetchQueue();
+  }
+
+  function handleFetchResult(handle, result) {
+    if (result.name) {
+      const record = { name: result.name, fetchedAt: now() };
+      nameCache.set(handle, record);
+      schedulePersist();
+      consecutiveFailures = 0;
+      applyNameToHandleTargets(handle, record.name);
+      clearHandleTargets(handle);
+      return;
     }
 
-    return { attachObserverIfNeeded, reset };
-  })();
+    negativeCache.set(handle, now() + CFG.negativeTTL);
+    consecutiveFailures++;
+    if (result.status === 403 || result.status === 429 || consecutiveFailures >= CFG.cooldownAfterFailures) {
+      cooldownUntil = now() + CFG.cooldownMs;
+    }
+  }
+
+  function pumpFetchQueue() {
+    while (activeFetchCount < CFG.maxConcurrentFetches && fetchQueue.length) {
+      const handle = fetchQueue.shift();
+      queuedHandles.delete(handle);
+      const cached = nameCache.peek(handle);
+      if (cached && (now() - cached.fetchedAt) < CFG.cacheTTL) {
+        applyNameToHandleTargets(handle, cached.name);
+        clearHandleTargets(handle);
+        continue;
+      }
+      if (isFetchSuppressed(handle) || !hasConnectedTarget(handle)) continue;
+
+      activeFetchCount++;
+      const promise = fetchDisplayNameFromNetwork(handle);
+      inFlight.set(handle, promise);
+      promise
+        .then((result) => handleFetchResult(handle, result))
+        .finally(() => {
+          inFlight.delete(handle);
+          activeFetchCount--;
+          pumpFetchQueue();
+        });
+    }
+  }
 
   /**********************
-   * Comments Module
+   * Comments
    **********************/
   const Comments = (() => {
-    const observers = new Map(); // Element -> MutationObserver
-    const pendingRoots = new Set();
-    let scanTimer = null;
-    let scanDueAt = 0;
-    let lastScanAt = 0;
+    const observers = new Map();
+    const batcher = createScanBatcher(scanCommentRoot);
+    let reconcileScheduled = false;
 
-    function flushPendingRoots() {
-      scanTimer = null;
-      scanDueAt = 0;
-      lastScanAt = now();
-      attachObserversIfNeeded(false);
+    function findRoots() {
+      const candidates = new Set();
+      for (const root of document.querySelectorAll('ytd-comments')) candidates.add(root);
 
-      let remaining = CFG.scanMaxPerPass;
-      const roots = pendingRoots.size ? Array.from(pendingRoots) : findLikelyCommentContainers();
-      pendingRoots.clear();
+      for (const root of document.querySelectorAll('#comments')) {
+        if (!root.querySelector('ytd-comments')) candidates.add(root);
+      }
 
-      for (let i = 0; i < roots.length; i++) {
-        const root = roots[i];
-        remaining = queueCommentAuthorsUnder(root, remaining);
-        if (remaining <= 0) {
-          pendingRoots.add(root);
-          for (let j = i + 1; j < roots.length; j++) pendingRoots.add(roots[j]);
-          break;
+      for (const panel of document.querySelectorAll('ytd-engagement-panel-section-list-renderer')) {
+        if (!panel.querySelector('ytd-comments') && panel.querySelector('ytd-comment-thread-renderer')) {
+          candidates.add(panel);
         }
       }
 
-      if (pendingRoots.size) scheduleScan(CFG.scanDebounceMs);
+      const roots = Array.from(candidates);
+      return roots.filter((root, index) =>
+        !roots.some((other, otherIndex) => otherIndex !== index && root.contains(other))
+      );
     }
 
-    function scheduleScan(delay = 0) {
-      const dueAt = now() + Math.max(delay, CFG.scanDebounceMs - (now() - lastScanAt));
-      if (scanTimer && dueAt >= scanDueAt) return;
-      if (scanTimer) clearTimeout(scanTimer);
-      scanDueAt = dueAt;
-      scanTimer = setTimeout(flushPendingRoots, Math.max(0, dueAt - now()));
+    function mayContainNewRoot(node) {
+      return node.matches(COMMENT_ROOT_SEL) || !!node.querySelector(COMMENT_ROOT_SEL);
     }
 
-    function findLikelyCommentContainers() {
-      const targets = new Set();
-      const commentsRoot = document.querySelector('#comments');
-      if (commentsRoot) targets.add(commentsRoot);
-      const ytdComments = document.querySelector('ytd-comments');
-      if (ytdComments) targets.add(ytdComments);
-      const firstThread = document.querySelector('ytd-comment-thread-renderer');
-      if (firstThread) {
-        const panel = firstThread.closest('ytd-engagement-panel-section-list-renderer');
-        if (panel) targets.add(panel);
-        const itemSection = firstThread.closest('ytd-item-section-renderer');
-        if (itemSection) targets.add(itemSection);
-      }
-      return Array.from(targets);
+    function scheduleReconcile() {
+      if (reconcileScheduled) return;
+      reconcileScheduled = true;
+      queueMicrotask(() => {
+        reconcileScheduled = false;
+        reconcile();
+      });
     }
 
-    function attachObserversIfNeeded(shouldSchedule = true) {
-      let queuedNewRoot = false;
-      for (const c of findLikelyCommentContainers()) {
-        if (observers.has(c)) continue;
-        const mo = new MutationObserver((mutList) => {
-          let sawElement = false;
-          for (const mut of mutList) {
-            for (const node of mut.addedNodes) {
-              if (!isElement(node)) continue;
-              pendingRoots.add(node);
-              sawElement = true;
-            }
+    function makeObserver() {
+      return new MutationObserver((mutations) => {
+        let shouldReconcile = false;
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (!isElement(node)) continue;
+            batcher.enqueue(node);
+            if (!shouldReconcile && mayContainNewRoot(node)) shouldReconcile = true;
           }
-          if (sawElement) scheduleScan();
-        });
-        mo.observe(c, { childList: true, subtree: true });
-        observers.set(c, mo);
-        pendingRoots.add(c);
-        queuedNewRoot = true;
-      }
-      for (const [el, mo] of observers) {
-        if (!document.contains(el)) {
-          try { mo.disconnect(); } catch { }
-          observers.delete(el);
         }
+        if (shouldReconcile) scheduleReconcile();
+      });
+    }
+
+    function reconcile() {
+      const desiredRoots = new Set(findRoots());
+      for (const [root, observer] of observers) {
+        if (desiredRoots.has(root) && root.isConnected) continue;
+        observer.disconnect();
+        observers.delete(root);
       }
-      if (queuedNewRoot && shouldSchedule) scheduleScan();
+
+      for (const root of desiredRoots) {
+        if (observers.has(root)) continue;
+        const observer = makeObserver();
+        observer.observe(root, { childList: true, subtree: true });
+        observers.set(root, observer);
+        batcher.enqueue(root);
+      }
     }
 
     function reset() {
-      for (const mo of observers.values()) {
-        try { mo.disconnect(); } catch { }
-      }
+      for (const observer of observers.values()) observer.disconnect();
       observers.clear();
-      pendingRoots.clear();
-      if (scanTimer) clearTimeout(scanTimer);
-      scanTimer = null;
-      scanDueAt = 0;
-      lastScanAt = 0;
+      batcher.clear();
+      reconcileScheduled = false;
     }
 
-    return { attachObserversIfNeeded, reset, scheduleScan };
+    return { reconcile, reset };
   })();
 
-  let reattachTimer = null;
-  let reattachUntil = 0;
+  /**********************
+   * Live chat
+   **********************/
+  const LiveChat = (() => {
+    const batcher = createScanBatcher(scanLiveChatRoot);
+    let root = null;
+    let rootObserver = null;
+    let discoveryObserver = null;
 
-  function runAttachPass() {
-    LiveChat.attachObserverIfNeeded();
-    Comments.attachObserversIfNeeded();
-  }
-
-  function scheduleReattachBurst(durationMs) {
-    const until = now() + durationMs;
-    if (until > reattachUntil) reattachUntil = until;
-    if (reattachTimer) return;
-
-    const tick = () => {
-      reattachTimer = null;
-      runAttachPass();
-      if (now() < reattachUntil) {
-        reattachTimer = setTimeout(tick, CFG.reattachInterval);
+    function attach() {
+      const found = document.querySelector('yt-live-chat-app');
+      if (!found) {
+        if (!document.documentElement || discoveryObserver) return;
+        discoveryObserver = new MutationObserver((mutations) => {
+          for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+              if (!isElement(node)) continue;
+              if (node.matches('yt-live-chat-app') || node.querySelector('yt-live-chat-app')) {
+                attach();
+                return;
+              }
+            }
+          }
+        });
+        discoveryObserver.observe(document.documentElement, { childList: true, subtree: true });
+        return;
       }
-    };
 
-    tick();
-  }
+      if (root === found && rootObserver) return;
+      discoveryObserver?.disconnect();
+      discoveryObserver = null;
+      rootObserver?.disconnect();
+      root = found;
+      rootObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (isElement(node)) batcher.enqueue(node);
+          }
+        }
+      });
+      rootObserver.observe(root, { childList: true, subtree: true });
+      batcher.enqueue(root);
+    }
+
+    function reset() {
+      rootObserver?.disconnect();
+      discoveryObserver?.disconnect();
+      rootObserver = null;
+      discoveryObserver = null;
+      root = null;
+      batcher.clear();
+    }
+
+    return { attach, reset };
+  })();
 
   /**********************
-   * yt-action / yt-navigate-finish hooks
+   * Lifecycle
    **********************/
-  const YT_ACTION_DELAYS = new Map([
-    ['yt-append-continuation-items-action', 350],
-    ['yt-reload-continuation-items-command', 120],
-    ['yt-history-load', 120],
-    ['yt-get-multi-page-menu-action', 120],
-    ['yt-create-comment-action', 120],
-    ['yt-create-comment-reply-action', 120],
+  const YT_ACTIONS = new Set([
+    'yt-append-continuation-items-action',
+    'yt-reload-continuation-items-command',
+    'yt-history-load',
+    'yt-get-multi-page-menu-action',
+    'yt-create-comment-action',
+    'yt-create-comment-reply-action',
   ]);
 
-  function hookYouTubeEvents() {
-    document.addEventListener('yt-action', (e) => {
-      const name = e && e.detail && e.detail.actionName;
-      const delay = YT_ACTION_DELAYS.get(name);
-      if (delay !== undefined) {
-        scheduleReattachBurst(CFG.actionReattachMs);
-        Comments.scheduleScan(delay);
-      }
-    });
+  function isLiveChatPage() {
+    return location.pathname === '/live_chat' || location.pathname === '/live_chat_replay';
+  }
 
-    document.addEventListener('yt-navigate-finish', () => {
-      LiveChat.reset();
+  function clearDomCandidates() {
+    targetsByHandle.clear();
+    authorState = new WeakMap();
+    targetInfo = new WeakMap();
+  }
+
+  function initializeCurrentSurface() {
+    if (isLiveChatPage()) {
       Comments.reset();
-      setTimeout(() => {
-        scheduleReattachBurst(CFG.navigateReattachMs);
-        Comments.scheduleScan(80);
-      }, 80);
-    });
+      LiveChat.attach();
+    } else {
+      LiveChat.reset();
+      Comments.reconcile();
+    }
   }
 
-  async function bootstrap() {
-    hookYouTubeEvents();
+  document.addEventListener('yt-action', (event) => {
+    if (isLiveChatPage()) return;
+    const actionName = event?.detail?.actionName;
+    if (YT_ACTIONS.has(actionName)) Comments.reconcile();
+  });
 
-    while (!document.documentElement) await sleep(20);
+  document.addEventListener('yt-engagement-panel-visibility-change', () => {
+    if (!isLiveChatPage()) Comments.reconcile();
+  });
 
-    scheduleReattachBurst(CFG.startupReattachMs);
-    Comments.scheduleScan(200);
+  document.addEventListener('yt-navigate-finish', () => {
+    Comments.reset();
+    LiveChat.reset();
+    clearDomCandidates();
+    initializeCurrentSurface();
+  });
 
-    document.addEventListener('DOMContentLoaded', () => {
-      scheduleReattachBurst(CFG.startupReattachMs);
-      Comments.scheduleScan(120);
-    }, { once: true });
+  initializeCurrentSurface();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeCurrentSurface, { once: true });
   }
-
-  bootstrap().catch(() => { });
 })();
