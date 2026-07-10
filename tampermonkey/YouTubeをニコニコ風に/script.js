@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeをニコニコ風に
 // @namespace    https://github.com/tampermonkey-youtube-danmaku
-// @version      2.2.7
+// @version      2.2.8
 // @description  YouTubeライブチャットのコメントをニコニコ動画風に動画上へ弾幕表示する
 // @author       You
 // @match        https://www.youtube.com/*
@@ -36,8 +36,7 @@
 
   // ─── バッチ処理設定 ───
   const PERF = {
-    batchDelay: 80,      // バッチ処理の間隔 (ms)
-    batchSize: 10,       // 1回に処理する最大件数
+    maxPerFrame: 10,     // 1フレームに処理する最大件数
     maxQueueSize: 60,    // キューの最大サイズ（超過分は古いものを捨てる）
     skipWhenHidden: true, // タブ非表示時はスキップ
   };
@@ -87,71 +86,6 @@
     return el;
   }
 
-  // ─── 動的フォントサイズ（画面サイズから自動計算）───
-  let fontSize = 32; // 初期値（overlay作成後に上書き）
-
-  function updateFontSize() {
-    if (!overlayHeight) return;
-    fontSize = Math.floor(overlayHeight * CONFIG.displayArea / (CONFIG.maxLines * CONFIG.lineHeightRatio));
-    if (overlay) overlay.style.setProperty('--yt-danmaku-fs', fontSize + 'px');
-  }
-
-  // ─── 映像領域に合わせてオーバーレイの位置・サイズを更新 ───
-  function updateOverlayBounds() {
-    if (!overlay) return;
-    const player = document.querySelector('#movie_player');
-    const host = overlay.parentElement;
-    if (!player || !host) return;
-    const video = player.querySelector('video');
-    const playerRect = player.getBoundingClientRect();
-    const hostRect = host.getBoundingClientRect();
-    const baseLeft = playerRect.left - hostRect.left;
-    const baseTop = playerRect.top - hostRect.top;
-
-    if (!video || !video.videoWidth || !video.videoHeight) {
-      // 映像情報が未取得の場合はフル表示
-      overlay.style.top = baseTop + 'px';
-      overlay.style.left = baseLeft + 'px';
-      overlay.style.width = player.clientWidth + 'px';
-      overlay.style.height = player.clientHeight + 'px';
-      overlayWidth = player.clientWidth;
-      overlayHeight = player.clientHeight;
-      overlay.style.setProperty('--yt-danmaku-w', overlayWidth + 'px');
-      updateFontSize();
-      return;
-    }
-
-    const playerW = player.clientWidth;
-    const playerH = player.clientHeight;
-    const videoAspect = video.videoWidth / video.videoHeight;
-    const playerAspect = playerW / playerH;
-
-    let renderW, renderH, offsetX, offsetY;
-
-    if (playerAspect > videoAspect) {
-      // プレイヤーが横長 → 左右に黒帯（ピラーボックス）
-      renderH = playerH;
-      renderW = playerH * videoAspect;
-      offsetX = (playerW - renderW) / 2;
-      offsetY = 0;
-    } else {
-      // プレイヤーが縦長 → 上下に黒帯（レターボックス）
-      renderW = playerW;
-      renderH = playerW / videoAspect;
-      offsetX = 0;
-      offsetY = (playerH - renderH) / 2;
-    }
-
-    overlay.style.top = (baseTop + offsetY) + 'px';
-    overlay.style.left = (baseLeft + offsetX) + 'px';
-    overlay.style.width = renderW + 'px';
-    overlay.style.height = renderH + 'px';
-    overlayWidth = renderW;
-    overlayHeight = renderH;
-    overlay.style.setProperty('--yt-danmaku-w', overlayWidth + 'px');
-    updateFontSize();
-  }
-
   // ─── 共通スタイルの注入 ───
   function injectStyles() {
     if (document.getElementById('yt-danmaku-style')) return;
@@ -177,6 +111,8 @@
         position: absolute;
         white-space: nowrap;
         left: 100%;
+        color: var(--yt-danmaku-color, ${CONFIG.color});
+        font-size: var(--yt-danmaku-fs, 32px);
         font-family: ${CONFIG.fontFamily};
         font-weight: ${CONFIG.fontWeight};
         opacity: ${CONFIG.opacity};
@@ -186,7 +122,40 @@
           -1px -1px 2px ${CONFIG.shadowColor},
           1px -1px 2px ${CONFIG.shadowColor},
           -1px 1px 2px ${CONFIG.shadowColor};
-        backface-visibility: hidden;
+      }
+      .yt-danmaku-item--running {
+        animation: yt-danmaku-scroll ${CONFIG.duration}s linear forwards;
+      }
+      .yt-danmaku-item--highlighted {
+        padding: 6px 14px;
+        border-radius: 8px;
+        background: var(--yt-danmaku-bg, transparent);
+      }
+      .yt-danmaku-item__header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 2px;
+        font-size: calc(var(--yt-danmaku-fs, 32px) * 0.55);
+      }
+      .yt-danmaku-item__meta {
+        opacity: 0.9;
+      }
+      .yt-danmaku-item__separator {
+        opacity: 0.7;
+      }
+      .yt-danmaku-item__avatar {
+        width: calc(var(--yt-danmaku-fs, 32px) * 0.875);
+        height: calc(var(--yt-danmaku-fs, 32px) * 0.875);
+        border-radius: 50%;
+        object-fit: cover;
+        flex-shrink: 0;
+      }
+      .yt-danmaku-item__badge {
+        width: calc(var(--yt-danmaku-fs, 32px) * 0.55);
+        height: calc(var(--yt-danmaku-fs, 32px) * 0.55);
+        object-fit: contain;
+        flex-shrink: 0;
       }
       .yt-danmaku-emoji {
         height: var(--yt-danmaku-fs, 32px);
@@ -194,6 +163,10 @@
         vertical-align: middle;
         margin: 0 1px;
         object-fit: contain;
+      }
+      .yt-danmaku-sticker {
+        width: calc(var(--yt-danmaku-fs, 32px) * 2);
+        height: calc(var(--yt-danmaku-fs, 32px) * 2);
       }
       .yt-danmaku-toggle-button {
         position: relative;
@@ -326,7 +299,8 @@
     if (paidColorProp) {
       const amountEl = node.querySelector('#purchase-amount, #purchase-amount-chip');
       info.amount = amountEl ? (amountEl.textContent || '').trim() : null;
-      info.bgColor = getComputedStyle(node).getPropertyValue(paidColorProp).trim() || 'rgba(230,33,23,0.8)';
+      const chatWindow = node.ownerDocument.defaultView;
+      info.bgColor = chatWindow.getComputedStyle(node).getPropertyValue(paidColorProp).trim() || 'rgba(230,33,23,0.8)';
       info.textColor = '#FFFFFF';
     }
 
@@ -353,157 +327,137 @@
   ]);
 
   // ─── メインロジック ───
-  let overlay = null;
-  let overlayWidth = 0;
-  let overlayHeight = 0;
-  let resizeObserver = null;
-  let laneTracker = []; // 各レーンの最後のコメント情報 { startTime, speed, width }
+  const PROCESSED_ID_LIMIT = 500;
+  const CHANNEL_NAME_RETRIES = 20;
+  const CHANNEL_NAME_INTERVAL = 50;
+  const DISCOVERY_LIMIT = 15000;
+
   let enabled = true;
-  let watchSession = 0;
-  let chatObserver = null;
-  let chatItemsHostObserver = null;
-  let chatObservedItems = null;
-  let chatItemsHost = null;
-  let pageObserver = null;
-  let waitPlayerObserver = null;
-  let controlsObserver = null;
-  let danmakuToggleButton = null;
-  let danmakuToggleTooltip = null;
-  let chatRetryTimer = 0;
-  let chatFrameLoadTarget = null;
-  let chatFrameLoadHandler = null;
-  let chatFrameLoadSession = 0;
-  const processedIds = new Set(); // 重複コメント排除用
-  const processedIdQueue = [];   // FIFO順で管理
-  const channelNameTimers = new Set();
+  let sessionSequence = 0;
+  let currentSession = null;
 
-  // ── バッチ処理キュー ──
-  let pendingNodes = [];
-  let flushTimer = 0;
+  const processedIds = new Set();
+  const processedIdRing = new Array(PROCESSED_ID_LIMIT);
+  let processedIdCursor = 0;
+  let processedIdCount = 0;
 
-  function clearTimeoutId(timerId) {
-    if (timerId) clearTimeout(timerId);
-    return 0;
-  }
+  const pendingQueue = new Array(PERF.maxQueueSize);
+  let pendingQueueHead = 0;
+  let pendingQueueSize = 0;
+  let pendingFrame = 0;
 
-  function disconnectObserver(observer) {
+  const pendingChannelNames = new Map();
+  let channelNameTimer = 0;
+
+  function disconnect(observer) {
     if (observer) observer.disconnect();
-    return null;
   }
 
-  function nextWatchSession() {
-    watchSession += 1;
-    return watchSession;
+  function isActiveSession(session) {
+    return Boolean(session && session.active && currentSession === session);
   }
 
-  function isActiveWatchSession(session) {
-    return session === watchSession;
+  function clearProcessedIds() {
+    processedIds.clear();
+    processedIdRing.fill(undefined);
+    processedIdCursor = 0;
+    processedIdCount = 0;
   }
 
-  function clearChannelNameTimers() {
-    for (const timerId of channelNameTimers) clearTimeout(timerId);
-    channelNameTimers.clear();
-  }
+  function rememberMessageId(id) {
+    if (!id) return true;
+    if (processedIds.has(id)) return false;
 
-  function detachChatFrameLoad() {
-    if (chatFrameLoadTarget && chatFrameLoadHandler) {
-      chatFrameLoadTarget.removeEventListener('load', chatFrameLoadHandler);
+    if (processedIdCount === PROCESSED_ID_LIMIT) {
+      processedIds.delete(processedIdRing[processedIdCursor]);
+    } else {
+      processedIdCount += 1;
     }
-    chatFrameLoadTarget = null;
-    chatFrameLoadHandler = null;
-    chatFrameLoadSession = 0;
+
+    processedIdRing[processedIdCursor] = id;
+    processedIdCursor = (processedIdCursor + 1) % PROCESSED_ID_LIMIT;
+    processedIds.add(id);
+    return true;
   }
 
-  function stopChatTracking() {
-    chatObserver = disconnectObserver(chatObserver);
-    chatItemsHostObserver = disconnectObserver(chatItemsHostObserver);
-    pageObserver = disconnectObserver(pageObserver);
-    chatObservedItems = null;
-    chatItemsHost = null;
-    chatRetryTimer = clearTimeoutId(chatRetryTimer);
-    detachChatFrameLoad();
+  function clearPendingQueue() {
+    if (pendingFrame) cancelAnimationFrame(pendingFrame);
+    pendingFrame = 0;
+    pendingQueue.fill(undefined);
+    pendingQueueHead = 0;
+    pendingQueueSize = 0;
   }
 
-  function stopPlayerWait() {
-    waitPlayerObserver = disconnectObserver(waitPlayerObserver);
+  function clearChannelNameQueue() {
+    if (channelNameTimer) clearTimeout(channelNameTimer);
+    channelNameTimer = 0;
+    pendingChannelNames.clear();
   }
 
-  function stopControlsObserver() {
-    controlsObserver = disconnectObserver(controlsObserver);
-    hideDanmakuToggleTooltip();
-    if (danmakuToggleButton && danmakuToggleButton.isConnected) danmakuToggleButton.remove();
-    danmakuToggleButton = null;
+  function resetRuntimeState(session, clearProcessed) {
+    clearPendingQueue();
+    clearChannelNameQueue();
+    if (session) session.laneTracker = [];
+    if (clearProcessed) clearProcessedIds();
   }
 
-  function stopOverlay() {
-    resizeObserver = disconnectObserver(resizeObserver);
-    if (overlay && overlay.isConnected) overlay.remove();
-    overlay = null;
-    overlayWidth = 0;
-    overlayHeight = 0;
+  function enqueueEntry(entry, session) {
+    if (!isActiveSession(session) || !enabled) return;
+    if (PERF.skipWhenHidden && document.hidden) return;
+
+    if (pendingQueueSize === PERF.maxQueueSize) {
+      pendingQueue[pendingQueueHead] = entry;
+      pendingQueueHead = (pendingQueueHead + 1) % PERF.maxQueueSize;
+    } else {
+      const tail = (pendingQueueHead + pendingQueueSize) % PERF.maxQueueSize;
+      pendingQueue[tail] = entry;
+      pendingQueueSize += 1;
+    }
+
+    if (!pendingFrame) pendingFrame = requestAnimationFrame(flushPendingFrame);
   }
 
-  function resetWatchState(clearProcessed) {
-    nextWatchSession();
-    stopChatTracking();
-    stopPlayerWait();
-    stopControlsObserver();
-    stopOverlay();
-    resetRuntimeState(clearProcessed);
+  function dequeueEntry() {
+    if (!pendingQueueSize) return null;
+    const entry = pendingQueue[pendingQueueHead];
+    pendingQueue[pendingQueueHead] = undefined;
+    pendingQueueHead = (pendingQueueHead + 1) % PERF.maxQueueSize;
+    pendingQueueSize -= 1;
+    return entry;
   }
 
-  function waitForPlayer(session) {
-    waitPlayerObserver = disconnectObserver(waitPlayerObserver);
-    waitPlayerObserver = new MutationObserver(() => {
-      if (!isActiveWatchSession(session)) return;
-      if (!document.querySelector('#movie_player')) return;
-      waitPlayerObserver = disconnectObserver(waitPlayerObserver);
-      overlay = createOverlay();
-      if (overlay) {
-        startControlsObserver(session);
-        waitForChat(session);
+  function deferChannelName(node, chatInfo, session) {
+    pendingChannelNames.set(node, {
+      chatInfo,
+      remaining: CHANNEL_NAME_RETRIES,
+      session,
+    });
+    if (!channelNameTimer) channelNameTimer = setTimeout(pollChannelNames, CHANNEL_NAME_INTERVAL);
+  }
+
+  function pollChannelNames() {
+    channelNameTimer = 0;
+
+    for (const [node, pending] of pendingChannelNames) {
+      if (!isActiveSession(pending.session)) {
+        pendingChannelNames.delete(node);
+        continue;
       }
-    });
-    waitPlayerObserver.observe(document.body, { childList: true, subtree: true });
-  }
 
-  function startWatchSession(session) {
-    overlay = createOverlay();
-    if (overlay) {
-      startControlsObserver(session);
-      waitForChat(session);
-      return;
+      const authorEl = node.querySelector('#author-name');
+      const name = authorEl ? (authorEl.textContent || '').trim() : '';
+      pending.remaining -= 1;
+
+      if (!name.startsWith('@') || pending.remaining <= 0) {
+        if (name) pending.chatInfo.authorName = name;
+        pendingChannelNames.delete(node);
+        enqueueEntry({ node, chatInfo: pending.chatInfo }, pending.session);
+      }
     }
-    waitForPlayer(session);
-  }
 
-  function createDanmakuToggleButton() {
-    const button = document.createElement('button');
-    button.className = 'ytp-button yt-danmaku-toggle-button';
-    button.type = 'button';
-
-    const svg = document.createElementNS(SVG_NS, 'svg');
-    svg.classList.add('yt-danmaku-toggle-button__icon');
-    svg.setAttribute('viewBox', DANMAKU_ICON_VIEWBOX);
-    svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('focusable', 'false');
-
-    const path = document.createElementNS(SVG_NS, 'path');
-    path.setAttribute('fill-rule', 'evenodd');
-    svg.appendChild(path);
-    button.appendChild(svg);
-
-    button.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      toggleDanmaku();
-    });
-    button.addEventListener('mouseenter', showDanmakuToggleTooltip);
-    button.addEventListener('focus', showDanmakuToggleTooltip);
-    button.addEventListener('mouseleave', hideDanmakuToggleTooltip);
-    button.addEventListener('blur', hideDanmakuToggleTooltip);
-
-    return button;
+    if (pendingChannelNames.size) {
+      channelNameTimer = setTimeout(pollChannelNames, CHANNEL_NAME_INTERVAL);
+    }
   }
 
   function getDanmakuToggleLabels() {
@@ -523,516 +477,623 @@
     ]);
   }
 
-  function showDanmakuToggleTooltip() {
-    if (!danmakuToggleButton || !danmakuToggleButton.isConnected) return;
+  function hideDanmakuToggleTooltip(session) {
+    if (session && session.tooltip && session.tooltip.isConnected) session.tooltip.remove();
+    if (session) session.tooltip = null;
+  }
 
-    const player = document.querySelector('#movie_player');
-    if (!player) return;
+  function showDanmakuToggleTooltip(session) {
+    if (!isActiveSession(session) || !session.button || !session.button.isConnected) return;
+    if (!session.player || !session.player.isConnected) return;
 
-    if (!danmakuToggleTooltip || !danmakuToggleTooltip.isConnected) {
-      danmakuToggleTooltip = createDanmakuToggleTooltip();
-      player.appendChild(danmakuToggleTooltip);
+    if (!session.tooltip || !session.tooltip.isConnected) {
+      session.tooltip = createDanmakuToggleTooltip();
+      session.player.appendChild(session.tooltip);
     }
 
-    const buttonRect = danmakuToggleButton.getBoundingClientRect();
-    const playerRect = player.getBoundingClientRect();
-    const tooltipRect = danmakuToggleTooltip.getBoundingClientRect();
-    const left = buttonRect.left - playerRect.left + (buttonRect.width / 2) - (tooltipRect.width / 2);
+    const buttonRect = session.button.getBoundingClientRect();
+    const playerRect = session.player.getBoundingClientRect();
+    const tooltipRect = session.tooltip.getBoundingClientRect();
+    const left = buttonRect.left - playerRect.left + (buttonRect.width - tooltipRect.width) / 2;
     const top = buttonRect.top - playerRect.top - tooltipRect.height - 22;
 
-    danmakuToggleTooltip.style.left = Math.max(8, left) + 'px';
-    danmakuToggleTooltip.style.top = Math.max(8, top) + 'px';
-    danmakuToggleTooltip.style.bottom = 'auto';
+    session.tooltip.style.left = Math.max(8, left) + 'px';
+    session.tooltip.style.top = Math.max(8, top) + 'px';
+    session.tooltip.style.bottom = 'auto';
   }
 
-  function hideDanmakuToggleTooltip() {
-    if (danmakuToggleTooltip && danmakuToggleTooltip.isConnected) danmakuToggleTooltip.remove();
-    danmakuToggleTooltip = null;
-  }
-
-  function syncDanmakuToggleButtonState() {
-    if (!danmakuToggleButton) return;
-
+  function syncDanmakuToggleButtonState(session) {
+    if (!session || !session.button) return;
     const labels = getDanmakuToggleLabels();
     const nextLabel = enabled ? labels.disable : labels.enable;
-    const path = danmakuToggleButton.querySelector('path');
-    const svg = danmakuToggleButton.querySelector('svg');
-    if (path && svg) {
+
+    if (session.buttonPath) {
+      const svg = session.buttonPath.ownerSVGElement;
       if (enabled) {
-        svg.setAttribute('viewBox', DANMAKU_ICON_VIEWBOX);
-        path.setAttribute('d', DANMAKU_ICON_ON_PATH);
-        path.removeAttribute('stroke');
-        path.removeAttribute('stroke-width');
-        path.removeAttribute('stroke-linejoin');
-        path.removeAttribute('stroke-linecap');
+        if (svg) svg.setAttribute('viewBox', DANMAKU_ICON_VIEWBOX);
+        session.buttonPath.setAttribute('d', DANMAKU_ICON_ON_PATH);
+        session.buttonPath.removeAttribute('stroke');
+        session.buttonPath.removeAttribute('stroke-width');
+        session.buttonPath.removeAttribute('stroke-linejoin');
+        session.buttonPath.removeAttribute('stroke-linecap');
       } else {
-        svg.setAttribute('viewBox', '0 -960 960 960');
-        path.setAttribute('d', DANMAKU_ICON_OFF_PATH);
-        path.setAttribute('stroke', '#fff');
-        path.setAttribute('stroke-width', '25.0');
-        path.setAttribute('stroke-linejoin', 'round');
-        path.setAttribute('stroke-linecap', 'round');
+        if (svg) svg.setAttribute('viewBox', '0 -960 960 960');
+        session.buttonPath.setAttribute('d', DANMAKU_ICON_OFF_PATH);
+        session.buttonPath.setAttribute('stroke', '#fff');
+        session.buttonPath.setAttribute('stroke-width', '25.0');
+        session.buttonPath.setAttribute('stroke-linejoin', 'round');
+        session.buttonPath.setAttribute('stroke-linecap', 'round');
       }
     }
 
-    danmakuToggleButton.classList.toggle('yt-danmaku-toggle-button--enabled', enabled);
-    danmakuToggleButton.setAttribute('aria-label', nextLabel + ' ' + labels.ariaShortcut);
-    danmakuToggleButton.setAttribute('aria-keyshortcuts', DANMAKU_TOGGLE_SHORTCUT);
-    danmakuToggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-    danmakuToggleButton.setAttribute('title', '');
-    danmakuToggleButton.setAttribute('data-title-no-tooltip', labels.title);
-    danmakuToggleButton.setAttribute('data-tooltip-title', labels.title);
+    session.button.classList.toggle('yt-danmaku-toggle-button--enabled', enabled);
+    session.button.setAttribute('aria-label', nextLabel + ' ' + labels.ariaShortcut);
+    session.button.setAttribute('aria-keyshortcuts', DANMAKU_TOGGLE_SHORTCUT);
+    session.button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    session.button.setAttribute('title', '');
+    session.button.setAttribute('data-title-no-tooltip', labels.title);
+    session.button.setAttribute('data-tooltip-title', labels.title);
   }
 
-  function ensureDanmakuToggleButton() {
-    // チャットパネルが存在しない、または非表示(collapsed)の場合はボタンを隠す
-    const chatContainer = document.querySelector('ytd-live-chat-frame#chat');
-    const chatFrame = document.querySelector('#chatframe');
-    const chatVisible = chatFrame && chatContainer && !chatContainer.hasAttribute('collapsed') && !chatContainer.hidden;
+  function createDanmakuToggleButton(session) {
+    injectStyles();
+    const button = document.createElement('button');
+    button.className = 'ytp-button yt-danmaku-toggle-button';
+    button.type = 'button';
+
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.classList.add('yt-danmaku-toggle-button__icon');
+    svg.setAttribute('viewBox', DANMAKU_ICON_VIEWBOX);
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill-rule', 'evenodd');
+    svg.appendChild(path);
+    button.appendChild(svg);
+
+    session.buttonPath = path;
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleDanmaku();
+    });
+    button.addEventListener('mouseenter', () => showDanmakuToggleTooltip(session));
+    button.addEventListener('focus', () => showDanmakuToggleTooltip(session));
+    button.addEventListener('mouseleave', () => hideDanmakuToggleTooltip(session));
+    button.addEventListener('blur', () => hideDanmakuToggleTooltip(session));
+
+    return button;
+  }
+
+  function ensureDanmakuToggleButton(session) {
+    if (!isActiveSession(session)) return false;
+    const chatVisible = session.chatFrame && session.chatContainer
+      && !session.chatContainer.hasAttribute('collapsed')
+      && !session.chatContainer.hidden;
+
     if (!chatVisible) {
-      if (danmakuToggleButton && danmakuToggleButton.isConnected) danmakuToggleButton.remove();
+      hideDanmakuToggleTooltip(session);
+      if (session.button && session.button.isConnected) session.button.remove();
       return false;
     }
 
-    const rightControls = document.querySelector('#movie_player .ytp-right-controls');
-    const subtitlesButton = rightControls ? rightControls.querySelector('.ytp-subtitles-button') : null;
-    if (!rightControls || !subtitlesButton) return false;
-
-    const insertionParent = subtitlesButton.parentNode;
-    if (!insertionParent || !rightControls.contains(insertionParent)) return false;
-
-    if (!danmakuToggleButton || !danmakuToggleButton.isConnected) {
-      danmakuToggleButton = createDanmakuToggleButton();
+    if (!session.controlsParent || !session.controlsParent.isConnected
+      || !session.subtitlesButton || !session.subtitlesButton.isConnected) {
+      const rightControls = session.player.querySelector('.ytp-right-controls');
+      const subtitlesButton = rightControls && rightControls.querySelector('.ytp-subtitles-button');
+      const controlsParent = subtitlesButton && subtitlesButton.parentNode;
+      if (!rightControls || !subtitlesButton || !controlsParent || !rightControls.contains(controlsParent)) return false;
+      session.subtitlesButton = subtitlesButton;
+      session.controlsParent = controlsParent;
     }
 
-    syncDanmakuToggleButtonState();
-
-    if (danmakuToggleButton.parentNode !== insertionParent || danmakuToggleButton.nextSibling !== subtitlesButton) {
-      insertionParent.insertBefore(danmakuToggleButton, subtitlesButton);
+    if (!session.button) {
+      session.button = createDanmakuToggleButton(session);
+      syncDanmakuToggleButtonState(session);
     }
 
+    if (session.button.parentNode !== session.controlsParent
+      || session.button.nextSibling !== session.subtitlesButton) {
+      session.controlsParent.insertBefore(session.button, session.subtitlesButton);
+    }
     return true;
-  }
-
-  function startControlsObserver(session) {
-    controlsObserver = disconnectObserver(controlsObserver);
-    ensureDanmakuToggleButton();
-
-    const player = document.querySelector('#movie_player');
-    if (!player) return;
-
-    controlsObserver = new MutationObserver(() => {
-      if (!isActiveWatchSession(session)) return;
-      ensureDanmakuToggleButton();
-    });
-    controlsObserver.observe(player, { childList: true, subtree: true });
   }
 
   function toggleDanmaku() {
     enabled = !enabled;
-    if (!enabled && overlay) overlay.textContent = '';
-    resetRuntimeState(false);
-    syncDanmakuToggleButtonState();
+    const session = currentSession;
+    if (session && session.overlay && !enabled) session.overlay.replaceChildren();
+    resetRuntimeState(session, false);
+    if (session) syncDanmakuToggleButtonState(session);
   }
 
-  function enqueueNode(node) {
-    if (!node || node.nodeType !== 1) return;
-    pendingNodes.push(node);
-    // キューが溢れたら古いものを捨てる
-    if (pendingNodes.length > PERF.maxQueueSize) {
-      pendingNodes.splice(0, pendingNodes.length - PERF.maxQueueSize);
+  function updateOverlayBounds(session, observedSize) {
+    if (!isActiveSession(session) || !session.overlay || !session.overlay.isConnected) return;
+
+    const playerW = observedSize ? observedSize.width : session.player.clientWidth;
+    const playerH = observedSize ? observedSize.height : session.player.clientHeight;
+    if (!playerW || !playerH) return;
+
+    const video = session.video;
+    let renderW = playerW;
+    let renderH = playerH;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (video && video.videoWidth && video.videoHeight) {
+      const videoAspect = video.videoWidth / video.videoHeight;
+      const playerAspect = playerW / playerH;
+      if (playerAspect > videoAspect) {
+        renderW = playerH * videoAspect;
+        offsetX = (playerW - renderW) / 2;
+      } else {
+        renderH = playerW / videoAspect;
+        offsetY = (playerH - renderH) / 2;
+      }
     }
-    if (!flushTimer) flushTimer = setTimeout(flushPendingNodes, PERF.batchDelay);
-  }
 
-  function flushPendingNodes() {
-    flushTimer = 0;
-    if (PERF.skipWhenHidden && document.hidden) {
-      pendingNodes.length = 0;
-      return;
+    const nextFontSize = Math.max(1, Math.floor(
+      renderH * CONFIG.displayArea / (CONFIG.maxLines * CONFIG.lineHeightRatio),
+    ));
+    if (session.overlayWidth !== renderW || session.overlayHeight !== renderH) {
+      session.laneTracker = [];
     }
-    const batch = pendingNodes.splice(0, PERF.batchSize);
-    for (const node of batch) processNode(node);
-    // まだキューに残っていれば次のバッチをスケジュール
-    if (pendingNodes.length) flushTimer = setTimeout(flushPendingNodes, PERF.batchDelay);
+    session.overlayWidth = renderW;
+    session.overlayHeight = renderH;
+    session.fontSize = nextFontSize;
+    session.overlay.style.cssText = `top:${offsetY}px;left:${offsetX}px;width:${renderW}px;height:${renderH}px;--yt-danmaku-w:${renderW}px;--yt-danmaku-fs:${nextFontSize}px`;
   }
 
-  // ── オーバーレイ作成 ──
-  function createOverlay() {
-    const player = document.querySelector('#movie_player');
-    if (!player) return null;
-    const videoLayer = player.querySelector('.html5-video-container');
-
-    const existing = player.querySelector('#yt-danmaku-overlay');
-    if (existing) existing.remove();
+  function ensureOverlay(session) {
+    if (!isActiveSession(session) || !session.player || !session.player.isConnected) return null;
+    if (session.overlay && session.overlay.isConnected) return session.overlay;
 
     injectStyles();
+    const staleOverlay = session.player.querySelector('#yt-danmaku-overlay');
+    if (staleOverlay) staleOverlay.remove();
 
-    const el = h('div', { id: 'yt-danmaku-overlay' });
-    player.style.position = 'relative';
+    const overlay = document.createElement('div');
+    overlay.id = 'yt-danmaku-overlay';
+    overlay.addEventListener('animationend', (event) => {
+      const item = event.target;
+      if (item && item.nodeType === 1 && item.parentNode === overlay
+        && item.classList.contains('yt-danmaku-item')) {
+        item.remove();
+      }
+    });
 
-    if (videoLayer && videoLayer.parentNode === player) {
-      videoLayer.insertAdjacentElement('afterend', el);
+    const videoLayer = session.player.querySelector('.html5-video-container');
+    if (videoLayer && videoLayer.parentNode === session.player) {
+      videoLayer.insertAdjacentElement('afterend', overlay);
     } else {
-      player.appendChild(el);
+      session.player.appendChild(overlay);
     }
 
-    // ResizeObserverでプレイヤーサイズ変更を監視 → 映像領域を再計算
-    if (resizeObserver) resizeObserver.disconnect();
-    resizeObserver = new ResizeObserver(() => updateOverlayBounds());
-    resizeObserver.observe(player);
+    session.overlay = overlay;
+    session.resizeObserver = new ResizeObserver((entries) => {
+      if (entries[0]) updateOverlayBounds(session, entries[0].contentRect);
+    });
+    session.resizeObserver.observe(session.player);
 
-    // video のメタデータ読み込み時にも再計算（アスペクト比が確定するタイミング）
-    const playerVideo = player.querySelector('video');
-    if (playerVideo) playerVideo.addEventListener('loadedmetadata', () => updateOverlayBounds(), { once: true });
+    if (session.video) {
+      session.video.addEventListener('loadedmetadata', () => updateOverlayBounds(session), {
+        once: true,
+        signal: session.abortController.signal,
+      });
+    }
 
-    updateOverlayBounds();
-    return el;
+    updateOverlayBounds(session);
+    return overlay;
   }
 
-  // ── レーンの衝突安全判定 ──
-  // 前のコメントに新しいコメントが追いつかないか検査
-  function isLaneSafe(prev, now, newSpeed) {
-    if (!prev) return true; // 空きレーン
+  function isLaneSafe(session, previous, now, newSpeed) {
+    if (!previous) return true;
+    const elapsed = (now - previous.startTime) / 1000;
+    if (elapsed < previous.width / previous.speed) return false;
+    if (newSpeed <= previous.speed) return true;
 
-    const elapsed = (now - prev.startTime) / 1000; // 秒
-
-    // 前のコメントが画面内に完全に入ったか？ (右端が画面右端を通過)
-    if (elapsed < prev.width / prev.speed) return false;
-
-    // 新コメントが遅いか同速なら追いつかない
-    if (newSpeed <= prev.speed) return true;
-
-    // 前コメントの右端の現在位置
-    const rightEdge = overlayWidth + prev.width - prev.speed * elapsed;
-    if (rightEdge <= 0) return true; // 既に画面外
-
-    // 追いつくまでの時間 vs 前コメントが画面外に出るまでの時間
-    const gap = overlayWidth - rightEdge;
-    return gap / (newSpeed - prev.speed) > rightEdge / prev.speed;
+    const rightEdge = session.overlayWidth + previous.width - previous.speed * elapsed;
+    if (rightEdge <= 0) return true;
+    const gap = session.overlayWidth - rightEdge;
+    return gap / (newSpeed - previous.speed) > rightEdge / previous.speed;
   }
 
-  // ── 行割り当て（衝突検知付き・特殊コメントは2行分確保）──
-  function getAvailableLine(tall, newSpeed, newWidth) {
-    const now = Date.now();
-    const maxLines = CONFIG.maxLines;
-    if (laneTracker.length !== maxLines) laneTracker = new Array(maxLines).fill(null);
+  function getAvailableLine(session, tall, newSpeed, newWidth) {
+    const now = performance.now();
+    if (session.laneTracker.length !== CONFIG.maxLines) {
+      session.laneTracker = new Array(CONFIG.maxLines).fill(null);
+    }
+
     const needed = tall ? 2 : 1;
     const info = { startTime: now, speed: newSpeed, width: newWidth };
-
-    for (let i = 0; i <= maxLines - needed; i++) {
-      let ok = true;
-      for (let j = 0; j < needed; j++) {
-        if (!isLaneSafe(laneTracker[i + j], now, newSpeed)) { ok = false; break; }
+    for (let i = 0; i <= CONFIG.maxLines - needed; i += 1) {
+      let available = true;
+      for (let j = 0; j < needed; j += 1) {
+        if (!isLaneSafe(session, session.laneTracker[i + j], now, newSpeed)) {
+          available = false;
+          break;
+        }
       }
-      if (ok) {
-        for (let j = 0; j < needed; j++) laneTracker[i + j] = info;
+      if (available) {
+        for (let j = 0; j < needed; j += 1) session.laneTracker[i + j] = info;
         return i;
       }
     }
-    // 全レーン埋まっている場合: ランダムにフォールバック
-    const fallback = Math.floor(Math.random() * (maxLines - needed + 1));
-    for (let j = 0; j < needed; j++) laneTracker[fallback + j] = info;
+
+    const fallback = Math.floor(Math.random() * (CONFIG.maxLines - needed + 1));
+    for (let j = 0; j < needed; j += 1) session.laneTracker[fallback + j] = info;
     return fallback;
   }
 
-  // ── 弾幕生成 ──
-  function spawnDanmaku(messageFragment, chatInfo) {
-    if (!enabled) return;
-    if (!overlay || !overlay.isConnected) overlay = createOverlay();
-    if (!overlay) return;
+  function createMessageDescriptor(node, chatInfo) {
+    const message = node.querySelector('#message');
+    const sticker = message ? null : node.querySelector('#sticker img, #sticker-container img');
+    let fragment = message ? buildMessageFragment(message) : null;
 
-    const isSpecial = chatInfo.isSpecial;
-    const el = h('div', { className: 'yt-danmaku-item' });
-    el.style.color = chatInfo.textColor;
-
-    if (isSpecial && chatInfo.bgColor) {
-      el.style.background = chatInfo.bgColor;
-      el.style.borderRadius = '8px';
-      el.style.padding = '6px 14px';
+    if (!fragment && sticker) {
+      fragment = document.createDocumentFragment();
+      const image = document.createElement('img');
+      image.src = sticker.getAttribute('src') || '';
+      image.alt = sticker.getAttribute('alt') || 'sticker';
+      image.className = 'yt-danmaku-emoji yt-danmaku-sticker';
+      fragment.appendChild(image);
     }
 
-    if (isSpecial) {
-      const smallFs = Math.round(fontSize * 0.55) + 'px';
-      const iconSize = Math.round(fontSize * 0.875) + 'px';
-
-      // ── 1行目: アイコン + 名前 + バッジ + 金額 ──
-      const headerChildren = [];
-      if (chatInfo.photoSrc) {
-        headerChildren.push(h('img', {
-          src: chatInfo.photoSrc,
-          style: `width:${iconSize};height:${iconSize};border-radius:50%;object-fit:cover;flex-shrink:0`,
-        }));
-      }
-      if (chatInfo.authorName) {
-        headerChildren.push(h('span', { style: `font-size:${smallFs};opacity:0.9` }, chatInfo.authorName));
-      }
-      if (chatInfo.badgeSrc) {
-        headerChildren.push(h('img', {
-          src: chatInfo.badgeSrc,
-          style: `width:${smallFs};height:${smallFs};object-fit:contain;flex-shrink:0`,
-        }));
-      }
-      if (chatInfo.amount) {
-        headerChildren.push(h('span', { style: `font-size:${smallFs};opacity:0.7` }, ' - '));
-        headerChildren.push(h('span', { style: `font-size:${smallFs};opacity:0.9` }, chatInfo.amount));
-      }
-
-      el.appendChild(h('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:2px' }, headerChildren));
-      // ── 2行目: メッセージ本文 ──
-      el.appendChild(h('div', { style: `font-size:${fontSize}px` }, messageFragment));
-    } else {
-      // 通常コメント: 1行表示
-      el.appendChild(h('span', { style: `font-size:${fontSize}px` }, messageFragment));
+    if (!fragment) {
+      if (!chatInfo.isSpecial || !chatInfo.bgColor) return null;
+      const subtext = node.querySelector('#header-subtext');
+      if (subtext) fragment = buildMessageFragment(subtext);
+      if (!fragment) fragment = document.createDocumentFragment();
     }
 
-    // DOM に追加して幅を測定（left:100% なので画面外、アニメーション未設定）
-    overlay.appendChild(el);
-    const elWidth = el.clientWidth;
-    const speed = (elWidth + overlayWidth + 20) / CONFIG.duration; // px/s
-
-    // 衝突検知付きレーン割り当て
-    const line = getAvailableLine(isSpecial, speed, elWidth);
-    const topPos = (line * fontSize * CONFIG.lineHeightRatio) % (overlayHeight * CONFIG.displayArea);
-
-    // 位置とアニメーションを設定（ここからスクロール開始）
-    el.style.top = topPos + 'px';
-    el.style.animation = `yt-danmaku-scroll ${CONFIG.duration}s linear forwards`;
-
-    // animationend でクリーンアップ（setTimeout のフォールバック付き）
-    const cleanup = () => { if (el.parentNode) el.remove(); };
-    const fallbackTimer = setTimeout(cleanup, CONFIG.duration * 1000 + 1000);
-    el.addEventListener('animationend', () => { clearTimeout(fallbackTimer); cleanup(); }, { once: true });
+    return { chatInfo, fragment };
   }
 
-  // ── チャットメッセージの処理 ──
-  function processNode(node) {
-    const tagName = node.localName;
-    if (!MESSAGE_TAGS.has(tagName)) return;
+  function createDanmakuElement(descriptor) {
+    const { chatInfo, fragment } = descriptor;
+    const item = document.createElement('div');
+    item.className = 'yt-danmaku-item';
+    item.style.setProperty('--yt-danmaku-color', chatInfo.textColor);
 
-    // 重複排除: message-id があれば既に処理済みかチェック (FIFO管理)
-    const msgId = node.getAttribute('id') || node.getAttribute('message-id');
-    if (msgId) {
-      if (processedIds.has(msgId)) return;
-      processedIds.add(msgId);
-      processedIdQueue.push(msgId);
-      if (processedIdQueue.length > 500) processedIds.delete(processedIdQueue.shift());
+    if (chatInfo.isSpecial) {
+      item.classList.add('yt-danmaku-item--special');
+      if (chatInfo.bgColor) {
+        item.classList.add('yt-danmaku-item--highlighted');
+        item.style.setProperty('--yt-danmaku-bg', chatInfo.bgColor);
+      }
+
+      const header = document.createElement('div');
+      header.className = 'yt-danmaku-item__header';
+      if (chatInfo.photoSrc) {
+        const avatar = document.createElement('img');
+        avatar.src = chatInfo.photoSrc;
+        avatar.className = 'yt-danmaku-item__avatar';
+        header.appendChild(avatar);
+      }
+      if (chatInfo.authorName) {
+        const author = document.createElement('span');
+        author.className = 'yt-danmaku-item__meta';
+        author.textContent = chatInfo.authorName;
+        header.appendChild(author);
+      }
+      if (chatInfo.badgeSrc) {
+        const badge = document.createElement('img');
+        badge.src = chatInfo.badgeSrc;
+        badge.className = 'yt-danmaku-item__badge';
+        header.appendChild(badge);
+      }
+      if (chatInfo.amount) {
+        const separator = document.createElement('span');
+        separator.className = 'yt-danmaku-item__separator';
+        separator.textContent = ' - ';
+        header.appendChild(separator);
+        const amount = document.createElement('span');
+        amount.className = 'yt-danmaku-item__meta';
+        amount.textContent = chatInfo.amount;
+        header.appendChild(amount);
+      }
+      item.appendChild(header);
+
+      const body = document.createElement('div');
+      body.appendChild(fragment);
+      item.appendChild(body);
+    } else {
+      const body = document.createElement('span');
+      body.appendChild(fragment);
+      item.appendChild(body);
+    }
+    return item;
+  }
+
+  function prepareEntry(entry, session) {
+    const node = entry.node;
+    let chatInfo = entry.chatInfo;
+    if (!node || !MESSAGE_TAGS.has(node.localName)) return null;
+
+    if (!chatInfo) {
+      const id = node.getAttribute('id') || node.getAttribute('message-id');
+      if (!rememberMessageId(id)) return null;
+      chatInfo = extractChatInfo(node);
+      if (chatInfo.isSpecial && chatInfo.authorName && chatInfo.authorName.startsWith('@')) {
+        deferChannelName(node, chatInfo, session);
+        return null;
+      }
     }
 
-    const chatInfo = extractChatInfo(node);
+    return createMessageDescriptor(node, chatInfo);
+  }
 
-    // special系（スパチャ・メンバー加入等）で名前が@ハンドルの場合、チャンネル名読み込みを待つ
-    if (chatInfo.isSpecial && chatInfo.authorName && chatInfo.authorName.startsWith('@')) {
-      waitForChannelName(node, chatInfo, 20, watchSession); // 50ms間隔 × 最大20回 = 最大1秒
+  function flushPendingFrame() {
+    pendingFrame = 0;
+    const session = currentSession;
+    if (!isActiveSession(session) || !enabled || (PERF.skipWhenHidden && document.hidden)) {
+      clearPendingQueue();
       return;
     }
 
-    spawnFromNode(node, chatInfo);
-  }
+    const descriptors = [];
+    for (let i = 0; i < PERF.maxPerFrame && pendingQueueSize; i += 1) {
+      const descriptor = prepareEntry(dequeueEntry(), session);
+      if (descriptor) descriptors.push(descriptor);
+    }
 
-  // special系コメントの@ハンドル → チャンネル名の読み込みを待つ
-  function waitForChannelName(node, chatInfo, remaining, session) {
-    if (!isActiveWatchSession(session)) return;
-    if (remaining <= 0) { spawnFromNode(node, chatInfo); return; }
+    if (descriptors.length) {
+      const overlay = ensureOverlay(session);
+      if (overlay) {
+        const fragment = document.createDocumentFragment();
+        const items = descriptors.map((descriptor) => {
+          const item = createDanmakuElement(descriptor);
+          fragment.appendChild(item);
+          return { item, isSpecial: descriptor.chatInfo.isSpecial };
+        });
+        overlay.appendChild(fragment);
 
-    const timerId = setTimeout(() => {
-      channelNameTimers.delete(timerId);
-      if (!isActiveWatchSession(session)) return;
-      const el = node.querySelector('#author-name');
-      const name = el ? (el.textContent || '').trim() : '';
-      if (name.startsWith('@')) {
-        waitForChannelName(node, chatInfo, remaining - 1, session);
-      } else {
-        chatInfo.authorName = name;
-        spawnFromNode(node, chatInfo);
+        const widths = items.map(({ item }) => item.clientWidth);
+        for (let i = 0; i < items.length; i += 1) {
+          const { item, isSpecial } = items[i];
+          const width = widths[i];
+          const speed = (width + session.overlayWidth + 20) / CONFIG.duration;
+          const line = getAvailableLine(session, isSpecial, speed, width);
+          item.style.top = (line * session.fontSize * CONFIG.lineHeightRatio) + 'px';
+          item.classList.add('yt-danmaku-item--running');
+        }
       }
-    }, 50);
-    channelNameTimers.add(timerId);
-  }
-
-  // ノードからメッセージを組み立てて弾幕を発射
-  function spawnFromNode(node, chatInfo) {
-    // メッセージ本文を取得（スティッカーの場合は #sticker にフォールバック）
-    const msgEl = node.querySelector('#message');
-    const stickerEl = !msgEl ? node.querySelector('#sticker img, #sticker-container img') : null;
-
-    let fragment;
-    if (msgEl) {
-      fragment = buildMessageFragment(msgEl);
-    } else if (stickerEl) {
-      // スティッカー画像を弾幕用に生成
-      const size = (fontSize * 2) + 'px';
-      fragment = document.createDocumentFragment();
-      fragment.appendChild(h('img', {
-        src: stickerEl.getAttribute('src') || '',
-        alt: stickerEl.getAttribute('alt') || 'sticker',
-        className: 'yt-danmaku-emoji',
-        style: `height:${size};width:${size}`,
-      }));
     }
 
-    // 本文なしでも special 系（スパチャ・メンバー加入）はヘッダーだけで表示する
-    if (!fragment) {
-      if (!chatInfo.isSpecial || !chatInfo.bgColor) return;
-      // メンバー加入は #header-subtext にテキストがある場合がある
-      const subtext = node.querySelector('#header-subtext');
-      if (subtext) fragment = buildMessageFragment(subtext);
-      if (!fragment) fragment = document.createDocumentFragment(); // ヘッダーのみ表示
-    }
-
-    spawnDanmaku(fragment, chatInfo);
+    if (pendingQueueSize) pendingFrame = requestAnimationFrame(flushPendingFrame);
   }
 
-  // ── ランタイム状態リセット ──
-  function resetRuntimeState(clearProcessed) {
-    laneTracker = [];
-    pendingNodes.length = 0;
-    clearChannelNameTimers();
-    if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0; }
-    if (clearProcessed) {
-      processedIds.clear();
-      processedIdQueue.length = 0;
-    }
-  }
+  function handleChatMutations(mutations, session) {
+    if (!isActiveSession(session) || !enabled) return;
+    if (PERF.skipWhenHidden && document.hidden) return;
 
-  // ── Mutation処理（バッチキューに積む）──
-  function handleChatMutation(mutations) {
-    if (!enabled) return; // OFF時は処理コストを払わない
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
-        if (node.nodeType === 1) enqueueNode(node);
+        if (node.nodeType === 1 && MESSAGE_TAGS.has(node.localName)) {
+          enqueueEntry({ node, chatInfo: null }, session);
+        }
       }
     }
   }
 
-  // ── iframeのチャットDOMを監視 ──
-  function bindChatFrameLoad(chatFrame, session) {
-    if (chatFrameLoadTarget === chatFrame && chatFrameLoadSession === session) return;
-    detachChatFrameLoad();
-
-    chatFrameLoadHandler = () => {
-      if (!isActiveWatchSession(session)) return;
-      chatObserver = disconnectObserver(chatObserver);
-      chatItemsHostObserver = disconnectObserver(chatItemsHostObserver);
-      chatObservedItems = null;
-      chatItemsHost = null;
-      observeChat(session) || retryObserveChat(0, session);
-    };
-    chatFrame.addEventListener('load', chatFrameLoadHandler);
-    chatFrameLoadTarget = chatFrame;
-    chatFrameLoadSession = session;
+  function findChatItems(node) {
+    if (!node || node.nodeType !== 1) return null;
+    if (node.id === 'items' && node.closest('yt-live-chat-item-list-renderer')) return node;
+    return node.querySelector('yt-live-chat-item-list-renderer #items');
   }
 
-  function observeChat(session) {
-    const chatFrame = document.querySelector('#chatframe');
-    if (!chatFrame) return false;
-    bindChatFrameLoad(chatFrame, session);
+  function bindChatItems(session, items) {
+    if (!isActiveSession(session) || session.chatItems === items) return;
+    disconnect(session.chatReadyObserver);
+    disconnect(session.chatObserver);
+    session.chatReadyObserver = null;
+    session.chatItems = items;
+    session.chatObserver = new MutationObserver((mutations) => handleChatMutations(mutations, session));
+    session.chatObserver.observe(items, { childList: true });
+    ensureDanmakuToggleButton(session);
+  }
 
-    let chatDoc;
-    try { chatDoc = chatFrame.contentDocument; } catch (e) { return false; }
-    if (!chatDoc || !chatDoc.body) return false;
+  function bindChatDocument(session) {
+    if (!isActiveSession(session) || !session.chatFrame) return;
+    disconnect(session.chatObserver);
+    disconnect(session.chatReadyObserver);
+    session.chatObserver = null;
+    session.chatReadyObserver = null;
+    session.chatItems = null;
 
-    const itemsHost = chatDoc.querySelector('yt-live-chat-item-list-renderer');
-    if (itemsHost && chatItemsHost !== itemsHost) {
-      chatItemsHostObserver = disconnectObserver(chatItemsHostObserver);
-      chatItemsHost = itemsHost;
-      chatItemsHostObserver = new MutationObserver(() => {
-        if (!isActiveWatchSession(session)) return;
-        const nextItems = chatItemsHost ? chatItemsHost.querySelector('#items') : null;
-        if (nextItems && nextItems !== chatObservedItems) observeChat(session);
-      });
-      chatItemsHostObserver.observe(itemsHost, { childList: true });
+    let chatDocument;
+    try {
+      chatDocument = session.chatFrame.contentDocument;
+    } catch (error) {
+      return;
+    }
+    if (!chatDocument || !chatDocument.body) return;
+
+    const items = chatDocument.querySelector('yt-live-chat-item-list-renderer #items');
+    if (items) {
+      bindChatItems(session, items);
+      return;
     }
 
-    const itemList = itemsHost ? itemsHost.querySelector('#items') : chatDoc.querySelector('yt-live-chat-item-list-renderer #items');
-    if (!itemList) return false;
-    if (chatObservedItems === itemList) return true;
+    session.chatReadyObserver = new MutationObserver((mutations) => {
+      if (!isActiveSession(session)) return;
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          const nextItems = findChatItems(node);
+          if (nextItems) {
+            bindChatItems(session, nextItems);
+            return;
+          }
+        }
+      }
+    });
+    session.chatReadyObserver.observe(chatDocument.body, { childList: true, subtree: true });
+  }
 
-    chatObserver = disconnectObserver(chatObserver);
-    chatObserver = new MutationObserver(handleChatMutation);
-    chatObserver.observe(itemList, { childList: true });
-    chatObservedItems = itemList;
-    chatRetryTimer = clearTimeoutId(chatRetryTimer);
-    pageObserver = disconnectObserver(pageObserver);
-    ensureDanmakuToggleButton();
+  function teardownChatBinding(session) {
+    if (session.chatAbortController) session.chatAbortController.abort();
+    session.chatAbortController = null;
+    disconnect(session.chatReadyObserver);
+    disconnect(session.chatObserver);
+    disconnect(session.chatContainerObserver);
+    disconnect(session.chatHostObserver);
+    disconnect(session.resizeObserver);
+    session.chatReadyObserver = null;
+    session.chatObserver = null;
+    session.chatContainerObserver = null;
+    session.chatHostObserver = null;
+    session.resizeObserver = null;
 
+    hideDanmakuToggleTooltip(session);
+    if (session.button && session.button.isConnected) session.button.remove();
+    if (session.overlay && session.overlay.isConnected) session.overlay.remove();
+    session.button = null;
+    session.buttonPath = null;
+    session.tooltip = null;
+    session.overlay = null;
+    session.overlayWidth = 0;
+    session.overlayHeight = 0;
+    session.video = null;
+    session.chatItems = null;
+    session.chatFrame = null;
+    session.chatContainer = null;
+    session.controlsParent = null;
+    session.subtitlesButton = null;
+    resetRuntimeState(session, false);
+  }
+
+  function stopDiscovery(session) {
+    disconnect(session.discoveryObserver);
+    session.discoveryObserver = null;
+    if (session.discoveryTimer) clearTimeout(session.discoveryTimer);
+    session.discoveryTimer = 0;
+  }
+
+  function setupSessionElements(session) {
+    if (!isActiveSession(session) || !session.player || !session.chatContainer || !session.chatFrame) return false;
+    stopDiscovery(session);
+    session.video = session.player.querySelector('video');
+    session.chatAbortController = new AbortController();
+    session.chatContainerObserver = new MutationObserver(() => ensureDanmakuToggleButton(session));
+    session.chatContainerObserver.observe(session.chatContainer, {
+      attributes: true,
+      attributeFilter: ['collapsed', 'hidden'],
+    });
+    const chatHost = session.chatContainer.parentNode;
+    if (chatHost) {
+      session.chatHostObserver = new MutationObserver(() => {
+        if (!isActiveSession(session)) return;
+        if (session.chatContainer && session.chatContainer.isConnected
+          && session.chatFrame && session.chatFrame.isConnected) return;
+        teardownChatBinding(session);
+        discoverSessionElements(session);
+      });
+      session.chatHostObserver.observe(chatHost, { childList: true });
+    }
+    session.chatFrame.addEventListener('load', () => bindChatDocument(session), {
+      signal: session.chatAbortController.signal,
+    });
+    bindChatDocument(session);
     return true;
   }
 
-  // ── iframeの準備完了を待つ ──
-  function waitForChat(session) {
-    if (observeChat(session)) return;
+  function inspectAddedNode(session, node) {
+    if (!node || node.nodeType !== 1) return;
+    if (!session.player) {
+      session.player = node.matches('#movie_player') ? node : node.querySelector('#movie_player');
+    }
+    if (!session.chatContainer) {
+      session.chatContainer = node.matches('ytd-live-chat-frame#chat')
+        ? node
+        : node.querySelector('ytd-live-chat-frame#chat');
+    }
+    if (!session.chatFrame) {
+      session.chatFrame = node.matches('#chatframe') ? node : node.querySelector('#chatframe');
+    }
+  }
 
-    const chatFrame = document.querySelector('#chatframe');
-    if (chatFrame) {
-      bindChatFrameLoad(chatFrame, session);
-      retryObserveChat(0, session);
+  function discoverSessionElements(session) {
+    session.player = document.querySelector('#movie_player');
+    session.chatContainer = document.querySelector('ytd-live-chat-frame#chat');
+    session.chatFrame = session.chatContainer && session.chatContainer.querySelector('#chatframe');
+    if (setupSessionElements(session)) return;
+
+    session.discoveryObserver = new MutationObserver((mutations) => {
+      if (!isActiveSession(session)) return;
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) inspectAddedNode(session, node);
+      }
+      setupSessionElements(session);
+    });
+    session.discoveryObserver.observe(document.body, { childList: true, subtree: true });
+    session.discoveryTimer = setTimeout(() => stopDiscovery(session), DISCOVERY_LIMIT);
+  }
+
+  function stopWatchSession(clearProcessed) {
+    const session = currentSession;
+    if (!session) {
+      resetRuntimeState(null, clearProcessed);
       return;
     }
 
-    pageObserver = disconnectObserver(pageObserver);
-    pageObserver = new MutationObserver(() => {
-      if (!isActiveWatchSession(session)) return;
-      const cf = document.querySelector('#chatframe');
-      if (!cf) return;
-      pageObserver = disconnectObserver(pageObserver);
-      bindChatFrameLoad(cf, session);
-      ensureDanmakuToggleButton();
-      observeChat(session) || retryObserveChat(0, session);
-    });
-    pageObserver.observe(document.body, { childList: true, subtree: true });
+    session.active = false;
+    currentSession = null;
+    session.abortController.abort();
+    stopDiscovery(session);
+    teardownChatBinding(session);
+    resetRuntimeState(session, clearProcessed);
   }
 
-  function retryObserveChat(attempt, session) {
-    if (!isActiveWatchSession(session)) return;
-    chatRetryTimer = clearTimeoutId(chatRetryTimer);
-    if (observeChat(session) || attempt >= 15) return;
-    chatRetryTimer = setTimeout(() => {
-      chatRetryTimer = 0;
-      retryObserveChat(attempt + 1, session);
-    }, 1000);
-  }
-
-  // ── タブ復帰時にキューをクリア ──
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      pendingNodes.length = 0;
-      if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0; }
-    }
-  });
-
-  // ── Alt+L で弾幕ON/OFF ──
-  document.addEventListener('keydown', (e) => {
-    if (e.altKey && (e.key === 'l' || e.key === 'L')) {
-      e.preventDefault();
-      toggleDanmaku();
-    }
-  });
-
-  // ── 動画ページかどうか判定 ──
   function isWatchPage() {
     const path = window.location.pathname;
     return path === '/watch' || path.startsWith('/live/');
   }
 
-  // ── 初期化 ──
-  function init() {
-    if (!isWatchPage()) return; // 動画ページ以外では何もしない
-    const session = nextWatchSession();
-    startWatchSession(session);
-  }
-
-  init();
-
-  // ── SPA ナビゲーション対応 ──
-  document.addEventListener('yt-navigate-finish', () => {
-    resetWatchState(true);
+  function startWatchSession() {
+    stopWatchSession(true);
     if (!isWatchPage()) return;
 
-    const session = nextWatchSession();
-    setTimeout(() => {
-      if (!isActiveWatchSession(session) || !isWatchPage()) return;
-      startWatchSession(session);
-    }, 1500);
+    const session = {
+      id: ++sessionSequence,
+      active: true,
+      abortController: new AbortController(),
+      player: null,
+      video: null,
+      chatContainer: null,
+      chatFrame: null,
+      chatItems: null,
+      controlsParent: null,
+      subtitlesButton: null,
+      button: null,
+      buttonPath: null,
+      tooltip: null,
+      overlay: null,
+      overlayWidth: 0,
+      overlayHeight: 0,
+      fontSize: 32,
+      laneTracker: [],
+      discoveryObserver: null,
+      discoveryTimer: 0,
+      chatAbortController: null,
+      chatReadyObserver: null,
+      chatObserver: null,
+      chatContainerObserver: null,
+      chatHostObserver: null,
+      resizeObserver: null,
+    };
+    currentSession = session;
+    discoverSessionElements(session);
+  }
+
+  document.addEventListener('visibilitychange', clearPendingQueue);
+  document.addEventListener('keydown', (event) => {
+    if (event.altKey && (event.key === 'l' || event.key === 'L')) {
+      event.preventDefault();
+      toggleDanmaku();
+    }
   });
+  document.addEventListener('yt-navigate-finish', startWatchSession);
+
+  startWatchSession();
 })();
