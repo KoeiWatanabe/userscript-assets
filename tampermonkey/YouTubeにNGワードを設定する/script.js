@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeにNGワードを設定する
 // @namespace    https://tampermonkey.net/
-// @version      1.2.1
+// @version      1.3.0
 // @description  YouTubeのホームフィードと動画ページのおすすめから、設定したNGワードに一致する動画を非表示にします。
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにNGワードを設定する/script.js
@@ -19,7 +19,6 @@
 
   const SCRIPT_KEY = "yt-news-filter";
   const HIDDEN_ATTR = `data-${SCRIPT_KEY}-hidden`;
-  const PREVIOUS_DISPLAY_ATTR = `data-${SCRIPT_KEY}-previous-display`;
   const CLEANUP_KEY = "__ytNewsFilterCleanup";
   const MODAL_ATTR = `data-${SCRIPT_KEY}-settings`;
   const COMMON_WORDS_KEY = "commonWords:v1";
@@ -37,6 +36,14 @@
     "ytd-compact-video-renderer",
     "ytd-video-renderer",
     "ytd-rich-item-renderer",
+  ].join(",");
+
+  const CARD_SELECTOR_ALL = [
+    "ytd-rich-item-renderer",
+    "ytd-rich-grid-media",
+    "ytd-video-renderer",
+    "yt-lockup-view-model",
+    "ytd-compact-video-renderer",
   ].join(",");
 
   const TITLE_SELECTORS = [
@@ -98,11 +105,15 @@
   let observer = null;
   let scanTimer = 0;
   let lastUrl = location.href;
+  let needsFullScan = true;
+  let wordsVersion = 0;
+  let lastAccountKey = null;
+  const hideCache = new Map();
+  const pendingCards = new Set();
   let checkedSignatures = new WeakMap();
   let accountCache = {
     source: "",
     key: DEFAULT_ACCOUNT_KEY,
-    label: DEFAULT_ACCOUNT_KEY,
   };
 
   if (typeof window[CLEANUP_KEY] === "function") {
@@ -150,18 +161,6 @@
     return words;
   }
 
-  function hashText(value) {
-    let hash = 2166136261;
-    const text = String(value || "");
-
-    for (let index = 0; index < text.length; index += 1) {
-      hash ^= text.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
-    }
-
-    return (hash >>> 0).toString(16).padStart(8, "0");
-  }
-
   function getAvatarSource() {
     const image = document.querySelector(
       "#avatar-btn img[src], button[aria-label='Account menu'] img[src], ytd-topbar-menu-button-renderer img[src]"
@@ -177,11 +176,7 @@
   function getAccountInfo() {
     const source = getAvatarSource();
     if (!source) {
-      accountCache = {
-        source: "",
-        key: DEFAULT_ACCOUNT_KEY,
-        label: DEFAULT_ACCOUNT_KEY,
-      };
+      accountCache = { source: "", key: DEFAULT_ACCOUNT_KEY };
       return accountCache;
     }
 
@@ -189,13 +184,7 @@
       return accountCache;
     }
 
-    const shortHash = hashText(source).slice(0, 10);
-    accountCache = {
-      source,
-      key: `avatar:${shortHash}`,
-      label: `avatar:${shortHash}`,
-    };
-
+    accountCache = { source, key: `avatar:${source}` };
     return accountCache;
   }
 
@@ -203,8 +192,19 @@
     return `${ACCOUNT_WORDS_PREFIX}${accountKey}`;
   }
 
-  function readCommonWords() {
-    const value = GM_getValue(COMMON_WORDS_KEY, []);
+  function checkAccountChange() {
+    const info = getAccountInfo();
+    if (info.key !== lastAccountKey) {
+      lastAccountKey = info.key;
+      wordsVersion += 1;
+      hideCache.clear();
+      needsFullScan = true;
+    }
+    return info;
+  }
+
+  function readWords(storageKey) {
+    const value = GM_getValue(storageKey, []);
     if (!Array.isArray(value)) {
       return [];
     }
@@ -212,21 +212,8 @@
     return uniqueWordsFromText(value.join("\n"));
   }
 
-  function writeCommonWords(words) {
-    GM_setValue(COMMON_WORDS_KEY, uniqueWordsFromText(words.join("\n")));
-  }
-
-  function readAccountWords(accountKey = getAccountInfo().key) {
-    const value = GM_getValue(getAccountWordsStorageKey(accountKey), []);
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return uniqueWordsFromText(value.join("\n"));
-  }
-
-  function writeAccountWords(words, accountKey = getAccountInfo().key) {
-    GM_setValue(getAccountWordsStorageKey(accountKey), uniqueWordsFromText(words.join("\n")));
+  function writeWords(storageKey, words) {
+    GM_setValue(storageKey, uniqueWordsFromText(words.join("\n")));
   }
 
   function matchWords(text, words) {
@@ -283,6 +270,30 @@
     };
   }
 
+  function getVideoId(card) {
+    const link = card.querySelector('a[href*="/watch?v="], a[href^="/shorts/"]');
+    if (link) {
+      const href = link.getAttribute("href");
+      const match = href.match(/[?&]v=([^&]+)/) || href.match(/^\/shorts\/([^/?#]+)/);
+      if (match) {
+        return match[1];
+      }
+    }
+
+    const idHost = card.matches("[class*='content-id-']")
+      ? card
+      : card.querySelector("[class*='content-id-']");
+    if (idHost) {
+      for (const cls of idHost.classList) {
+        if (cls.startsWith("content-id-")) {
+          return cls.slice("content-id-".length);
+        }
+      }
+    }
+
+    return "";
+  }
+
   function matchAny(text, patterns) {
     return patterns.some((pattern) => pattern.test(text));
   }
@@ -306,10 +317,6 @@
 
   function setHidden(card, hidden) {
     if (hidden) {
-      if (!card.hasAttribute(HIDDEN_ATTR)) {
-        card.setAttribute(PREVIOUS_DISPLAY_ATTR, card.style.display || "");
-      }
-
       card.style.display = "none";
       card.setAttribute(HIDDEN_ATTR, "true");
       return;
@@ -319,9 +326,8 @@
       return;
     }
 
-    card.style.display = card.getAttribute(PREVIOUS_DISPLAY_ATTR) || "";
+    card.style.display = "";
     card.removeAttribute(HIDDEN_ATTR);
-    card.removeAttribute(PREVIOUS_DISPLAY_ATTR);
   }
 
   function getTargetCards() {
@@ -348,45 +354,69 @@
   }
 
   function refreshCards() {
+    wordsVersion += 1;
+    hideCache.clear();
     checkedSignatures = new WeakMap();
     resetHiddenCards();
+    needsFullScan = true;
     scheduleScan(0);
   }
 
-  function scanCards() {
+  function processCard(card, commonWords, accountWords) {
+    const info = getCardInfo(card);
+    const videoId = getVideoId(card);
+
+    if (videoId) {
+      const cached = hideCache.get(videoId);
+      if (cached && cached.wordsVersion === wordsVersion) {
+        setHidden(card, cached.hidden);
+        return;
+      }
+
+      if (!info.title && !info.channel && !info.text.trim()) {
+        return;
+      }
+
+      const hidden = shouldHide(info, commonWords, accountWords);
+      hideCache.set(videoId, { hidden, wordsVersion });
+      setHidden(card, hidden);
+      return;
+    }
+
+    if (!info.signature.trim()) {
+      return;
+    }
+
+    const signature = [wordsVersion, info.signature].join("\n");
+    if (checkedSignatures.get(card) === signature) {
+      return;
+    }
+
+    checkedSignatures.set(card, signature);
+    setHidden(card, shouldHide(info, commonWords, accountWords));
+  }
+
+  function runScan() {
     scanTimer = 0;
 
     if (!isTargetPage()) {
       resetHiddenCards();
+      pendingCards.clear();
+      needsFullScan = false;
       return;
     }
 
-    const accountInfo = getAccountInfo();
-    const commonWords = readCommonWords();
-    const accountWords = readAccountWords(accountInfo.key);
-    const commonWordsSignature = commonWords.join("\n").toLocaleLowerCase();
-    const accountWordsSignature = accountWords.join("\n").toLocaleLowerCase();
+    const accountInfo = checkAccountChange();
+    const commonWords = readWords(COMMON_WORDS_KEY);
+    const accountWords = readWords(getAccountWordsStorageKey(accountInfo.key));
+    const cards = needsFullScan ? getTargetCards() : pendingCards;
 
-    for (const card of getTargetCards()) {
-      const info = getCardInfo(card);
-      if (!info.signature.trim()) {
-        continue;
-      }
-
-      const activeSignature = [
-        accountInfo.key,
-        commonWordsSignature,
-        accountWordsSignature,
-        info.signature,
-      ].join("\n---\n");
-
-      if (checkedSignatures.get(card) === activeSignature) {
-        continue;
-      }
-
-      checkedSignatures.set(card, activeSignature);
-      setHidden(card, shouldHide(info, commonWords, accountWords));
+    for (const card of cards) {
+      processCard(card, commonWords, accountWords);
     }
+
+    pendingCards.clear();
+    needsFullScan = false;
   }
 
   function scheduleScan(delay = 120) {
@@ -394,7 +424,7 @@
       window.clearTimeout(scanTimer);
     }
 
-    scanTimer = window.setTimeout(scanCards, delay);
+    scanTimer = window.setTimeout(runScan, delay);
   }
 
   function handleUrlChange() {
@@ -403,7 +433,35 @@
     }
 
     lastUrl = location.href;
+    pendingCards.clear();
+    needsFullScan = true;
     scheduleScan(250);
+  }
+
+  function collectPendingFromMutations(mutations) {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+          continue;
+        }
+
+        if (node.matches(CARD_SELECTOR_ALL)) {
+          pendingCards.add(node);
+          continue;
+        }
+
+        const hostCard = node.closest && node.closest(CARD_SELECTOR_ALL);
+        if (hostCard) {
+          pendingCards.add(hostCard);
+        }
+
+        if (node.querySelector) {
+          for (const card of node.querySelectorAll(CARD_SELECTOR_ALL)) {
+            pendingCards.add(card);
+          }
+        }
+      }
+    }
   }
 
   function startObserver() {
@@ -411,8 +469,9 @@
       observer.disconnect();
     }
 
-    observer = new MutationObserver(() => {
+    observer = new MutationObserver((mutations) => {
       handleUrlChange();
+      collectPendingFromMutations(mutations);
       scheduleScan();
     });
 
@@ -422,17 +481,12 @@
     });
   }
 
-  function onNavigateFinish() {
+  function onNavigationChange() {
     handleUrlChange();
-    scheduleScan(250);
   }
 
   function onPageDataUpdated() {
-    scheduleScan(250);
-  }
-
-  function onPopState() {
-    handleUrlChange();
+    needsFullScan = true;
     scheduleScan(250);
   }
 
@@ -453,8 +507,8 @@
     closeSettingsModal();
 
     const accountInfo = getAccountInfo();
-    const commonWords = readCommonWords();
-    const accountWords = readAccountWords(accountInfo.key);
+    const commonWords = readWords(COMMON_WORDS_KEY);
+    const accountWords = readWords(getAccountWordsStorageKey(accountInfo.key));
     const overlay = document.createElement("div");
     const dialog = document.createElement("div");
     const header = document.createElement("div");
@@ -489,7 +543,7 @@
     closeButton.textContent = "×";
 
     account.className = `${SCRIPT_KEY}-account`;
-    account.textContent = `現在のアカウント: ${accountInfo.label}`;
+    account.textContent = `現在のアカウント: ${accountInfo.key}`;
 
     commonGroup.className = `${SCRIPT_KEY}-field`;
     commonLabel.className = `${SCRIPT_KEY}-field-label`;
@@ -542,12 +596,10 @@
       }
 
       if (target.closest("[data-action='save']")) {
-        const commonTextarea = overlay.querySelector("[data-field='common']");
-        const accountTextarea = overlay.querySelector("[data-field='account']");
-        const nextCommonWords = uniqueWordsFromText(commonTextarea ? commonTextarea.value : "");
-        const nextAccountWords = uniqueWordsFromText(accountTextarea ? accountTextarea.value : "");
-        writeCommonWords(nextCommonWords);
-        writeAccountWords(nextAccountWords, accountInfo.key);
+        const nextCommonWords = uniqueWordsFromText(commonTextarea.value);
+        const nextAccountWords = uniqueWordsFromText(accountTextarea.value);
+        writeWords(COMMON_WORDS_KEY, nextCommonWords);
+        writeWords(getAccountWordsStorageKey(accountInfo.key), nextAccountWords);
         closeSettingsModal();
         refreshCards();
       }
@@ -703,9 +755,9 @@
       window.clearTimeout(scanTimer);
       scanTimer = 0;
     }
-    window.removeEventListener("yt-navigate-finish", onNavigateFinish);
+    window.removeEventListener("yt-navigate-finish", onNavigationChange);
     window.removeEventListener("yt-page-data-updated", onPageDataUpdated);
-    window.removeEventListener("popstate", onPopState);
+    window.removeEventListener("popstate", onNavigationChange);
     window.removeEventListener("keydown", onSettingsKeydown);
     closeSettingsModal();
   };
@@ -713,9 +765,9 @@
   installSettingsStyle();
   registerMenuCommand();
 
-  window.addEventListener("yt-navigate-finish", onNavigateFinish);
+  window.addEventListener("yt-navigate-finish", onNavigationChange);
   window.addEventListener("yt-page-data-updated", onPageDataUpdated);
-  window.addEventListener("popstate", onPopState);
+  window.addEventListener("popstate", onNavigationChange);
   window.addEventListener("keydown", onSettingsKeydown);
 
   startObserver();
