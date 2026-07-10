@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    https://tampermonkey.net/
-// @version      1.15.1
+// @version      1.16.2
 // @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示・プロフィールのおすすめユーザー非表示
 // @author       Gemini & Claude
 // @match        https://x.com/*
@@ -10,16 +10,54 @@
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Twitterのメトリクスを非表示に/script.js
 // @icon         https://lh3.googleusercontent.com/1GU703pTRO0zps9AmDtoYtUlyDTeo_Cjj2mVzevaSHu-IIfOsiPXjMy5BLQdjt_SlSZCNDM3izGKGeEBDWsRbrizyg=s120
 // @grant        GM_addStyle
+// @run-at       document-start
+// @noframes
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  // ============================================================
-  // 1. CSS 定義（即時適用・点滅防止）
-  // ============================================================
+  if (location.pathname === '/i/premium_sign_up') {
+    location.replace('/home');
+    return;
+  }
+
+  const CELL_SELECTOR = '[data-testid="cellInnerDiv"]';
+  const PRIMARY_SELECTOR = '[data-testid="primaryColumn"]';
+  const SEARCH_BUTTON_SELECTOR = 'button[aria-label="検索"], button[aria-label="Search"]';
+  const FOLLOW_BUTTON_SELECTOR = 'button[data-testid$="-follow"], button[data-testid$="-unfollow"]';
+  const TOGGLE_BUTTON_SELECTOR = '[data-tmx-retweet-toggle]';
+  const RETWEET_CELL_CLASS = 'tmx-profile-retweet';
+  const EXPLORE_HEADING_CLASS = 'tmx-explore-heading';
+  const PROFILE_HEADING_CLASS = 'tmx-profile-recommendation-heading';
+  const DISCOVER_MORE_CLASS = 'tmx-discover-more';
+  const FOR_YOU_CLASS = 'tmx-for-you-tab';
+  const TOGGLE_ICON_VIEWBOX = '0 -960 960 960';
+  const VISIBILITY_OFF_ICON_PATH = 'm637-425-62-62q4-38-23-65.5T487-576l-62-62q13-5 27-7.5t28-2.5q70 0 119 49t49 119q0 14-2.5 28t-8.5 27Zm133 133-52-52q36-28 65.5-61.5T833-480q-49-101-144.5-158.5T480-696q-26 0-51 3t-49 10l-58-58q38-15 77.5-21t80.5-6q143 0 261.5 77.5T912-480q-22 57-58.5 103.5T770-292Zm-2 202L638-220q-38 14-77.5 21t-80.5 7q-143 0-261.5-77.5T48-480q22-57 58-104t84-85L90-769l51-51 678 679-51 51ZM241-617q-35 28-65 61.5T127-480q49 101 144.5 158.5T480-264q26 0 51-3.5t50-9.5l-45-45q-14 5-28 7.5t-28 2.5q-70 0-119-49t-49-119q0-14 3.5-28t6.5-28l-81-81Zm287 89Zm-96 96Z';
+  const VISIBILITY_ICON_PATH = 'M599-361q49-49 49-119t-49-119q-49-49-119-49t-119 49q-49 49-49 119t49 119q49 49 119 49t119-49Zm-187-51q-28-28-28-68t28-68q28-28 68-28t68 28q28 28 28 68t-28 68q-28 28-68 28t-68-28ZM220-270.5Q103-349 48-480q55-131 172-209.5T480-768q143 0 260 78.5T912-480q-55 131-172 209.5T480-192q-143 0-260-78.5ZM480-480Zm207 158q95-58 146-158-51-100-146-158t-207-58q-112 0-207 58T127-480q51 100 146 158t207 58q112 0 207-58Z';
+
+  const PROFILE_TAB_SEGMENTS = new Set([
+    'with_replies', 'media', 'likes', 'highlights', 'articles',
+  ]);
+  const NON_PROFILE_ROOT_SEGMENTS = new Set([
+    'home', 'explore', 'notifications', 'messages', 'search', 'i', 'settings',
+    'compose', 'login', 'signup', 'logout', 'tos', 'privacy', 'about', 'download',
+    'jobs', 'share', 'intent', 'hashtag',
+  ]);
+  const EXPLORE_HEADINGS = new Set([
+    '本日のニュース', 'today\'s news',
+    'おすすめユーザー', 'おすすめのユーザー', 'who to follow',
+    'おすすめ投稿', 'おすすめの投稿', 'おすすめのポスト', 'recommended posts',
+  ]);
+  const PROFILE_RECOMMENDATION_HEADINGS = new Set([
+    'おすすめユーザー', 'おすすめのユーザー', 'who to follow',
+  ]);
+  const DISCOVER_MORE_HEADINGS = new Set(['もっと見つける', 'discover more']);
+  const ORIGINAL_BUTTON_TEXTS = new Set(['原文を表示', 'Show original']);
+  const ENGLISH_TRANSLATION_LABELS = ['英語からの翻訳', 'Translated from English'];
+  const ANY_TRANSLATION_LABELS = [/からの翻訳/, /Translated from /i];
+
   GM_addStyle(`
-    /* ===== メトリクス非表示（ホバー時表示） ===== */
     article :is(
       [data-testid="reply"],
       [data-testid="retweet"],
@@ -52,59 +90,52 @@
       transition: opacity 0.2s ease-in-out, visibility 0s;
     }
 
-    /* ===== 認証バッジ非表示 ===== */
-    :is(
-      span:has(> [data-testid="icon-verified"]),
-      button:has(> [data-testid="icon-verified"]),
-      span:has(> svg[aria-label="Verified account"][role="img"]),
-      span:has(> svg[aria-label="認証済みアカウント"][role="img"]),
-      button:has(> svg[aria-label="Verified account"][role="img"]),
-      button:has(> svg[aria-label="認証済みアカウント"][role="img"]),
-      [data-testid="icon-verified"],
-      svg[aria-label="Verified account"][role="img"],
-      svg[aria-label="認証済みアカウント"][role="img"]
-    ) {
+    [data-testid="icon-verified"],
+    a[href="/i/premium_sign_up"] {
       display: none !important;
     }
 
-    /* ===== 左サイドバー: プレミアムリンク非表示 ===== */
-    :is(
-      a[href="/i/premium_sign_up"],
-      a[href="/i/verified-choose"],
-      a[href="/i/verified-orgs-signup"],
-      [data-testid="AppTabBar_Premium_Link"]
-    ) {
-      display: none !important;
-    }
-
-    /* ===== 右サイドバー: 不要セクション非表示 ===== */
     [data-testid="sidebarColumn"] :is(
-      aside,
-      [data-testid="news_sidebar"],
-      [data-testid="trend"],
+      [role="complementary"],
+      [role="region"],
       nav,
-      [data-testid*="Upsell"],
-      [data-testid*="upsell"],
-      [data-testid="placementTracking"]
-    ) {
+      [data-testid="whoToFollowSspAd"]
+    ),
+    [data-testid="sidebarColumn"] :is(
+      div:has(> div > div > [role="complementary"]),
+      div:has(> div > [data-testid="news_sidebar"]),
+      div:has(> div > [role="region"]),
+      div:has(> div > nav)
+    ) > *:not(:has([data-testid="SearchBox_Search_Input"])) {
       display: none !important;
     }
 
-    /* ===== プロフィール: おすすめユーザー（カルーセル型 & トグルボタン）非表示 ===== */
-    [data-testid="primaryColumn"] aside[aria-label="おすすめユーザー"],
-    [data-testid="primaryColumn"] aside[aria-label="Who to follow"],
-    [data-testid="primaryColumn"] [data-testid="cellInnerDiv"]:has(aside[aria-label="おすすめユーザー"]),
-    [data-testid="primaryColumn"] [data-testid="cellInnerDiv"]:has(aside[aria-label="Who to follow"]) {
-      display: none !important;
-    }
-
-    /* ===== タイムライン: タブ中央寄せ ===== */
     [data-testid="ScrollSnap-List"] {
       justify-content: center !important;
     }
 
-    /* ===== プロフィール: リツイート切替ボタン ===== */
-    .codex-retweet-toggle-button {
+    .${FOR_YOU_CLASS},
+    html[data-tmx-page="explore"] ${CELL_SELECTOR}:is(
+      .${EXPLORE_HEADING_CLASS},
+      :has([data-testid="UserCell"]),
+      :has(a[href^="/i/connect_people"]),
+      :has([data-testid="tweet"]),
+      :has([data-testid="trend"] img)
+    ),
+    html[data-tmx-page="profile"] ${CELL_SELECTOR}:is(
+      .${PROFILE_HEADING_CLASS},
+      :has(aside[aria-label="おすすめユーザー"]),
+      :has(aside[aria-label="Who to follow"]),
+      :has([data-testid="UserCell"]),
+      :has(a[href^="/i/connect_people"])
+    ),
+    html[data-tmx-page="status"] ${CELL_SELECTOR}.${DISCOVER_MORE_CLASS},
+    html[data-tmx-page="status"] ${CELL_SELECTOR}.${DISCOVER_MORE_CLASS} ~ ${CELL_SELECTOR},
+    html[data-tmx-page="profile"][data-tmx-hide-retweets="true"] ${CELL_SELECTOR}.${RETWEET_CELL_CLASS} {
+      display: none !important;
+    }
+
+    .tmx-retweet-toggle-button {
       width: 40px !important;
       height: 40px !important;
       min-width: 40px !important;
@@ -118,11 +149,11 @@
       transition: opacity 0.2s ease, filter 0.2s ease !important;
     }
 
-    .codex-retweet-toggle-button:hover {
+    .tmx-retweet-toggle-button:hover {
       opacity: 0.82;
     }
 
-    .codex-retweet-toggle-icon {
+    .tmx-retweet-toggle-icon {
       width: 100%;
       height: 100%;
       display: inline-flex;
@@ -130,7 +161,7 @@
       justify-content: center;
     }
 
-    .codex-retweet-toggle-button svg {
+    .tmx-retweet-toggle-button svg {
       width: 20px !important;
       height: 20px !important;
       display: block !important;
@@ -138,114 +169,97 @@
       fill: currentColor !important;
     }
 
-    .codex-retweet-toggle-button svg path {
+    .tmx-retweet-toggle-button svg path {
       fill: currentColor !important;
     }
 
-    .codex-profile-retweet-hidden {
-      display: none !important;
+    .tmx-retweet-toggle-button[data-state="on"] .tmx-visibility-icon,
+    .tmx-retweet-toggle-button[data-state="off"] .tmx-visibility-off-icon {
+      display: none;
     }
   `);
 
-  // ============================================================
-  // 2. JavaScript による動的処理
-  // ============================================================
+  const profileRetweetHiddenStates = new Map();
+  const processedOriginalButtons = new WeakSet();
+  const originalShownCells = new WeakSet();
+  const requestedFollowingTabs = new WeakSet();
 
-  /** プレミアム勧誘ページ (/i/premium_sign_up) ならホームへリダイレクト */
-  function redirectIfPremiumPage() {
-    if (location.pathname === '/i/premium_sign_up') {
-      location.replace('https://x.com/home');
-      return true;
-    }
-    return false;
-  }
-
-  let lastUrl = location.href;
-  // おすすめタブの wrapper をキャッシュ（DOM 内で非表示のまま → O(1) スキップ）
-  let forYouWrapper = null;
+  let appRoot = null;
+  let lastPath = '';
+  let currentPage = 'other';
   let currentProfileHandle = null;
   let hideProfileRetweets = false;
-  const profileRetweetHiddenStates = new Map();
+  let searchToggleButton = null;
+  let stickyToggleButton = null;
+  let observedFollowButtons = new WeakSet();
+  const activeStickyCandidates = new Map();
 
-  // 原文を表示したい言語（「○○からの翻訳」の○○部分）
-  const SHOW_ORIGINAL_LANGS = new Set(['英語']);
-  const SEARCH_INPUT_SELECTOR = '[data-testid="SearchBox_Search_Input"]';
-  const RETWEET_TOGGLE_BUTTON_SELECTOR = '[data-codex-retweet-toggle]';
-  const PROFILE_RETWEET_HIDDEN_CLASS = 'codex-profile-retweet-hidden';
-  const TOGGLE_ICON_VIEWBOX = '0 -960 960 960';
-  const VISIBILITY_OFF_ICON_PATH = 'm637-425-62-62q4-38-23-65.5T487-576l-62-62q13-5 27-7.5t28-2.5q70 0 119 49t49 119q0 14-2.5 28t-8.5 27Zm133 133-52-52q36-28 65.5-61.5T833-480q-49-101-144.5-158.5T480-696q-26 0-51 3t-49 10l-58-58q38-15 77.5-21t80.5-6q143 0 261.5 77.5T912-480q-22 57-58.5 103.5T770-292Zm-2 202L638-220q-38 14-77.5 21t-80.5 7q-143 0-261.5-77.5T48-480q22-57 58-104t84-85L90-769l51-51 678 679-51 51ZM241-617q-35 28-65 61.5T127-480q49 101 144.5 158.5T480-264q26 0 51-3.5t50-9.5l-45-45q-14 5-28 7.5t-28 2.5q-70 0-119-49t-49-119q0-14 3.5-28t6.5-28l-81-81Zm287 89Zm-96 96Z';
-  const VISIBILITY_ICON_PATH = 'M599-361q49-49 49-119t-49-119q-49-49-119-49t-119 49q-49 49-49 119t49 119q49 49 119 49t119-49Zm-187-51q-28-28-28-68t28-68q28-28 68-28t68 28q28 28 28 68t-28 68q-28 28-68 28t-68-28ZM220-270.5Q103-349 48-480q55-131 172-209.5T480-768q143 0 260 78.5T912-480q-55 131-172 209.5T480-192q-143 0-260-78.5ZM480-480Zm207 158q95-58 146-158-51-100-146-158t-207-58q-112 0-207 58T127-480q51 100 146 158t207 58q112 0 207-58Z';
-  const PROFILE_TAB_SEGMENTS = new Set(['with_replies', 'media', 'likes', 'highlights', 'articles']);
-  const NON_PROFILE_ROOT_SEGMENTS = new Set([
-    'home', 'explore', 'notifications', 'messages', 'search', 'i', 'settings', 'compose',
-    'login', 'signup', 'logout', 'tos', 'privacy', 'about', 'download', 'jobs', 'share',
-    'intent', 'hashtag',
-  ]);
-  const SIDEBAR_SECTION_MARKERS = [
-    'aside',
-    '[data-testid="news_sidebar"]',
-    '[data-testid="trend"]',
-    '[data-testid="placementTracking"]',
-    '[data-testid*="Upsell"]',
-    '[data-testid*="upsell"]',
-    '[role="complementary"]',
-    '[aria-label][tabindex="0"]',
-    'h2',
-  ].join(', ');
-
-  const EXPLORE_HEADINGS_TO_HIDE = [
-    "本日のニュース", "Today's news", "Today's News", "What's happening", "いまどうしてる？",
-    "おすすめユーザー", "Who to follow", "Who to Follow", "おすすめのユーザー",
-    "おすすめ投稿", "おすすめの投稿", "おすすめのポスト", "Recommended posts", "Recommended Posts", "おすすめトレンド", "Recommended trends"
-  ];
-  const EXPLORE_TIME_REGEX = /\d+\s*(時間前|分前|日前|hour|minute|day|h|m|d)s?/;
-
-  // WeakSet で処理済みボタンを追跡（DOM 属性不要・副作用なし）
-  const processedButtons = new WeakSet();
-  // 言語ラベル未描画のボタンを保留（WeakRef で参照保持・GC 可能）
-  const pendingButtons = new Set();
-  // 原文を一度表示済みのセル（ユーザーが翻訳に戻した場合の再クリックを防止）
-  const originalShownCells = new WeakSet();
+  function normalizeText(text) {
+    return text.trim().toLocaleLowerCase('en-US');
+  }
 
   function normalizeHandle(value) {
     return value ? value.replace(/^@/, '').trim().toLowerCase() : null;
   }
 
-  function isProfilePagePath() {
+  function getPageContext() {
     const segments = location.pathname.split('/').filter(Boolean);
-    if (segments.length === 0) return false;
+    const root = segments[0]?.toLowerCase() || '';
 
-    const [root, subpage] = segments;
-    if (NON_PROFILE_ROOT_SEGMENTS.has(root.toLowerCase())) return false;
-    if (segments.length === 1) return true;
-    if (segments.length === 2 && PROFILE_TAB_SEGMENTS.has(subpage.toLowerCase())) return true;
-    return false;
+    if (root === 'home') return { page: 'home', profileHandle: null };
+    if (root === 'explore') return { page: 'explore', profileHandle: null };
+    if (segments[1]?.toLowerCase() === 'status' && segments.length >= 3) {
+      return { page: 'status', profileHandle: null };
+    }
+    if (!root || NON_PROFILE_ROOT_SEGMENTS.has(root)) {
+      return { page: 'other', profileHandle: null };
+    }
+    if (segments.length === 1
+      || (segments.length === 2 && PROFILE_TAB_SEGMENTS.has(segments[1].toLowerCase()))) {
+      return { page: 'profile', profileHandle: normalizeHandle(segments[0]) };
+    }
+    return { page: 'other', profileHandle: null };
   }
 
-  function getCurrentProfileHandleFromUrl() {
-    if (!isProfilePagePath()) return null;
-    const [handle] = location.pathname.split('/').filter(Boolean);
-    return normalizeHandle(handle);
+  function setRootAttribute(name, value) {
+    const root = document.documentElement;
+    if (root.getAttribute(name) !== value) root.setAttribute(name, value);
   }
 
-  function getProfileRetweetsHidden(profileHandle) {
-    return profileHandle ? profileRetweetHiddenStates.get(profileHandle) === true : false;
-  }
+  function syncRoute(force = false) {
+    if (!force && location.pathname === lastPath) return false;
 
-  function setProfileRetweetsHidden(profileHandle, shouldHide) {
-    if (!profileHandle) return;
-    profileRetweetHiddenStates.set(profileHandle, shouldHide);
+    lastPath = location.pathname;
+    const context = getPageContext();
+    currentPage = context.page;
+    currentProfileHandle = context.profileHandle;
+    hideProfileRetweets = currentProfileHandle
+      ? profileRetweetHiddenStates.get(currentProfileHandle) === true
+      : false;
+
+    setRootAttribute('data-tmx-page', currentPage);
+    setRootAttribute('data-tmx-hide-retweets', String(hideProfileRetweets));
+
+    stickyObserver.disconnect();
+    observedFollowButtons = new WeakSet();
+    activeStickyCandidates.clear();
+    removeStickyToggleButton();
+
+    if (currentPage !== 'profile') {
+      removeProfileToggleButtons();
+    }
+    return true;
   }
 
   function extractHandleFromHref(href) {
     if (!href) return null;
     try {
-      const url = new URL(href, location.origin);
-      const segments = url.pathname.split('/').filter(Boolean);
+      const segments = new URL(href, location.origin).pathname.split('/').filter(Boolean);
       if (segments.length !== 1) return null;
-      const [handle] = segments;
-      if (NON_PROFILE_ROOT_SEGMENTS.has(handle.toLowerCase())) return null;
-      return normalizeHandle(handle);
+      const handle = segments[0];
+      return NON_PROFILE_ROOT_SEGMENTS.has(handle.toLowerCase())
+        ? null
+        : normalizeHandle(handle);
     } catch {
       return null;
     }
@@ -254,7 +268,6 @@
   function getArticleAuthorHandle(article) {
     const userName = article.querySelector('[data-testid="User-Name"]');
     if (!userName) return null;
-
     for (const link of userName.querySelectorAll('a[href]')) {
       const handle = extractHandleFromHref(link.getAttribute('href'));
       if (handle) return handle;
@@ -262,649 +275,324 @@
     return null;
   }
 
-  function getSocialContextHandle(article) {
+  function isPureProfileRetweet(article) {
+    if (!currentProfileHandle) return false;
     const socialContext = article.querySelector('[data-testid="socialContext"]');
-    if (!socialContext) return null;
-    const socialLink = socialContext.closest('a[href]');
-    return extractHandleFromHref(socialLink?.getAttribute('href') || null);
-  }
-
-  function isPureProfileRetweetArticle(article, profileHandle = currentProfileHandle) {
-    if (!profileHandle || !article) return false;
-
-    const socialHandle = getSocialContextHandle(article);
-    if (!socialHandle || socialHandle !== profileHandle) return false;
-
+    const socialHandle = extractHandleFromHref(
+      socialContext?.closest('a[href]')?.getAttribute('href') || null,
+    );
+    if (socialHandle !== currentProfileHandle) return false;
     const authorHandle = getArticleAuthorHandle(article);
-    return !!authorHandle && authorHandle !== profileHandle;
+    return !!authorHandle && authorHandle !== currentProfileHandle;
   }
 
-  function getProfileRetweetContainer(article) {
-    return article.closest('[data-testid="cellInnerDiv"]') || article;
+  function classifyProfileRetweetCell(cell) {
+    const article = cell.matches('article') ? cell : cell.querySelector('article');
+    cell.classList.toggle(RETWEET_CELL_CLASS, !!article && isPureProfileRetweet(article));
   }
 
-  function renderAllRetweetToggleButtons() {
-    document.querySelectorAll(RETWEET_TOGGLE_BUTTON_SELECTOR).forEach(renderRetweetToggleButton);
+  function scanCurrentProfileRetweets() {
+    if (!hideProfileRetweets) return;
+    const primary = document.querySelector(PRIMARY_SELECTOR);
+    if (!primary) return;
+    for (const cell of primary.querySelectorAll(CELL_SELECTOR)) {
+      classifyProfileRetweetCell(cell);
+    }
   }
 
-  function renderRetweetToggleButton(button) {
+  function renderToggleButton(button) {
     if (!button) return;
-
     const state = hideProfileRetweets ? 'off' : 'on';
-    const ariaLabel = hideProfileRetweets
-      ? 'リポストを表示'
-      : 'リポストを非表示';
-    const iconPaths = hideProfileRetweets
-      ? `<path d="${VISIBILITY_ICON_PATH}"></path>`
-      : `<path d="${VISIBILITY_OFF_ICON_PATH}"></path>`;
-
-    button.dataset.state = state;
-    button.setAttribute('aria-pressed', String(hideProfileRetweets));
-    button.setAttribute('aria-label', ariaLabel);
-    button.setAttribute('title', ariaLabel);
-
-    const svg = button.querySelector('svg');
-    if (svg) {
-      svg.setAttribute('viewBox', TOGGLE_ICON_VIEWBOX);
-      svg.innerHTML = `<g>${iconPaths}</g>`;
+    const label = hideProfileRetweets ? 'リポストを表示' : 'リポストを非表示';
+    if (button.dataset.state !== state) button.dataset.state = state;
+    if (button.getAttribute('aria-pressed') !== String(hideProfileRetweets)) {
+      button.setAttribute('aria-pressed', String(hideProfileRetweets));
     }
+    if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
+    if (button.title !== label) button.title = label;
   }
 
-  function applyProfileRetweetVisibility(roots, profileHandle = currentProfileHandle) {
-    const scannedArticles = new Set();
-
-    for (const root of roots) {
-      const articles = [];
-      if (root.matches?.('article')) {
-        articles.push(root);
-      } else if (root.matches?.('[data-testid="cellInnerDiv"]')) {
-        const article = root.querySelector('article');
-        if (article) articles.push(article);
-      } else if (root.querySelectorAll) {
-        root.querySelectorAll('article').forEach(article => articles.push(article));
-      }
-
-      for (const article of articles) {
-        if (scannedArticles.has(article)) continue;
-        scannedArticles.add(article);
-
-        const container = getProfileRetweetContainer(article);
-        const shouldHide = hideProfileRetweets && isPureProfileRetweetArticle(article, profileHandle);
-        container.classList.toggle(PROFILE_RETWEET_HIDDEN_CLASS, shouldHide);
-      }
-    }
+  function renderToggleButtons() {
+    renderToggleButton(searchToggleButton);
+    renderToggleButton(stickyToggleButton);
   }
 
-  function getStickyHeaderFollowButton() {
-    const candidates = Array.from(document.querySelectorAll('button[data-testid$="-follow"], button[data-testid$="-unfollow"]'))
-      .filter(button => button.closest('[data-testid="primaryColumn"]'));
-
-    let best = null;
-    let bestTop = Infinity;
-    for (const button of candidates) {
-      const rect = button.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.top > 120) continue;
-      if (rect.top < bestTop) {
-        bestTop = rect.top;
-        best = button;
-      }
-    }
-    return best;
-  }
-
-  function createRetweetToggleButton(templateButton, variant) {
+  function createRetweetToggleButton(variant) {
     const button = document.createElement('button');
-
     button.type = 'button';
-    button.className = 'codex-retweet-toggle-button';
-    button.dataset.codexRetweetToggle = variant;
+    button.className = 'tmx-retweet-toggle-button';
+    button.dataset.tmxRetweetToggle = variant;
     button.innerHTML = `
-      <span class="codex-retweet-toggle-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false"></svg>
+      <span class="tmx-retweet-toggle-icon" aria-hidden="true">
+        <svg viewBox="${TOGGLE_ICON_VIEWBOX}" focusable="false">
+          <path class="tmx-visibility-icon" d="${VISIBILITY_ICON_PATH}"></path>
+          <path class="tmx-visibility-off-icon" d="${VISIBILITY_OFF_ICON_PATH}"></path>
+        </svg>
       </span>
     `;
-
     button.addEventListener('click', () => {
+      if (!currentProfileHandle) return;
       hideProfileRetweets = !hideProfileRetweets;
-      setProfileRetweetsHidden(currentProfileHandle, hideProfileRetweets);
-      renderAllRetweetToggleButtons();
-      applyProfileRetweetVisibility([document.documentElement]);
+      profileRetweetHiddenStates.set(currentProfileHandle, hideProfileRetweets);
+      setRootAttribute('data-tmx-hide-retweets', String(hideProfileRetweets));
+      renderToggleButtons();
+      if (hideProfileRetweets) scanCurrentProfileRetweets();
     });
-
-    renderRetweetToggleButton(button);
+    renderToggleButton(button);
     return button;
   }
 
-  function syncSearchHeaderRetweetToggle(profileHandle) {
-    const existingButton = document.querySelector('[data-codex-retweet-toggle="search"]');
-    if (!profileHandle) {
-      existingButton?.remove();
-      return;
-    }
+  function syncSearchToggleButton() {
+    if (currentPage !== 'profile') return;
+    const primary = document.querySelector(PRIMARY_SELECTOR);
+    const searchButton = primary?.querySelector(SEARCH_BUTTON_SELECTOR);
+    if (!searchButton?.parentElement) return;
 
-    const searchButton = Array.from(document.querySelectorAll('button[aria-label="検索"], button[aria-label="Search"]'))
-      .find(button => button.closest('[data-testid="primaryColumn"]'));
-    if (!searchButton || !searchButton.parentElement) {
-      existingButton?.remove();
-      return;
+    if (!searchToggleButton?.isConnected) {
+      searchToggleButton = document.querySelector('[data-tmx-retweet-toggle="search"]')
+        || createRetweetToggleButton('search');
     }
-
-    const parent = searchButton.parentElement;
-    const button = existingButton || createRetweetToggleButton(searchButton, 'search');
-    if (button.parentElement !== parent || button.nextSibling !== searchButton) {
-      parent.insertBefore(button, searchButton);
+    if (searchToggleButton.parentElement !== searchButton.parentElement
+      || searchToggleButton.nextSibling !== searchButton) {
+      searchButton.parentElement.insertBefore(searchToggleButton, searchButton);
     }
-    renderRetweetToggleButton(button);
+    renderToggleButton(searchToggleButton);
   }
 
-  function syncStickyHeaderRetweetToggle(profileHandle) {
-    const existingButton = document.querySelector('[data-codex-retweet-toggle="sticky"]');
-    if (!profileHandle) {
-      existingButton?.remove();
-      document.querySelector('[data-codex-retweet-toggle-wrapper="sticky"]')?.remove();
-      return;
-    }
+  function removeStickyToggleButton() {
+    document.querySelector('[data-tmx-retweet-toggle-wrapper="sticky"]')?.remove();
+    stickyToggleButton = null;
+  }
 
-    const followButton = getStickyHeaderFollowButton();
+  function syncStickyToggleButton(followButton) {
     const followWrapper = followButton?.parentElement;
     const followGroup = followWrapper?.parentElement;
     const actionRow = followGroup?.parentElement;
-    if (!followButton || !followWrapper || !followGroup || !actionRow) {
-      existingButton?.remove();
-      document.querySelector('[data-codex-retweet-toggle-wrapper="sticky"]')?.remove();
+    if (!followWrapper || !followGroup || !actionRow) {
+      removeStickyToggleButton();
       return;
     }
 
-    document.querySelector('[data-codex-retweet-toggle-wrapper="sticky"]')?.remove();
-
-    let button = existingButton;
-    if (!button) {
-      const templateButton = document.querySelector('button[aria-label="検索"], button[aria-label="Search"]') || followButton;
-      button = createRetweetToggleButton(templateButton, 'sticky');
+    let wrapper = document.querySelector('[data-tmx-retweet-toggle-wrapper="sticky"]');
+    if (!stickyToggleButton?.isConnected) {
+      stickyToggleButton = document.querySelector('[data-tmx-retweet-toggle="sticky"]')
+        || createRetweetToggleButton('sticky');
     }
-
-    const wrapper = button.parentElement?.dataset.codexRetweetToggleWrapper === 'sticky'
-      ? button.parentElement
-      : document.createElement('div');
-    if (!wrapper.dataset.codexRetweetToggleWrapper) {
-      wrapper.dataset.codexRetweetToggleWrapper = 'sticky';
+    if (!wrapper) {
+      wrapper = document.createElement('div');
+      wrapper.dataset.tmxRetweetToggleWrapper = 'sticky';
       wrapper.className = followWrapper.className || 'css-175oi2r';
       wrapper.style.minWidth = '0px';
       wrapper.style.marginRight = '8px';
     }
-    if (button.parentElement !== wrapper) {
-      wrapper.replaceChildren(button);
+    if (stickyToggleButton.parentElement !== wrapper) {
+      wrapper.replaceChildren(stickyToggleButton);
     }
-
     if (wrapper.parentElement !== actionRow || wrapper.nextSibling !== followGroup) {
       actionRow.insertBefore(wrapper, followGroup);
     }
-    renderRetweetToggleButton(button);
+    renderToggleButton(stickyToggleButton);
   }
 
-  function syncRetweetToggleButtons(profileHandle) {
-    syncSearchHeaderRetweetToggle(profileHandle);
-    syncStickyHeaderRetweetToggle(profileHandle);
+  function removeProfileToggleButtons() {
+    document.querySelectorAll(TOGGLE_BUTTON_SELECTOR).forEach(button => button.remove());
+    document.querySelector('[data-tmx-retweet-toggle-wrapper="sticky"]')?.remove();
+    searchToggleButton = null;
+    stickyToggleButton = null;
   }
 
-  /** 左サイドバーのプレミアムリンクをテキストベースでも削除 */
-  function cleanPremiumLinks(roots) {
-    // 追加ノードから nav / header を収集（自身・子孫・祖先を考慮）
-    const navs = new Set();
-    for (const root of roots) {
-      if (root.matches?.('nav, header')) navs.add(root);
-      root.querySelectorAll?.('nav, header').forEach(n => navs.add(n));
-      const ancestor = root.closest?.('nav, header');
-      if (ancestor) navs.add(ancestor);
+  function chooseStickyCandidate() {
+    let bestButton = null;
+    let bestTop = Infinity;
+    for (const [button, top] of activeStickyCandidates) {
+      if (!button.isConnected) {
+        activeStickyCandidates.delete(button);
+      } else if (top < bestTop) {
+        bestTop = top;
+        bestButton = button;
+      }
+    }
+    if (bestButton) syncStickyToggleButton(bestButton);
+    else removeStickyToggleButton();
+  }
+
+  const stickyObserver = new IntersectionObserver((entries) => {
+    if (currentPage !== 'profile') return;
+    for (const entry of entries) {
+      const rect = entry.boundingClientRect;
+      if (entry.isIntersecting && rect.width > 0 && rect.height > 0 && rect.bottom > 0) {
+        activeStickyCandidates.set(entry.target, rect.top);
+      } else {
+        activeStickyCandidates.delete(entry.target);
+      }
+    }
+    chooseStickyCandidate();
+  }, {
+    root: null,
+    rootMargin: '0px 0px -90% 0px',
+    threshold: 0,
+  });
+
+  function observeFollowButton(button) {
+    if (observedFollowButtons.has(button)) return;
+    if (!button.closest(PRIMARY_SELECTOR) || button.closest(CELL_SELECTOR)) return;
+    observedFollowButtons.add(button);
+    stickyObserver.observe(button);
+  }
+
+  function syncProfileHeader(root) {
+    if (currentPage !== 'profile') return;
+    if (root === appRoot || root.matches?.(SEARCH_BUTTON_SELECTOR)
+      || root.querySelector?.(SEARCH_BUTTON_SELECTOR)) {
+      syncSearchToggleButton();
     }
 
-    for (const nav of navs) {
-      nav.querySelectorAll('a').forEach((a) => {
-        if (!/^(Premium|プレミアム|Verified)(\s|$)/i.test(a.textContent.trim())) return;
-        const row = a.closest('li') || a.closest('[data-testid]') || a.parentElement;
-        if (row && row.style.display !== 'none') {
-          row.style.setProperty('display', 'none', 'important');
-        }
-      });
-    }
+    if (root.matches?.(FOLLOW_BUTTON_SELECTOR)) observeFollowButton(root);
+    root.querySelectorAll?.(FOLLOW_BUTTON_SELECTOR).forEach(observeFollowButton);
   }
 
-  /**
-   * タイムラインの「おすすめ」タブを非表示・「フォロー中」を自動選択
-   * forYouWrapper をキャッシュし、DOM 内で非表示済みなら O(1) でスキップ。
-   * SPA で再描画されると document.contains() が false になり再スキャンが走る。
-   */
-  function cleanForYouTab() {
-    // キャッシュ済みかつ DOM 内で非表示 → スキップ
-    if (forYouWrapper && document.contains(forYouWrapper) && forYouWrapper.style.display === 'none') return;
-
-    const tabList = document.querySelector('[data-testid="primaryColumn"] [role="tablist"]');
-    if (!tabList) return;
-    const tabs = tabList.querySelectorAll('[role="tab"]');
-
+  function syncForYouTab(tabList) {
+    if (currentPage !== 'home' || !tabList) return;
     let forYouTab = null;
     let followingTab = null;
-    for (const tab of tabs) {
-      const text = tab.textContent.trim();
-      if (/^(おすすめ|For You)$/i.test(text)) forYouTab = tab;
-      else if (/^(フォロー中|Following)$/i.test(text)) followingTab = tab;
+    for (const tab of tabList.querySelectorAll('[role="tab"]')) {
+      const text = normalizeText(tab.textContent);
+      if (text === 'おすすめ' || text === 'for you') forYouTab = tab;
+      else if (text === 'フォロー中' || text === 'following') followingTab = tab;
     }
-
     if (!forYouTab) return;
 
-    forYouWrapper = forYouTab.closest('[role="presentation"]') || forYouTab;
-    forYouWrapper.style.setProperty('display', 'none', 'important');
-    if (followingTab && followingTab.getAttribute('aria-selected') !== 'true') {
+    forYouTab.closest('[role="presentation"]')?.classList.add(FOR_YOU_CLASS);
+    if (followingTab?.getAttribute('aria-selected') !== 'true'
+      && !requestedFollowingTabs.has(followingTab)) {
+      requestedFollowingTabs.add(followingTab);
       followingTab.click();
     }
   }
 
-  /** 検索ボックスを残しつつ、同じ親配下の右サイドバー要素をまとめて非表示にする */
-  function hideSidebarSiblingsExceptSearch(sidebar) {
-    const searchInput = sidebar.querySelector(SEARCH_INPUT_SELECTOR);
-    if (!searchInput) return false;
-
-    let branch = searchInput.parentElement;
-    while (branch && branch !== sidebar) {
-      const parent = branch.parentElement;
-      if (!parent) break;
-
-      const siblings = Array.from(parent.children);
-      const keep = siblings.find(child => child.contains(searchInput));
-      if (!keep || siblings.length < 2) {
-        branch = parent;
-        continue;
+  function processOriginalButton(cell) {
+    if (originalShownCells.has(cell)) return;
+    const cellText = cell.textContent;
+    let hasOriginalButtonText = false;
+    for (const text of ORIGINAL_BUTTON_TEXTS) {
+      if (cellText.includes(text)) {
+        hasOriginalButtonText = true;
+        break;
       }
-
-      const hideable = siblings.filter((child) => {
-        if (child === keep || child.contains(searchInput)) return false;
-        return child.matches?.(SIDEBAR_SECTION_MARKERS) || child.querySelector?.(SIDEBAR_SECTION_MARKERS);
-      });
-
-      if (hideable.length > 0) {
-        hideable.forEach((child) => {
-          if (child.style.display !== 'none') {
-            child.style.setProperty('display', 'none', 'important');
-          }
-        });
-        return true;
-      }
-
-      branch = parent;
     }
+    if (!hasOriginalButtonText) return;
 
-    return false;
-  }
-
-  /** 右サイドバーの不要セクションを非表示（サイドバー変化時のみ実行） */
-  function cleanSidebarSections(roots) {
-    const sidebar = document.querySelector('[data-testid="sidebarColumn"]');
-    if (!sidebar) return;
-
-    // サイドバーに関係するノードが追加されたときだけ実行
-    const affected = roots.some(root =>
-      sidebar === root || sidebar.contains(root) || root.contains(sidebar)
-    );
-    if (!affected) return;
-
-    if (hideSidebarSiblingsExceptSearch(sidebar)) return;
-
-    sidebar.querySelectorAll('aside').forEach(aside => {
-      const parent = aside.parentElement;
-      if (parent && parent !== sidebar && parent.style.display !== 'none') {
-        parent.style.setProperty('display', 'none', 'important');
+    let targetButton = null;
+    for (const button of cell.querySelectorAll('button')) {
+      if (!processedOriginalButtons.has(button)
+        && ORIGINAL_BUTTON_TEXTS.has(button.textContent.trim())) {
+        targetButton = button;
+        break;
       }
-    });
-
-    const HIDE_HEADINGS = /^(本日のニュース|「いま」を見つけよう|What's happening|Today's news)/i;
-    sidebar.querySelectorAll('h2').forEach((h2) => {
-      if (!HIDE_HEADINGS.test(h2.textContent.trim())) return;
-      let target = null;
-      let cur = h2.parentElement;
-      while (cur && cur !== sidebar) {
-        if (cur.querySelector(SEARCH_INPUT_SELECTOR)) break;
-        target = cur;
-        cur = cur.parentElement;
-      }
-      if (target && target.style.display !== 'none') {
-        target.style.setProperty('display', 'none', 'important');
-      }
-    });
-  }
-
-  /** 「○○からの翻訳」ラベルからソース言語名を取得する */
-  function getSourceLanguage(cellDiv) {
-    for (const span of cellDiv.querySelectorAll('span')) {
-      const text = span.textContent.trim();
-      if (text.endsWith('からの翻訳')) return text.replace('からの翻訳', '');
     }
-    return null;
-  }
+    if (!targetButton) return;
 
-  /**
-   * 「原文を表示」ボタン1件の処理を試みる（processShowOriginalButton / retryPendingButtons の共通ロジック）
-   * 戻り値: 'done'（処理完了）/ 'pending'（言語ラベル未描画で保留）/ 'skip'（処理不要）
-   */
-  function tryShowOriginal(btn, cellDiv) {
-    if (processedButtons.has(btn)) return 'skip';
-    // このセルで既に原文を表示済み → ユーザーが翻訳に戻した可能性があるため再クリックしない
-    if (originalShownCells.has(cellDiv)) {
-      processedButtons.add(btn);
-      return 'skip';
-    }
-    const sourceLang = getSourceLanguage(cellDiv);
-    if (sourceLang === null) return 'pending';
-    processedButtons.add(btn);
-    if (SHOW_ORIGINAL_LANGS.has(sourceLang)) {
-      originalShownCells.add(cellDiv);
-      btn.click();
-    }
-    return 'done';
-  }
-
-  function processShowOriginalButton(btn) {
-    const cellDiv = btn.closest('[data-testid="cellInnerDiv"]');
-    if (!cellDiv) return;
-    if (tryShowOriginal(btn, cellDiv) === 'pending') {
-      pendingButtons.add(new WeakRef(btn));
+    if (ENGLISH_TRANSLATION_LABELS.some(label => cellText.includes(label))) {
+      processedOriginalButtons.add(targetButton);
+      originalShownCells.add(cell);
+      targetButton.click();
+    } else if (ANY_TRANSLATION_LABELS.some(pattern => pattern.test(cellText))) {
+      processedOriginalButtons.add(targetButton);
     }
   }
 
-  /** 保留中ボタンの再試行（毎 RAF で呼ぶ） */
-  function retryPendingButtons() {
-    if (pendingButtons.size === 0) return;
-    for (const ref of pendingButtons) {
-      const btn = ref.deref();
-      if (!btn || !document.contains(btn)) {
-        pendingButtons.delete(ref);
-        continue;
-      }
-      const cellDiv = btn.closest('[data-testid="cellInnerDiv"]');
-      if (!cellDiv) {
-        pendingButtons.delete(ref);
-        continue;
-      }
-      if (tryShowOriginal(btn, cellDiv) !== 'pending') {
-        pendingButtons.delete(ref);
-      }
+  function processCell(cell) {
+    processOriginalButton(cell);
+
+    if (currentPage === 'explore') {
+      const heading = cell.querySelector('h2[role="heading"], h2');
+      const headingText = heading ? normalizeText(heading.textContent) : '';
+      cell.classList.toggle(EXPLORE_HEADING_CLASS, EXPLORE_HEADINGS.has(headingText));
+    } else if (currentPage === 'profile') {
+      const heading = cell.querySelector('h2[role="heading"], h2');
+      const headingText = heading ? normalizeText(heading.textContent) : '';
+      cell.classList.toggle(
+        PROFILE_HEADING_CLASS,
+        PROFILE_RECOMMENDATION_HEADINGS.has(headingText),
+      );
+      if (hideProfileRetweets) classifyProfileRetweetCell(cell);
+    } else if (currentPage === 'status') {
+      const heading = cell.querySelector('h2[role="heading"], h2');
+      const headingText = heading ? normalizeText(heading.textContent) : '';
+      cell.classList.toggle(DISCOVER_MORE_CLASS, DISCOVER_MORE_HEADINGS.has(headingText));
     }
   }
 
-  /** 追加ノードに含まれる「原文を表示」ボタンを処理 */
-  function clickShowOriginalButtons(roots) {
-    const scannedCells = new Set();
-
-    for (const root of roots) {
-      if (root.matches?.('button')) {
-        if (root.textContent.trim() === '原文を表示') processShowOriginalButton(root);
-        continue;
-      }
-
-      // root → 対応する cellInnerDiv に正規化
-      const cell = root.matches?.('[data-testid="cellInnerDiv"]') ? root
-                 : root.closest?.('[data-testid="cellInnerDiv"]');
-      const cells = cell ? [cell]
-                   : (root.querySelectorAll ? root.querySelectorAll('[data-testid="cellInnerDiv"]') : []);
-
-      for (const c of cells) {
-        if (scannedCells.has(c)) continue;
-        scannedCells.add(c);
-        for (const btn of c.querySelectorAll('button')) {
-          if (btn.textContent.trim() === '原文を表示') processShowOriginalButton(btn);
-        }
-      }
-    }
-    retryPendingButtons();
+  function collectCells(root, cells) {
+    if (root.matches?.(CELL_SELECTOR)) cells.add(root);
+    const ancestor = root.closest?.(CELL_SELECTOR);
+    if (ancestor) cells.add(ancestor);
+    root.querySelectorAll?.(CELL_SELECTOR).forEach(cell => cells.add(cell));
   }
 
-  /**
-   * ツイート詳細ページの「もっと見つける」(Discover more) セクションと
-   * その後に続くおすすめツイート群をすべて非表示にする。
-   * h2[role="heading"] のテキストを判定基点にし、該当する cellInnerDiv 以降の
-   * 兄弟 cellInnerDiv をまとめて display: none にする。
-   */
-  function cleanDiscoverMore() {
-    const DISCOVER_MORE_RE = /^(もっと見つける|Discover more)$/i;
-    const primaryColumn = document.querySelector('[data-testid="primaryColumn"]');
-    if (!primaryColumn) return;
+  function processSubtree(root) {
+    const cells = new Set();
+    collectCells(root, cells);
+    cells.forEach(processCell);
 
-    const headings = primaryColumn.querySelectorAll('h2[role="heading"]');
-    for (const h2 of headings) {
-      if (!DISCOVER_MORE_RE.test(h2.textContent.trim())) continue;
-
-      // h2 を含む cellInnerDiv を特定
-      const cell = h2.closest('[data-testid="cellInnerDiv"]');
-      if (!cell) continue;
-
-      // この cellInnerDiv 自体と、以降の兄弟要素をすべて非表示
-      let sibling = cell;
-      while (sibling) {
-        if (sibling.style.display !== 'none') {
-          sibling.style.setProperty('display', 'none', 'important');
-        }
-        sibling = sibling.nextElementSibling;
-      }
+    if (currentPage === 'home') {
+      const primary = document.querySelector(PRIMARY_SELECTOR);
+      primary?.querySelectorAll('[role="tablist"]').forEach(syncForYouTab);
+    } else if (currentPage === 'profile') {
+      syncProfileHeader(root);
     }
   }
 
-  /**
-   * 話題を検索ページ (/explore) の「本日のニュース」「おすすめユーザー」「おすすめ投稿」を非表示にする
-   */
-  function cleanExplorePage() {
-    if (!location.pathname.startsWith('/explore')) return;
-
-    const cells = Array.from(document.querySelectorAll('[data-testid="cellInnerDiv"]'));
-    const hiddenIndices = new Set();
-
-    // First pass: Hide target headers, user cards, recommended posts, and news articles based on content
-    cells.forEach((cell, idx) => {
-      let shouldHide = false;
-
-      // 1. Check if it contains a target heading
-      const h2 = cell.querySelector('h2');
-      if (h2 && EXPLORE_HEADINGS_TO_HIDE.includes(h2.textContent.trim())) {
-        shouldHide = true;
-      }
-
-      // 2. Check if it contains UserCell (Who to Follow)
-      if (cell.querySelector('[data-testid="UserCell"]')) {
-        shouldHide = true;
-      }
-
-      // 3. Check if it contains "Show more" link for Who to Follow
-      if (cell.querySelector('a[href="/i/connect_people"]')) {
-        shouldHide = true;
-      }
-
-      // 4. Check if it contains tweet (Recommended Posts)
-      if (cell.querySelector('[data-testid="tweet"]')) {
-        shouldHide = true;
-      }
-
-      // 5. Check if it is a news trend (Today's News)
-      const trend = cell.querySelector('[data-testid="trend"]');
-      if (trend) {
-        const hasImg = !!trend.querySelector('img');
-        const hasTime = EXPLORE_TIME_REGEX.test(cell.textContent);
-        if (hasImg || hasTime) {
-          shouldHide = true;
-        }
-      }
-
-      if (shouldHide) {
-        cell.style.setProperty('display', 'none', 'important');
-        hiddenIndices.add(idx);
-      }
-    });
-
-    // Second pass: Hide empty spacer cells adjacent to hidden elements to clean up gaps
-    cells.forEach((cell, idx) => {
-      if (cell.textContent.trim() === '') {
-        if (hiddenIndices.has(idx - 1) || hiddenIndices.has(idx + 1)) {
-          cell.style.setProperty('display', 'none', 'important');
-          hiddenIndices.add(idx);
-        }
-      }
-    });
-  }
-
-  /**
-   * プロフィールページのタイムライン内「おすすめユーザー」(Who to follow) セクションを非表示にする
-   */
-  function cleanProfileRecommendations() {
-    if (!isProfilePagePath()) return;
-
-    const primaryColumn = document.querySelector('[data-testid="primaryColumn"]');
-    if (!primaryColumn) return;
-
-    // 1. カルーセル型 (aside) のクリーンアップ
-    const asides = primaryColumn.querySelectorAll('aside[aria-label="おすすめユーザー"], aside[aria-label="Who to follow"]');
-    asides.forEach(aside => {
-      const cell = aside.closest('[data-testid="cellInnerDiv"]') || aside;
-      if (cell.style.display !== 'none') {
-        cell.style.setProperty('display', 'none', 'important');
-      }
-    });
-
-    // 2. トグルボタンのクリーンアップ（トグル矢印ボタン）
-    const toggleBtns = primaryColumn.querySelectorAll('button.r-wh3kqs');
-    toggleBtns.forEach(btn => {
-      if (btn.style.display !== 'none') {
-        btn.style.setProperty('display', 'none', 'important');
-      }
-    });
-
-    // 3. フラットリスト型（タイムライン内のセル群）のクリーンアップ
-    const REC_HEADER_RE = /^(おすすめユーザー|Who to follow|おすすめのユーザー)$/i;
-    
-    // 常に primaryColumn 内の全 cellInnerDiv をスキャン
-    const cells = Array.from(primaryColumn.querySelectorAll('[data-testid="cellInnerDiv"]'));
-    cells.forEach((cell) => {
-      const h2 = cell.querySelector('h2');
-      if (h2 && REC_HEADER_RE.test(h2.textContent.trim())) {
-        // ヘッダーセルを非表示にする
-        if (cell.style.display !== 'none') {
-          cell.style.setProperty('display', 'none', 'important');
-        }
-
-        // 後続の関連セル（おすすめユーザー、「さらに表示」リンク、空スペース）を探索して非表示にする
-        let next = cell.nextElementSibling;
-        while (next) {
-          if (next.getAttribute('data-testid') === 'cellInnerDiv') {
-            const hasTweet = next.querySelector('[data-testid="tweet"]');
-            const hasUserCell = next.querySelector('[data-testid="UserCell"]');
-            const hasShowMore = next.querySelector('a[href*="/i/connect_people"]');
-            const isEmpty = next.textContent.trim() === '';
-
-            if (hasTweet) {
-              // ツイート（タイムライン再開）に達したら終了
-              break;
-            }
-
-            if (hasUserCell || hasShowMore || isEmpty) {
-              if (next.style.display !== 'none') {
-                next.style.setProperty('display', 'none', 'important');
-              }
-            } else {
-              break;
-            }
-          } else {
-            break;
-          }
-          next = next.nextElementSibling;
-        }
-      }
-    });
-  }
-
-  // ============================================================
-  // 3. MutationObserver（追加ノードのみ処理・RAF でバッチ化）
-  // ============================================================
-  let rafId = null;
-  let scrollRafId = null;
-  let pendingAddedNodes = [];
-
-  /** 全クリーンアップ処理を一括実行（start と onMutation で共有） */
-  function runCleanupTasks(roots, deferOriginalClick = false) {
-    cleanForYouTab();
-    cleanPremiumLinks(roots);
-    cleanSidebarSections(roots);
-    syncRetweetToggleButtons(currentProfileHandle);
-    applyProfileRetweetVisibility(roots);
-    cleanDiscoverMore();
-    cleanExplorePage();
-    cleanProfileRecommendations();
-    if (deferOriginalClick) {
-      setTimeout(() => clickShowOriginalButtons(roots), 0);
-    } else {
-      clickShowOriginalButtons(roots);
-    }
-  }
-
-  function scheduleRetweetToggleSync() {
-    if (scrollRafId || !currentProfileHandle) return;
-    scrollRafId = requestAnimationFrame(() => {
-      scrollRafId = null;
-      syncRetweetToggleButtons(currentProfileHandle);
-    });
-  }
-
-  function onMutation(mutations) {
-    let urlChanged = false;
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      urlChanged = true;
+  function processMutations(mutations) {
+    if (syncRoute()) {
+      processSubtree(appRoot);
+      return;
     }
 
-    if (urlChanged) {
-      // プレミアム勧誘ページならホームへリダイレクト
-      if (redirectIfPremiumPage()) return;
-      // URL 変化 → キャッシュをリセットして全体再スキャン
-      forYouWrapper = null;
-      const nextProfileHandle = getCurrentProfileHandleFromUrl();
-      currentProfileHandle = nextProfileHandle;
-      hideProfileRetweets = getProfileRetweetsHidden(currentProfileHandle);
-      pendingAddedNodes.length = 0;
-      pendingAddedNodes.push(document.documentElement);
-    } else {
-      for (const m of mutations) {
-        for (const node of m.addedNodes) {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            pendingAddedNodes.push(node);
-          }
+    const cells = new Set();
+    const tabLists = new Set();
+    const profileRoots = new Set();
+
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        collectCells(node, cells);
+
+        if (currentPage === 'home') {
+          if (node.matches?.('[role="tablist"]')) tabLists.add(node);
+          const tabList = node.closest?.('[role="tablist"]');
+          if (tabList) tabLists.add(tabList);
+          node.querySelectorAll?.('[role="tablist"]').forEach(item => tabLists.add(item));
+        } else if (currentPage === 'profile'
+          && (node.matches?.(`${SEARCH_BUTTON_SELECTOR}, ${FOLLOW_BUTTON_SELECTOR}`)
+            || node.querySelector?.(`${SEARCH_BUTTON_SELECTOR}, ${FOLLOW_BUTTON_SELECTOR}`))) {
+          profileRoots.add(node);
         }
       }
     }
 
-    if (pendingAddedNodes.length === 0) return;
-    if (rafId) return; // 既に RAF 予約済み → 次フレームで一括処理
-
-    rafId = requestAnimationFrame(() => {
-      rafId = null;
-      const roots = pendingAddedNodes; // 積みノードを全取得
-      pendingAddedNodes = [];
-      runCleanupTasks(roots, true);
-    });
+    cells.forEach(processCell);
+    tabLists.forEach(syncForYouTab);
+    profileRoots.forEach(syncProfileHeader);
   }
 
-  const observer = new MutationObserver(onMutation);
+  const observer = new MutationObserver(processMutations);
 
   function start() {
-    // 起動時にプレミアム勧誘ページならホームへリダイレクト
-    if (redirectIfPremiumPage()) return;
-    currentProfileHandle = getCurrentProfileHandleFromUrl();
-    hideProfileRetweets = getProfileRetweetsHidden(currentProfileHandle);
-    window.addEventListener('scroll', scheduleRetweetToggleSync, { passive: true });
-    observer.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
+    appRoot = document.querySelector('#react-root');
+    if (!appRoot) return;
+    syncRoute();
+    observer.observe(appRoot, { childList: true, subtree: true });
+    processSubtree(appRoot);
+    window.addEventListener('popstate', () => {
+      if (syncRoute()) processSubtree(appRoot);
     });
-    // 初回は全体スキャン
-    runCleanupTasks([document.documentElement]);
   }
 
+  syncRoute(true);
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
+    document.addEventListener('DOMContentLoaded', start, { once: true });
   } else {
     start();
   }
