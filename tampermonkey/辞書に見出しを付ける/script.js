@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         辞書に見出しを付ける
 // @namespace    http://tampermonkey.net/
-// @version      2.5.3
+// @version      2.5.5
 // @description  OALD / Cambridge Dictionary / Collins Dictionary に意味の目次をサイドバーとしてページ内に組み込む
 // @match        https://www.oxfordlearnersdictionaries.com/definition/english/*
 // @match        https://dictionary.cambridge.org/dictionary/*
@@ -84,6 +84,7 @@
     #dict-toc-sidebar {
       position: fixed;
       z-index: 1000;
+      box-sizing: border-box;
       font-family: "Segoe UI", Arial, sans-serif;
       font-size: 13px;
       line-height: 1.4;
@@ -93,7 +94,8 @@
       box-shadow: 0 1px 4px rgba(0,0,0,0.08);
       overscroll-behavior: contain;
     }
-    #dict-toc-sidebar.hidden {
+    #dict-toc-sidebar.hidden,
+    #dict-toc-sidebar.auto-hidden {
       display: none;
     }
 
@@ -913,33 +915,51 @@
     return { left: 5, width: 240 };
   }
 
-  // --- Collins: 中央カラムと記事位置からTOC位置を計算 ---
+  // --- Collins: 本文左側の実際の空きからTOC位置を計算 ---
   function getCollinsTocRect() {
-    const content = document.querySelector(".dictionary .res_cell_center_content");
     const article = document.querySelector("#article_1");
-    const rightPanel = document.querySelector(".dictionary > .res_cell_right");
-
-    if (content && article) {
-      const contentRect = content.getBoundingClientRect();
+    if (article) {
       const articleRect = article.getBoundingClientRect();
-      const leftBoundary = Math.max(contentRect.left, 5);
-      const rightGap =
-        rightPanel && rightPanel.getBoundingClientRect().left > articleRect.right
-          ? Math.max(12, rightPanel.getBoundingClientRect().left - articleRect.right)
-          : 12;
-      const width = articleRect.left - leftBoundary - rightGap;
-      if (width > 160) {
-        return { left: leftBoundary, width: Math.min(width, 280) };
+      const leftPanel = document.querySelector(".res_cell_left");
+      const leftPanelRect = leftPanel ? leftPanel.getBoundingClientRect() : null;
+      const hasVisibleLeftPanel =
+        leftPanelRect &&
+        leftPanelRect.width > 0 &&
+        getComputedStyle(leftPanel).display !== "none";
+      const gap = 12;
+      const minWidth = 180;
+      const maxWidth = 280;
+      const leftBoundary = hasVisibleLeftPanel
+        ? Math.max(leftPanelRect.left, 5)
+        : Math.max(5, articleRect.left - maxWidth - gap);
+      const availableWidth = articleRect.left - leftBoundary - gap;
+
+      if (availableWidth >= minWidth) {
+        return { left: leftBoundary, width: Math.min(availableWidth, maxWidth) };
       }
-
-      const fallbackWidth = 240;
-      return {
-        left: Math.max(5, articleRect.left - fallbackWidth - 12),
-        width: fallbackWidth,
-      };
     }
+    return null;
+  }
 
-    return { left: 5, width: 240 };
+  // --- 全サイト共通: 語釈本文に重ならない範囲へTOCを収める ---
+  function fitTocBeforeContent(left, width) {
+    const contentSelectors = {
+      oald: ["#entryContent", "#main_column"],
+      cambridge: [".pr.dictionary", ".hfl-s.lt2b.lp-s_r-20"],
+      collins: ["#article_1"],
+    }[SITE];
+    const content = contentSelectors
+      .map((sel) => document.querySelector(sel))
+      .find((el) => el && el.getBoundingClientRect().width > 0);
+    if (!content) return null;
+
+    const contentLeft = content.getBoundingClientRect().left;
+    const gap = 12;
+    const minWidth = SITE === "collins" ? 180 : 150;
+    const safeWidth = Math.min(width, contentLeft - left - gap);
+
+    if (safeWidth < minWidth) return null;
+    return { left, width: safeWidth };
   }
 
   // --- メイン ---
@@ -979,6 +999,7 @@
         width = r.width;
       } else if (SITE === "collins") {
         const r = getCollinsTocRect();
+        if (!r) return hideAutomatically();
         left = r.left;
         width = r.width;
       } else if (anchorCol) {
@@ -988,6 +1009,12 @@
       } else {
         return; // OALD でアンカーなしは表示しない
       }
+
+      const fittedRect = fitTocBeforeContent(left, width);
+      if (!fittedRect) return hideAutomatically();
+      sidebar.classList.remove("auto-hidden");
+      left = fittedRect.left;
+      width = fittedRect.width;
 
       // フッター / 常時表示バーと重ならないよう maxHeight を制限
       let bottomLimit = window.innerHeight;
@@ -1032,6 +1059,10 @@
       sidebar.style.width = width + "px";
       sidebar.style.maxHeight = maxH + "px";
       sidebar.style.overflowY = "auto";
+    }
+
+    function hideAutomatically() {
+      sidebar.classList.add("auto-hidden");
     }
     updatePosition();
     window.addEventListener("scroll", updatePosition, { passive: true });
