@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.8.4
+// @version      1.8.5
 // @description  Adds 2 save buttons to YouTube transcript panel header. Timestamped save → plain .lrc, no-timestamp save → chaptered .md or plain .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -13,903 +13,444 @@
 (() => {
   "use strict";
 
-  const BTN_ID_NO_TS = "tm-transcript-save-btn";
-  const BTN_ID_WITH_TS = "tm-transcript-save-btn-ts";
+  const BTN_WITH_TS = "tm-transcript-save-btn-ts";
+  const BTN_NO_TS = "tm-transcript-save-btn";
   const STYLE_ID = "tm-transcript-save-style";
   const PENDING_KEY = "tm-transcript-pending-action";
-  const PENDING_TTL_MS = 15000;
-  const NOTIFY_ICON = "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/icon_128.png"; // 通知アイコンURL（null ならデフォルトアイコン）
+  const PENDING_TTL = 15000;
+  const NOTIFY_ICON = "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/icon_128.png";
 
-  // Default save icon (used for no-timestamp TXT)
-  const SAVE_ICON_PATH =
-    'm732-120 144-144-51-51-57 57v-150h-72v150l-57-57-51 51 144 144ZM588 0v-72h288V0H588ZM264-144q-29 0-50.5-21.5T192-216v-576q0-29 21.5-50.5T264-864h312l192 192v192h-72v-144H528v-168H264v576h264v72H264Zm0-72v-576 576Z';
+  const PANEL_SELECTOR =
+    '[target-id="PAmodern_transcript_view"],[target-id="engagement-panel-searchable-transcript"]';
+  const SHOW_BUTTON_SELECTOR =
+    "ytd-video-description-transcript-section-renderer #primary-button button";
+  const SEGMENT = "transcript-segment-view-model";
+  const CHAPTER = "timeline-chapter-view-model";
+  const TIMESTAMP = ".ytwTranscriptSegmentViewModelTimestamp";
+  const TEXT = ".ytAttributedStringHost";
+  const CHAPTER_TITLE = ".ytwTimelineChapterViewModelTitle";
 
-  // User-provided icon path (timestamped)
-  const TS_ICON_PATH =
-    'M173-293q-77-77-77-187t77-187q77-77 187-77t187 77q77 77 77 187t-77 187q-77 77-187 77t-187-77Zm594 101L648-311l50-52 33 34v-438h72v437l33-33 51 51-120 120ZM496-343.79q56-55.8 56-136Q552-560 496.21-616q-55.8-56-136-56Q280-672 224-616.21q-56 55.8-56 136Q168-400 223.79-344q55.8 56 136 56Q440-288 496-343.79ZM420-372l51-51-75-75v-126h-72v156l96 96Zm-60-108Z';
+  const SAVE_ICON =
+    "m732-120 144-144-51-51-57 57v-150h-72v150l-57-57-51 51 144 144ZM588 0v-72h288V0H588ZM264-144q-29 0-50.5-21.5T192-216v-576q0-29 21.5-50.5T264-864h312l192 192v192h-72v-144H528v-168H264v576h264v72H264Zm0-72v-576 576Z";
+  const TS_ICON =
+    "M173-293q-77-77-77-187t77-187q77-77 187-77t187 77q77 77 77 187t-77 187q-77 77-187 77t-187-77Zm594 101L648-311l50-52 33 34v-438h72v437l33-33 51 51-120 120ZM496-343.79q56-55.8 56-136Q552-560 496.21-616q-55.8-56-136-56Q280-672 224-616.21q-56 55.8-56 136Q168-400 223.79-344q55.8 56 136 56Q440-288 496-343.79ZM420-372l51-51-75-75v-126h-72v156l96 96Zm-60-108Z";
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+  let lastCheckedVideoId = "";
+  let notifyTimer = 0;
+  let loadPromise = null;
+  let cancelWait = null;
 
-  const MSG_EXTRACT_FAIL = "文字起こしを取得できませんでした";
-  const MSG_EXTRACT_HINT = "（文字起こしが開いているか、必要なら少しスクロールして読み込みを完了してから再試行してください）";
-  const MSG_NO_TS = "タイムスタンプを取得できませんでした。YouTubeの文字起こし表示が変わっている可能性があります。";
+  const norm = (value) => (value || "").replace(/\s+/g, " ").trim();
+  const isVideoPage = () =>
+    location.pathname.startsWith("/watch") || location.pathname.startsWith("/live/");
+  const isShortsPage = () => location.pathname.startsWith("/shorts/");
 
-  const DOM_CONFIG = {
-    new: {
-      segmentSel: "transcript-segment-view-model",
-      chapterTag: "timeline-chapter-view-model",
-      combinedSel: "timeline-chapter-view-model, transcript-segment-view-model",
-      tsSels: [".ytwTranscriptSegmentViewModelTimestamp"],
-      textSels: ["span.ytAttributedStringHost", "span.yt-core-attributed-string"],
-      chapterTitleSels: [".ytwTimelineChapterViewModelTitle"],
-    },
-    old: {
-      container: "#segments-container",
-      segmentSel: "ytd-transcript-segment-renderer",
-      chapterTag: "ytd-transcript-section-header-renderer",
-      combinedSel: "ytd-transcript-section-header-renderer, ytd-transcript-segment-renderer",
-      tsSels: [".segment-timestamp", "yt-formatted-string.segment-timestamp", "#timestamp", "span"],
-      textSels: ["yt-formatted-string.segment-text"],
-      chapterTitleSels: ["h2", "span.yt-core-attributed-string"],
-    },
-  };
-
-  let _lastCheckedVideoId = "";
-
-  function addStyleOnce() {
+  function addStyle() {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
       .tm-transcript-save-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 36px;
-        height: 36px;
-        margin: 0 6px;
-        padding: 0;
-        border: none;
-        border-radius: 18px;
-        background: transparent;
-        color: var(--yt-spec-text-primary);
-        cursor: pointer;
-        user-select: none;
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 36px; height: 36px; margin: 0 6px; padding: 0;
+        border: 0; border-radius: 50%; background: transparent;
+        color: var(--yt-spec-text-primary); cursor: pointer;
       }
-      .tm-transcript-save-btn:hover { background: rgba(255,255,255,0.14); }
-      .tm-transcript-save-btn[data-busy="1"] { opacity: 0.6; cursor: progress; }
-      .tm-transcript-save-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
-      .tm-transcript-save-btn svg {
-        width: 22px;
-        height: 22px;
-        display: block;
-        fill: currentColor;
-      }
+      .tm-transcript-save-btn:hover { background: var(--yt-spec-10-percent-layer); }
+      .tm-transcript-save-btn svg { width: 22px; height: 22px; fill: currentColor; }
       @keyframes tm-transcript-notify-in {
-        0%   { opacity: 0; transform: translate(-50%, -100%); }
-        5%   { opacity: 1; transform: translate(-50%, 0); }
-        85%  { opacity: 1; transform: translate(-50%, 0); }
+        0% { opacity: 0; transform: translate(-50%, -100%); }
+        5%, 85% { opacity: 1; transform: translate(-50%, 0); }
         100% { opacity: 0; transform: translate(-50%, -100%); }
       }
-      @keyframes tm-transcript-notify-stay {
-        0%   { opacity: 0; transform: translate(-50%, -100%); }
-        15%  { opacity: 1; transform: translate(-50%, 0); }
-        100% { opacity: 1; transform: translate(-50%, 0); }
-      }
       .tm-transcript-notify {
-        position: absolute;
-        top: 12px;
-        left: 50%;
-        transform: translateX(-50%);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border-radius: 14px;
-        padding: 10px 14px;
-        pointer-events: none;
-        z-index: 2022;
-        min-width: 260px;
-        max-width: 400px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-family: -apple-system, BlinkMacSystemFont, "Noto Sans JP", "Helvetica Neue", sans-serif;
+        position: absolute; top: 12px; left: 50%; z-index: 2022;
+        display: flex; align-items: center; gap: 10px;
+        min-width: 260px; max-width: 400px; padding: 10px 14px;
+        border-radius: 14px; pointer-events: none;
+        color: var(--yt-spec-text-primary);
+        background: var(--yt-spec-menu-background);
+        box-shadow: 0 4px 24px rgba(0,0,0,.28);
+        font-family: Roboto, Arial, sans-serif;
       }
-      .tm-transcript-notify.--auto {
-        animation: tm-transcript-notify-in 5s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-      }
-      .tm-transcript-notify.--stay {
-        animation: tm-transcript-notify-stay 0.6s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-      }
-      .tm-transcript-notify.--dark {
-        background: rgba(30, 30, 30, 0.88);
-        box-shadow: 0 4px 24px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(255,255,255,0.1) inset;
-      }
-      .tm-transcript-notify.--light {
-        background: rgba(255, 255, 255, 0.92);
-        box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06);
-      }
-      .tm-transcript-notify__icon-fallback {
-        width: 36px; height: 36px;
-        border-radius: 8px;
-        background: linear-gradient(135deg, #FF3B30, #FF6B6B);
-        display: flex; align-items: center; justify-content: center;
-        flex-shrink: 0;
-        color: #fff; font-size: 18px; font-weight: bold;
-      }
-      .tm-transcript-notify__icon-img {
-        width: 36px; height: 36px;
-        border-radius: 8px;
-        object-fit: cover;
-        flex-shrink: 0;
-      }
-      .tm-transcript-notify__body { display: flex; flex-direction: column; gap: 1px; }
-      .tm-transcript-notify__title { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; }
-      .tm-transcript-notify__msg   { font-size: 12px; font-weight: 400; }
-      .tm-transcript-notify__time  { font-size: 11px; margin-left: auto; align-self: flex-start; flex-shrink: 0; }
-      .tm-transcript-notify.--dark .tm-transcript-notify__title { color: rgba(255,255,255,0.95); }
-      .tm-transcript-notify.--dark .tm-transcript-notify__msg   { color: rgba(255,255,255,0.6); }
-      .tm-transcript-notify.--dark .tm-transcript-notify__time  { color: rgba(255,255,255,0.35); }
-      .tm-transcript-notify.--light .tm-transcript-notify__title { color: rgba(0,0,0,0.88); }
-      .tm-transcript-notify.--light .tm-transcript-notify__msg   { color: rgba(0,0,0,0.5); }
-      .tm-transcript-notify.--light .tm-transcript-notify__time  { color: rgba(0,0,0,0.3); }
+      .tm-transcript-notify.--auto { animation: tm-transcript-notify-in 5s forwards; }
+      .tm-transcript-notify__icon { width: 36px; height: 36px; border-radius: 8px; object-fit: cover; }
+      .tm-transcript-notify__icon.--fallback { display: grid; place-items: center; color: #fff; background: #f33; font-weight: 700; }
+      .tm-transcript-notify__body { display: flex; flex-direction: column; min-width: 0; }
+      .tm-transcript-notify__title { font-size: 13px; font-weight: 600; }
+      .tm-transcript-notify__msg { font-size: 12px; color: var(--yt-spec-text-secondary); }
+      .tm-transcript-notify__time { margin-left: auto; align-self: flex-start; font-size: 11px; color: var(--yt-spec-text-secondary); }
     `;
     document.head.appendChild(style);
   }
 
-  // ── iOS風通知 ──
-  let _notifyTimer = 0;
-  /**
-   * 通知を表示する。
-   * @param {string} message - 通知メッセージ
-   * @param {"auto"|"stay"} mode - "auto": 3秒で自動消去, "stay": 手動で消すまで表示
-   * @returns {function} dismiss - 通知を消す関数
-   */
-  function showNotify(message, mode = "auto") {
-    addStyleOnce();
+  function showNotify(message, stay = false) {
     const player = document.querySelector("#movie_player");
     if (!player) return () => {};
+    addStyle();
+    player.querySelector(".tm-transcript-notify")?.remove();
+    clearTimeout(notifyTimer);
 
-    // 既存の通知を除去
-    const existing = player.querySelector(".tm-transcript-notify");
-    if (existing) existing.remove();
-    if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = 0; }
-
-    const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const banner = document.createElement("div");
-    banner.className = `tm-transcript-notify --${mode} ` + (isDark ? "--dark" : "--light");
+    banner.className = `tm-transcript-notify${stay ? "" : " --auto"}`;
 
-    // アイコン
-    if (NOTIFY_ICON) {
-      const img = document.createElement("img");
-      img.className = "tm-transcript-notify__icon-img";
-      img.src = NOTIFY_ICON;
-      img.onerror = () => {
-        const fallback = document.createElement("div");
-        fallback.className = "tm-transcript-notify__icon-fallback";
-        fallback.textContent = "\u5B57"; // 「字」
-        img.replaceWith(fallback);
-      };
-      banner.appendChild(img);
-    } else {
-      const icon = document.createElement("div");
-      icon.className = "tm-transcript-notify__icon-fallback";
-      icon.textContent = "\u5B57"; // 「字」
-      banner.appendChild(icon);
-    }
+    const img = document.createElement("img");
+    img.className = "tm-transcript-notify__icon";
+    img.src = NOTIFY_ICON;
+    img.alt = "";
+    img.addEventListener("error", () => {
+      const fallback = document.createElement("div");
+      fallback.className = "tm-transcript-notify__icon --fallback";
+      fallback.textContent = "字";
+      img.replaceWith(fallback);
+    }, { once: true });
 
-    // テキスト
     const body = document.createElement("div");
     body.className = "tm-transcript-notify__body";
     const title = document.createElement("div");
     title.className = "tm-transcript-notify__title";
     title.textContent = "YouTubeの字幕を保存する";
-    const msg = document.createElement("div");
-    msg.className = "tm-transcript-notify__msg";
-    msg.textContent = message;
-    body.appendChild(title);
-    body.appendChild(msg);
+    const text = document.createElement("div");
+    text.className = "tm-transcript-notify__msg";
+    text.textContent = message;
+    body.append(title, text);
 
-    // 時刻ラベル
     const time = document.createElement("div");
     time.className = "tm-transcript-notify__time";
-    time.textContent = "\u4ECA"; // 「今」
-
-    banner.appendChild(body);
-    banner.appendChild(time);
+    time.textContent = "今";
+    banner.append(img, body, time);
     player.appendChild(banner);
 
     const dismiss = () => {
-      if (banner.parentNode) banner.remove();
-      if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = 0; }
+      banner.remove();
+      clearTimeout(notifyTimer);
+      notifyTimer = 0;
     };
-
-    if (mode === "auto") {
-      _notifyTimer = setTimeout(dismiss, 5500);
-    }
-
+    if (!stay) notifyTimer = setTimeout(dismiss, 5500);
     return dismiss;
   }
 
+  function getVideoId() {
+    const queryId = new URLSearchParams(location.search).get("v");
+    if (queryId) return queryId;
+    return location.pathname.match(/^\/(?:live|shorts|embed)\/([^/?#]+)/)?.[1] || "";
+  }
+
+  function getPlayerResponse() {
+    try {
+      return document.querySelector("#movie_player")?.getPlayerResponse?.() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getVideoTitle() {
+    const id = getVideoId();
+    const response = getPlayerResponse();
+    if (!id || response?.videoDetails?.videoId === id) {
+      const original = response?.microformat?.playerMicroformatRenderer?.title?.simpleText;
+      if (original?.trim()) return original.trim();
+    }
+    return document.title.replace(/ - YouTube$/, "").trim() || "youtube-transcript";
+  }
+
   function sanitizeFilename(name) {
-    return (name || "youtube-transcript")
+    return name
       .replace(/[\\/:*?"<>|]+/g, "_")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 120);
   }
 
-  /**
-   * 原語（オリジナル言語）の動画タイトルを返す。
-   * ブラウザの表示言語が英語でも、YouTubeの内部データから翻訳前のタイトルを取得する。
-   *
-   * 注意: window.ytInitialPlayerResponse は初回ロード時に HTML に埋め込まれた値で、
-   * SPA遷移（おすすめ欄クリックなど）では更新されない。movie_player.getPlayerResponse()
-   * を優先し、かつ videoId が現在の URL と一致することを確認する。
-   */
-  function getVideoTitle() {
-    const currentId = getVideoId();
-    const pickTitle = (resp) => {
-      if (!resp) return null;
-      if (currentId && resp.videoDetails?.videoId !== currentId) return null; // 別動画のレスポンスは無視
-      const s = resp.microformat?.playerMicroformatRenderer?.title?.simpleText;
-      return s?.trim() || null;
-    };
-
-    // 1. movie_player: SPA遷移後も現在の動画に追随する
-    try {
-      const resp = document.getElementById("movie_player")?.getPlayerResponse?.();
-      const t = pickTitle(resp);
-      if (t) return t;
-    } catch (_) {/* ignore */}
-
-    // 2. ytInitialPlayerResponse: 初回ロード時の埋め込みデータ（fullリロードの時は最新）
-    try {
-      const t = pickTitle(window.ytInitialPlayerResponse);
-      if (t) return t;
-    } catch (_) {/* ignore */}
-
-    // 3. フォールバック: DOM から取得（翻訳済みの場合あり）
-    const h1 = document.querySelector("h1.ytd-watch-metadata yt-formatted-string");
-    if (h1?.textContent?.trim()) return h1.textContent.trim();
-    const meta = document.querySelector('meta[name="title"]')?.getAttribute("content");
-    if (meta?.trim()) return meta.trim();
-    if (document.title) return document.title.replace(" - YouTube", "").trim();
-    return "youtube-transcript";
-  }
-
-  // ── ライブ配信判定 & 字幕有無チェック ─────────────────────────────────
-
-  // 動画ページ判定: /watch?v=<id>, /live/<id>
-  // （Shorts/Clip はトランスクリプトパネルが存在せず保存機能が動かないため除外）
-  const isVideoPage = () =>
-    location.pathname.startsWith("/watch") || location.pathname.startsWith("/live/");
-
-  const isShortsPage = () => location.pathname.startsWith("/shorts/");
-
-  // 動画ID取得。/watch?v= が最優先、なければ pathname、最後にプレーヤーデータ
-  function getVideoId() {
-    const q = new URLSearchParams(location.search).get("v");
-    if (q) return q;
-    const m = location.pathname.match(/^\/(?:live|shorts|embed)\/([^/?#]+)/);
-    if (m) return m[1];
-    try {
-      const resp = document.getElementById("movie_player")?.getPlayerResponse?.();
-      if (resp?.videoDetails?.videoId) return resp.videoDetails.videoId;
-      if (window.ytInitialPlayerResponse?.videoDetails?.videoId) {
-        return window.ytInitialPlayerResponse.videoDetails.videoId;
-      }
-    } catch (_) {/* ignore */}
-    return "";
-  }
-
-  async function checkSubtitleAvailability() {
+  function checkSubtitleAvailability() {
     if (!isVideoPage()) return;
-
     const videoId = getVideoId();
-    if (!videoId || videoId === _lastCheckedVideoId) return;
-    _lastCheckedVideoId = videoId;
+    if (!videoId || videoId === lastCheckedVideoId) return;
 
-    // プレーヤーデータが準備できるまで待機（Shorts など getPlayerResponse が未定義な場合は ytInitialPlayerResponse を使う）
-    const deadline = Date.now() + 10000;
-    let resp = null;
-    while (Date.now() < deadline) {
-      try {
-        const player = document.getElementById("movie_player");
-        resp = player?.getPlayerResponse?.() || window.ytInitialPlayerResponse;
-        if (resp?.videoDetails?.videoId === videoId) break;
-      } catch (_) {/* ignore */}
-      await sleep(1000);
-    }
-    if (!resp || resp.videoDetails?.videoId !== videoId) return;
-
-    // ライブ配信中はスキップ（アーカイブは isLive === false なので通知される）
-    if (resp.videoDetails?.isLive === true) return;
-
-    const tracks = resp.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-    if (!tracks || tracks.length === 0) {
+    const response = getPlayerResponse();
+    if (response?.videoDetails?.videoId !== videoId || response.videoDetails.isLive) return;
+    lastCheckedVideoId = videoId;
+    const tracks = response.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!tracks?.length) {
       showNotify("この動画には字幕がありません");
-    } else {
-      const langs = tracks.map((t) => t.name?.simpleText || t.languageCode).join(", ");
-      showNotify(`字幕あり: ${langs}`);
-    }
-  }
-
-  function downloadText(text, filename) {
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-  }
-
-  // ── Chapter detection ───────────────────────────────────────────────────
-
-  /**
-   * YouTube の内部プレイヤーデータからチャプター情報を取得する。
-   * トランスクリプトパネルにチャプターヘッダーが表示されないケースに対応。
-   * 返り値: [{ title, startSeconds }, ...] or null
-   */
-  function getChaptersFromPageData() {
-    try {
-      // ytd-watch-flexy の __data からチャプター情報を探す
-      // playerOverlays は __data 直下にある（playerResponse の中ではない）
-      const watchFlexy = document.querySelector("ytd-watch-flexy");
-      if (!watchFlexy) return null;
-
-      // 複数の取得パスを試す
-      const overlayRenderer =
-        watchFlexy.__data?.playerOverlays?.playerOverlayRenderer ||
-        watchFlexy.playerData?.playerResponse?.playerOverlays?.playerOverlayRenderer ||
-        window.ytInitialPlayerResponse?.playerOverlays?.playerOverlayRenderer;
-      if (!overlayRenderer) return null;
-
-      // decoratedPlayerBarRenderer 内の markersMap にチャプターがある
-      const playerBar =
-        overlayRenderer?.decoratedPlayerBarRenderer
-          ?.decoratedPlayerBarRenderer?.playerBar?.multiMarkersPlayerBarRenderer;
-      if (!playerBar?.markersMap) return null;
-
-      for (const marker of playerBar.markersMap) {
-        const chapters = marker?.value?.chapters;
-        if (!chapters?.length) continue;
-        const result = [];
-        for (const ch of chapters) {
-          const r = ch?.chapterRenderer;
-          if (!r) continue;
-          const title = r.title?.simpleText || r.title?.runs?.map((run) => run.text).join("") || "";
-          const startMs = r.timeRangeStartMillis ?? 0;
-          if (title) result.push({ title: title.trim(), startSeconds: Math.floor(startMs / 1000) });
-        }
-        if (result.length > 0) return result;
-      }
-      return null;
-    } catch (e) {
-      console.warn("[tm transcript] getChaptersFromPageData failed:", e);
-      return null;
-    }
-  }
-
-  /**
-   * チャプター情報（ページデータ由来）を字幕セグメントにマージする。
-   * 各チャプターの startSeconds に基づいて、適切な位置にチャプターエントリを挿入する。
-   */
-  function mergeChaptersWithSegments(chapters, segments) {
-    const entries = [];
-    let chapterIdx = 0;
-
-    for (const seg of segments) {
-      // 現在のセグメントの秒数以下の全チャプターを挿入
-      while (
-        chapterIdx < chapters.length &&
-        typeof seg.seconds === "number" &&
-        !Number.isNaN(seg.seconds) &&
-        chapters[chapterIdx].startSeconds <= seg.seconds
-      ) {
-        entries.push({ type: "chapter", title: chapters[chapterIdx].title });
-        chapterIdx++;
-      }
-      entries.push({ type: "segment", tsText: seg.tsText, seconds: seg.seconds, text: seg.text });
-    }
-
-    // 残りのチャプター（セグメントが途中で終わった場合）
-    while (chapterIdx < chapters.length) {
-      entries.push({ type: "chapter", title: chapters[chapterIdx].title });
-      chapterIdx++;
-    }
-
-    return entries;
-  }
-
-  // ── Transcript extraction helpers ────────────────────────────────────────
-
-  function queryFirst(el, sels) {
-    for (const s of sels) { const r = el.querySelector(s); if (r) return r; }
-    return null;
-  }
-
-  function getDomConfig() {
-    if (document.querySelector(DOM_CONFIG.new.segmentSel)) return DOM_CONFIG.new;
-    if (document.querySelector(DOM_CONFIG.old.container)) return DOM_CONFIG.old;
-    return null;
-  }
-
-  /**
-   * 新旧 DOM 統合の字幕抽出関数。
-   * チャプター + 字幕セグメントを DOM 順に取得する。
-   * 返り値の entries 配列は { type: "chapter"|"segment", ... } の混在リスト。
-   */
-  function extractAllEntries() {
-    const cfg = getDomConfig();
-    if (!cfg) return { ok: false, reason: "transcript elements not found" };
-    const root = cfg.container ? document.querySelector(cfg.container) : document;
-    if (!root) return { ok: false, reason: "segments-container not found" };
-    const items = root.querySelectorAll(cfg.combinedSel);
-    if (!items.length) return { ok: false, reason: "transcript elements not found" };
-
-    const entries = [];
-    items.forEach((el) => {
-      if (el.tagName.toLowerCase() === cfg.chapterTag) {
-        const title = norm(queryFirst(el, cfg.chapterTitleSels)?.textContent);
-        if (title) entries.push({ type: "chapter", title });
-      } else {
-        const tsText = norm(queryFirst(el, cfg.tsSels)?.textContent);
-        const lineText = norm(queryFirst(el, cfg.textSels)?.textContent);
-        if (!lineText) return;
-        const seconds = parseTimestampToSeconds(tsText);
-        entries.push({ type: "segment", tsText: seconds == null ? "" : tsText, seconds, text: lineText });
-      }
-    });
-
-    const hasAnySegment = entries.some((e) => e.type === "segment");
-    if (!hasAnySegment) return { ok: false, reason: "no transcript segments found" };
-    return {
-      ok: true, entries,
-      hasAnyChapter: entries.some((e) => e.type === "chapter"),
-      hasAnyTs: entries.some((e) => e.type === "segment" && typeof e.seconds === "number" && !Number.isNaN(e.seconds)),
-    };
-  }
-
-  function parseTimestampToSeconds(ts) {
-    const s = (ts || "").trim();
-    if (!s) return null;
-    const parts = s.split(":").map((p) => p.trim());
-    if (!parts.length || parts.some((p) => p === "" || !/^\d+$/.test(p))) return null;
-    if (parts.length === 1) return Number(parts[0]);
-    if (parts.length === 2) return Number(parts[0]) * 60 + Number(parts[1]);
-    if (parts.length === 3) return Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
-    return null;
-  }
-
-  // ── Keyboard shortcuts ───────────────────────────────────────────────────
-
-  function findShowTranscriptButton() {
-    // 1) 構造セレクタ（言語非依存・最も安定）
-    const primary = document.querySelector(
-      "ytd-video-description-transcript-section-renderer #primary-button button"
-    );
-    if (primary) return primary;
-
-    // 2) 最終フォールバック: テキスト検索（英・日 両対応）
-    const RE = /transcript|文字起こし|トランスクリプト/i;
-    return Array.from(document.querySelectorAll("button")).find((b) =>
-      RE.test((b.textContent || "") + "|" + (b.getAttribute("aria-label") || ""))
-    ) || null;
-  }
-
-  // Ctrl+Alt+T: トランスクリプトパネルを開閉する
-  function toggleTranscriptPanel() {
-    const panel = document.querySelector('[target-id="PAmodern_transcript_view"]');
-    if (panel?.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED") {
-      // 開いている → Close ボタンをクリックして閉じる
-      const closeBtn = panel.querySelector("#visibility-button button");
-      if (closeBtn) closeBtn.click();
-    } else {
-      // 閉じている → "Show transcript" ボタンを探してクリック
-      const showBtn = findShowTranscriptButton();
-      if (showBtn) showBtn.click();
-    }
-  }
-
-  // 現在 DOM にあるセグメント数を返す（新旧DOM両対応）
-  function countSegments() {
-    return (
-      document.querySelectorAll("transcript-segment-view-model").length +
-      document.querySelectorAll("#segments-container ytd-transcript-segment-renderer").length
-    );
-  }
-
-  // セグメント未ロード時に "Show transcript" ボタンを自動クリックして待機する
-  async function openTranscriptPanel(timeoutMs = 15000) {
-    if (getDomConfig()) return true;
-    const deadline = Date.now() + timeoutMs;
-
-    // "Show transcript" ボタンが DOM に出現するまで待つ（/shorts → /watch のフル遷移直後はまだ描画されていない）
-    let btn = findShowTranscriptButton();
-    while (!btn && Date.now() < deadline) {
-      await sleep(200);
-      if (getDomConfig()) return true; // 何らかの理由で既にパネルが開いた
-      btn = findShowTranscriptButton();
-    }
-    if (!btn) return false;
-
-    btn.click();
-
-    // セグメント数が STABLE_MS の間変化しなくなったらロード完了とみなす
-    const POLL_MS   = 200;
-    const STABLE_MS = 600;
-    let lastCount = 0;
-    let stableMs  = 0;
-
-    while (Date.now() < deadline) {
-      await sleep(POLL_MS);
-      const count = countSegments();
-
-      if (count > 0) {
-        if (count === lastCount) {
-          stableMs += POLL_MS;
-          if (stableMs >= STABLE_MS) return true;
-        } else {
-          stableMs  = 0;
-          lastCount = count;
-        }
-      } else {
-        stableMs  = 0;
-        lastCount = 0;
-      }
-    }
-
-    return lastCount > 0;
-  }
-
-  /**
-   * 字幕をダウンロードする統合関数。
-   * タイムスタンプ付きは常に .lrc、なしはチャプターありで .md / なしで .txt で保存する。
-   * @param {boolean} withTs - タイムスタンプを含めるかどうか
-   */
-  function saveTranscript(withTs) {
-    const title = sanitizeFilename(getVideoTitle());
-
-    // 1. 抽出（1回のみ）
-    const allRes = extractAllEntries();
-    if (!allRes.ok) {
-      alert(`${MSG_EXTRACT_FAIL}：${allRes.reason}\n${MSG_EXTRACT_HINT}`);
       return;
     }
+    showNotify(`字幕あり: ${tracks.map((track) => track.name?.simpleText || track.languageCode).join(", ")}`);
+  }
 
-    // 2. チャプター解決: DOM → page-data fallback
-    let entries = allRes.entries;
-    let hasChapters = allRes.hasAnyChapter;
-    if (!hasChapters) {
-      const pageChapters = getChaptersFromPageData();
-      if (pageChapters) {
-        const segments = entries.filter((e) => e.type === "segment");
-        entries = mergeChaptersWithSegments(pageChapters, segments);
-        hasChapters = entries.some((e) => e.type === "chapter");
-      }
+  function findExpandedPanel() {
+    for (const panel of document.querySelectorAll(PANEL_SELECTOR)) {
+      if (panel.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED") return panel;
     }
+    return null;
+  }
 
-    // 3. タイムスタンプ検証
-    if (withTs && !allRes.hasAnyTs) { alert(MSG_NO_TS); return; }
-
-    const segments = entries.filter((e) => e.type === "segment");
-
-    // 4. 出力生成
-    let content, suffix;
-    if (withTs) {
-      content = buildLrc(segments);
-      suffix = " - transcript.lrc";
-    } else if (hasChapters) {
-      content = buildMarkdownWithChapters(entries, false);
-      suffix = " - transcript.md";
-    } else {
-      content = segments.map((e) => e.text).join("\n");
-      suffix = " - transcript.txt";
+  function findLoadedPanel() {
+    let loaded = null;
+    for (const panel of document.querySelectorAll(PANEL_SELECTOR)) {
+      if (!panel.querySelector(SEGMENT)) continue;
+      if (panel.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED") return panel;
+      loaded ||= panel;
     }
-
-    // 5. ダウンロード + 通知
-    const filename = `${title}${suffix}`;
-    downloadText(content, filename);
-    showNotify(`字幕を ${filename} として保存しました`);
+    return loaded;
   }
 
-  // Shorts では文字起こしパネルが存在しないため /watch へ移し、遷移先で同じアクションを自動実行する
-  function redirectToWatchAndRun(action) {
-    const id = getVideoId();
-    if (!id) { alert("動画IDを取得できませんでした。"); return; }
-    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ action, videoId: id, ts: Date.now() }));
-    location.href = `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
-  }
+  function makeButton(id, title, pathData, withTimestamps) {
+    const button = document.createElement("button");
+    button.id = id;
+    button.type = "button";
+    button.className = "tm-transcript-save-btn";
+    button.title = title;
+    button.setAttribute("aria-label", title);
 
-  async function consumePendingActionIfAny() {
-    const raw = sessionStorage.getItem(PENDING_KEY);
-    if (!raw) return;
-    sessionStorage.removeItem(PENDING_KEY); // 競合防止のため即座に消費
-    let pending;
-    try { pending = JSON.parse(raw); } catch { return; }
-    if (!pending || Date.now() - pending.ts > PENDING_TTL_MS) return;
-    if (!isVideoPage()) return;
-
-    // 遷移先で正しい動画IDが準備されるまで待つ（違う動画ならそのまま中断）
-    const deadline = Date.now() + 5000;
-    let currentId = "";
-    while (Date.now() < deadline) {
-      currentId = getVideoId();
-      if (currentId && currentId === pending.videoId) break;
-      await sleep(200);
-    }
-    if (currentId !== pending.videoId) return;
-
-    // toggle も save もパネルを開く必要があるので downloadViaShortcut の待機ロジックを共用する
-    if (pending.action === "toggle") {
-      const dismiss = showNotify("読み込み中…", "stay");
-      const loaded = await openTranscriptPanel();
-      dismiss();
-      if (!loaded) alert("文字起こしを読み込めませんでした。");
-    } else {
-      await downloadViaShortcut(pending.action === "save-with-ts");
-    }
-  }
-
-  async function downloadViaShortcut(withTs) {
-    // トランスクリプトが未ロードなら「読み込み中」通知を表示
-    const needsLoad = !getDomConfig();
-    let dismissLoading = null;
-    if (needsLoad) {
-      dismissLoading = showNotify("読み込み中…", "stay");
-    }
-
-    const loaded = await openTranscriptPanel();
-    if (dismissLoading) dismissLoading();
-
-    if (!loaded) {
-      alert(
-        "文字起こしを読み込めませんでした。\n動画の説明欄から「文字起こしを表示」を先に開いてみてください。"
-      );
-      return;
-    }
-
-    saveTranscript(withTs);
-  }
-
-  function registerShortcuts() {
-    document.addEventListener("keydown", (e) => {
-      // 動画ページ・Shorts 以外は無視
-      if (!isVideoPage() && !isShortsPage()) return;
-
-      // テキスト入力中は無視
-      const tag = document.activeElement?.tagName?.toUpperCase();
-      if (
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        document.activeElement?.isContentEditable
-      ) return;
-
-      // 物理キーで判定（macOS で Option+T が † を入力する問題を回避）
-      if (e.code !== "KeyT") return;
-      // Ctrl+Alt+T: パネル開閉
-      const isCtrlAltT  = e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey;
-      // Alt+T: タイムスタンプ付きで保存
-      const isAltT      = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey;
-      // Alt+Shift+T: タイムスタンプなしで保存
-      const isAltShiftT = e.altKey &&  e.shiftKey && !e.ctrlKey && !e.metaKey;
-
-      if (!isCtrlAltT && !isAltT && !isAltShiftT) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-
-      // Shorts ではトランスクリプトパネルが存在しないため /watch に遷移してから再実行
-      if (isShortsPage()) {
-        const action = isCtrlAltT ? "toggle" : (isAltT ? "save-with-ts" : "save-no-ts");
-        redirectToWatchAndRun(action);
-        return;
-      }
-
-      if (isCtrlAltT) toggleTranscriptPanel();
-      else downloadViaShortcut(isAltT); // isAltT=true → with timestamps
-    });
-  }
-
-  function formatLrcTimestamp(totalSeconds) {
-    if (typeof totalSeconds !== "number" || Number.isNaN(totalSeconds)) return null;
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `[${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.00]`;
-  }
-
-  function buildLrc(segments) {
-    const lines = segments.map((s) => {
-      const ts = formatLrcTimestamp(s.seconds);
-      return ts ? `${ts}${s.text}` : s.text;
-    });
-    return lines.join("\n");
-  }
-
-  /**
-   * チャプター付き entries からマークダウン文字列を生成する。
-   * チャプターは ## 見出し、字幕は本文テキスト。
-   */
-  function buildMarkdownWithChapters(entries, withTimestamps) {
-    const lines = [];
-    entries.forEach((e) => {
-      if (e.type === "chapter") {
-        if (lines.length > 0) lines.push(""); // チャプター前に空行
-        lines.push(`## ${e.title}`);
-        lines.push(""); // チャプター後に空行
-      } else {
-        if (withTimestamps && e.tsText) {
-          lines.push(`${e.tsText}\t${e.text}`);
-        } else {
-          lines.push(e.text);
-        }
-      }
-    });
-    return lines.join("\n");
-  }
-
-  function findTranscriptHeader() {
-    // ── New DOM: transcript-segment-view-model から親パネルをたどる ──
-    // visibility属性に依存しないため、セグメントが既にDOMにある場合も対応できる
-    const seg = document.querySelector("transcript-segment-view-model");
-    if (seg) {
-      const panel =
-        seg.closest("ytd-engagement-panel-section-list-renderer") ||
-        document.querySelector('[target-id="PAmodern_transcript_view"]');
-      if (panel) {
-        const titleHeader = panel.querySelector("ytd-engagement-panel-title-header-renderer");
-        return titleHeader?.querySelector("#header") || null;
-      }
-    }
-
-    // ── Old DOM: #segments-container based ──
-    const segments = document.querySelector("#segments-container");
-    if (!segments) return null;
-
-    const panelRoot =
-      segments.closest("ytd-engagement-panel-section-list-renderer") ||
-      segments.closest("ytd-engagement-panel-section-renderer") ||
-      segments.parentElement;
-
-    const header =
-      panelRoot?.querySelector("ytd-engagement-panel-title-header-renderer #header") ||
-      panelRoot?.querySelector("#header.style-scope.ytd-engagement-panel-title-header-renderer") ||
-      panelRoot?.querySelector("#header");
-
-    return header || null;
-  }
-
-  function makeIconButton({ id, title, ariaLabel, pathD, onClick }) {
-    addStyleOnce();
-    const btn = document.createElement("button");
-    btn.id = id;
-    btn.type = "button";
-    btn.className = "tm-transcript-save-btn";
-    btn.setAttribute("aria-label", ariaLabel);
-    btn.title = title;
-
-    // innerHTML は YouTube の TrustedTypes CSP でブロックされるため DOM API を使う
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 -960 960 960");
     svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("focusable", "false");
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", pathD);
+    path.setAttribute("d", pathData);
     svg.appendChild(path);
-    btn.appendChild(svg);
-
-    btn.addEventListener("click", async () => {
-      try {
-        btn.dataset.busy = "1";
-        btn.disabled = true;
-        await sleep(50);
-        await onClick();
-      } finally {
-        btn.dataset.busy = "0";
-        btn.disabled = false;
-      }
-    });
-
-    return btn;
+    button.appendChild(svg);
+    button.addEventListener("click", () => saveTranscript(withTimestamps));
+    return button;
   }
 
-  function inject() {
+  function inject(panel = findLoadedPanel()) {
+    if (!panel?.querySelector(SEGMENT)) return;
+    const target = panel.querySelector("ytd-engagement-panel-title-header-renderer #action-buttons");
+    if (!target || target.querySelector(`#${BTN_WITH_TS},#${BTN_NO_TS}`)) return;
+
+    addStyle();
+    const fragment = document.createDocumentFragment();
+    fragment.append(
+      makeButton(BTN_WITH_TS, "タイムスタンプありで字幕を保存（LRC）", TS_ICON, true),
+      makeButton(BTN_NO_TS, "タイムスタンプなしで字幕を保存", SAVE_ICON, false),
+    );
+    target.appendChild(fragment);
+  }
+
+  function waitForTranscript(timeout = 15000) {
+    const loaded = findLoadedPanel();
+    if (loaded) {
+      inject(loaded);
+      return Promise.resolve(true);
+    }
+    if (loadPromise) return loadPromise;
+
+    const videoId = getVideoId();
+    const pending = new Promise((resolve) => requestAnimationFrame(resolve))
+      .then(() => {
+        if (getVideoId() !== videoId) return false;
+        const ready = findLoadedPanel();
+        if (ready) {
+          inject(ready);
+          return true;
+        }
+
+        const panel = findExpandedPanel() || document.querySelector(PANEL_SELECTOR);
+        if (!panel) return false;
+
+        return new Promise((resolve) => {
+          let finished = false;
+          let timer = 0;
+          const observer = new MutationObserver(() => {
+            if (panel.querySelector(SEGMENT)) finish(true);
+          });
+          const finish = (success) => {
+            if (finished) return;
+            finished = true;
+            observer.disconnect();
+            clearTimeout(timer);
+            if (cancelWait === finish) cancelWait = null;
+            if (success) inject(panel);
+            resolve(success);
+          };
+
+          cancelWait = finish;
+          observer.observe(panel, { childList: true, subtree: true });
+          if (panel.querySelector(SEGMENT)) finish(true);
+          else timer = setTimeout(() => finish(false), timeout);
+        });
+      });
+    loadPromise = pending;
+    void pending.finally(() => {
+      if (loadPromise === pending) loadPromise = null;
+    });
+    return pending;
+  }
+
+  async function openTranscriptPanel() {
+    if (findLoadedPanel()) return true;
+    const button = document.querySelector(SHOW_BUTTON_SELECTOR);
+    if (!button) return false;
+    button.click();
+    return waitForTranscript();
+  }
+
+  function toggleTranscriptPanel() {
+    const expanded = findExpandedPanel();
+    if (expanded?.querySelector('h2[aria-label="Transcript"]')) {
+      expanded.querySelector("#visibility-button button")?.click();
+      return;
+    }
+    document.querySelector(SHOW_BUTTON_SELECTOR)?.click();
+  }
+
+  function formatLrcTimestamp(value) {
+    const parts = value.split(":").map(Number);
+    if ((parts.length !== 2 && parts.length !== 3) || parts.some(Number.isNaN)) return null;
+    const seconds = parts.pop();
+    const minutes = parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0];
+    return `[${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.00]`;
+  }
+
+  function downloadText(text, filename) {
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  function saveTranscript(withTimestamps) {
+    const panel = findLoadedPanel();
+    if (!panel) {
+      alert("文字起こしを取得できませんでした。文字起こしパネルを開いてから再試行してください。");
+      return;
+    }
+
+    const lines = [];
+    let suffix;
+    if (withTimestamps) {
+      let timestampCount = 0;
+      for (const segment of panel.querySelectorAll(SEGMENT)) {
+        const text = norm(segment.querySelector(TEXT)?.textContent);
+        if (!text) continue;
+        const timestamp = formatLrcTimestamp(norm(segment.querySelector(TIMESTAMP)?.textContent));
+        if (timestamp) timestampCount++;
+        lines.push(timestamp ? timestamp + text : text);
+      }
+      if (!timestampCount) {
+        alert("タイムスタンプを取得できませんでした。YouTubeの文字起こし表示が変わっている可能性があります。");
+        return;
+      }
+      suffix = " - transcript.lrc";
+    } else if (panel.querySelector(CHAPTER)) {
+      for (const item of panel.querySelectorAll(`${CHAPTER},${SEGMENT}`)) {
+        if (item.matches(CHAPTER)) {
+          const title = norm(item.querySelector(CHAPTER_TITLE)?.textContent);
+          if (title) lines.push(lines.length ? `\n## ${title}\n` : `## ${title}\n`);
+        } else {
+          const text = norm(item.querySelector(TEXT)?.textContent);
+          if (text) lines.push(text);
+        }
+      }
+      suffix = " - transcript.md";
+    } else {
+      for (const segment of panel.querySelectorAll(SEGMENT)) {
+        const text = norm(segment.querySelector(TEXT)?.textContent);
+        if (text) lines.push(text);
+      }
+      suffix = " - transcript.txt";
+    }
+
+    if (!lines.length) {
+      alert("文字起こしに保存できる字幕がありませんでした。");
+      return;
+    }
+    const filename = sanitizeFilename(getVideoTitle()) + suffix;
+    downloadText(lines.join("\n"), filename);
+    showNotify(`字幕を ${filename} として保存しました`);
+  }
+
+  async function downloadViaShortcut(withTimestamps) {
+    const dismiss = findLoadedPanel() ? null : showNotify("読み込み中…", true);
+    const loaded = await openTranscriptPanel();
+    dismiss?.();
+    if (!loaded) {
+      alert("文字起こしを読み込めませんでした。説明欄から「文字起こしを表示」を開けるか確認してください。");
+      return;
+    }
+    saveTranscript(withTimestamps);
+  }
+
+  function redirectToWatchAndRun(action) {
+    const videoId = getVideoId();
+    if (!videoId) {
+      alert("動画IDを取得できませんでした。");
+      return;
+    }
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ action, videoId, time: Date.now() }));
+    location.href = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+  }
+
+  async function consumePendingAction() {
+    const raw = sessionStorage.getItem(PENDING_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(PENDING_KEY);
+
+    let pending;
     try {
-      const header = findTranscriptHeader();
-      if (!header) return;
+      pending = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (
+      !isVideoPage() ||
+      !pending ||
+      Date.now() - pending.time > PENDING_TTL ||
+      getVideoId() !== pending.videoId
+    ) return;
 
-      // すでにあるなら何もしない
-      if (header.querySelector(`#${BTN_ID_WITH_TS}`) || header.querySelector(`#${BTN_ID_NO_TS}`)) return;
+    if (pending.action === "toggle") {
+      const dismiss = showNotify("読み込み中…", true);
+      const loaded = await openTranscriptPanel();
+      dismiss();
+      if (!loaded) alert("文字起こしを読み込めませんでした。");
+      return;
+    }
+    await downloadViaShortcut(pending.action === "save-with-ts");
+  }
 
-      const btnWithTs = makeIconButton({
-        id: BTN_ID_WITH_TS,
-        title: "タイムスタンプありで字幕を保存",
-        ariaLabel: "タイムスタンプありで字幕を保存（LRC）",
-        pathD: TS_ICON_PATH,
-        onClick: () => saveTranscript(true),
-      });
+  function handleShortcut(event) {
+    if ((!isVideoPage() && !isShortsPage()) || event.code !== "KeyT") return;
+    const active = document.activeElement;
+    if (
+      active?.matches("input,textarea") ||
+      active?.isContentEditable
+    ) return;
 
-      const btnNoTs = makeIconButton({
-        id: BTN_ID_NO_TS,
-        title: "タイムスタンプなしで字幕を保存",
-        ariaLabel: "タイムスタンプなしで字幕を保存（TXT）",
-        pathD: SAVE_ICON_PATH,
-        onClick: () => saveTranscript(false),
-      });
+    const toggle = event.ctrlKey && event.altKey && !event.shiftKey && !event.metaKey;
+    const withTs = event.altKey && !event.ctrlKey && !event.shiftKey && !event.metaKey;
+    const withoutTs = event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey;
+    if (!toggle && !withTs && !withoutTs) return;
 
-      const buttons = [btnWithTs, btnNoTs];
-
-      // 新DOM: #action-buttons に追加（空のコンテナ）
-      const actionButtons = header.querySelector("#action-buttons");
-      if (actionButtons) {
-        buttons.forEach((b) => actionButtons.appendChild(b));
-        return;
-      }
-
-      // 旧DOM: #information-button の直前に挿入
-      const info = header.querySelector("#information-button");
-      if (info && info.parentElement) {
-        buttons.forEach((b) => info.parentElement.insertBefore(b, info));
-        return;
-      }
-
-      // フォールバック: #visibility-button の直前に挿入
-      const visibilityBtn = header.querySelector("#visibility-button");
-      if (visibilityBtn && visibilityBtn.parentElement) {
-        buttons.forEach((b) => visibilityBtn.parentElement.insertBefore(b, visibilityBtn));
-        return;
-      }
-
-      // 最終フォールバック: ヘッダー末尾へ
-      buttons.forEach((b) => header.appendChild(b));
-    } catch (e) {
-      console.warn("[tm transcript] inject failed:", e);
+    event.preventDefault();
+    event.stopPropagation();
+    if (isShortsPage()) {
+      redirectToWatchAndRun(toggle ? "toggle" : withTs ? "save-with-ts" : "save-no-ts");
+    } else if (toggle) {
+      toggleTranscriptPanel();
+    } else {
+      void downloadViaShortcut(withTs);
     }
   }
 
-  function start() {
-    let injectTimer = 0;
-    const scheduleInject = () => {
-      if (injectTimer) return;
-      injectTimer = setTimeout(() => { injectTimer = 0; inject(); }, 150);
-    };
-
-    const mo = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        if (m.type === "childList") { scheduleInject(); return; }
-        if (
-          m.type === "attributes" &&
-          m.attributeName === "visibility" &&
-          m.target.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"
-        ) {
-          scheduleInject();
-          return;
-        }
-      }
-    });
-    mo.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["visibility"],
-    });
-
-    inject();
-    registerShortcuts();
-    checkSubtitleAvailability();
-    consumePendingActionIfAny();
-
-    window.addEventListener("yt-navigate-finish", () => {
-      _lastCheckedVideoId = ""; // ページ遷移時にリセット
-      setTimeout(inject, 400);
-      checkSubtitleAvailability();
-      consumePendingActionIfAny();
-    });
+  function handleClick(event) {
+    if (event.target instanceof Element && event.target.closest(SHOW_BUTTON_SELECTOR)) {
+      void waitForTranscript();
+    }
   }
 
-  start();
+  function pageReady() {
+    cancelWait?.(false);
+    inject();
+    checkSubtitleAvailability();
+    void consumePendingAction();
+  }
+
+  document.addEventListener("keydown", handleShortcut);
+  document.addEventListener("click", handleClick);
+  window.addEventListener("yt-navigate-finish", pageReady);
+  pageReady();
 })();
