@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.8.5
+// @version      1.8.7
 // @description  Adds 2 save buttons to YouTube transcript panel header. Timestamped save → plain .lrc, no-timestamp save → chaptered .md or plain .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
+// @grant        GM_addStyle
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/script.js
 // @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/icon_128.png
@@ -24,11 +25,23 @@
     '[target-id="PAmodern_transcript_view"],[target-id="engagement-panel-searchable-transcript"]';
   const SHOW_BUTTON_SELECTOR =
     "ytd-video-description-transcript-section-renderer #primary-button button";
-  const SEGMENT = "transcript-segment-view-model";
-  const CHAPTER = "timeline-chapter-view-model";
-  const TIMESTAMP = ".ytwTranscriptSegmentViewModelTimestamp";
-  const TEXT = ".ytAttributedStringHost";
-  const CHAPTER_TITLE = ".ytwTimelineChapterViewModelTitle";
+  const PRIMARY_SHOW_BUTTON_SELECTOR = `ytd-watch-metadata ${SHOW_BUTTON_SELECTOR}`;
+  const DOMS = [
+    {
+      segment: "transcript-segment-view-model",
+      chapter: "timeline-chapter-view-model",
+      timestamp: ".ytwTranscriptSegmentViewModelTimestamp",
+      text: ".ytAttributedStringHost",
+      chapterTitle: ".ytwTimelineChapterViewModelTitle",
+    },
+    {
+      segment: "ytd-transcript-segment-renderer",
+      chapter: "ytd-transcript-section-header-renderer",
+      timestamp: ".segment-timestamp",
+      text: ".segment-text",
+      chapterTitle: null,
+    },
+  ];
 
   const SAVE_ICON =
     "m732-120 144-144-51-51-57 57v-150h-72v150l-57-57-51 51 144 144ZM588 0v-72h288V0H588ZM264-144q-29 0-50.5-21.5T192-216v-576q0-29 21.5-50.5T264-864h312l192 192v192h-72v-144H528v-168H264v576h264v72H264Zm0-72v-576 576Z";
@@ -47,17 +60,17 @@
 
   function addStyle() {
     if (document.getElementById(STYLE_ID)) return;
-    const style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = `
+    const style = GM_addStyle(`
       .tm-transcript-save-btn {
         display: inline-flex; align-items: center; justify-content: center;
         width: 36px; height: 36px; margin: 0 6px; padding: 0;
         border: 0; border-radius: 50%; background: transparent;
-        color: var(--yt-spec-text-primary); cursor: pointer;
+        color: #0f0f0f; cursor: pointer;
       }
+      html[dark] .tm-transcript-save-btn { color: #f1f1f1; }
       .tm-transcript-save-btn:hover { background: var(--yt-spec-10-percent-layer); }
-      .tm-transcript-save-btn svg { width: 22px; height: 22px; fill: currentColor; }
+      .tm-transcript-save-btn svg { display: block; flex: none; width: 22px; height: 22px; pointer-events: none; }
+      .tm-transcript-save-btn path { fill: currentColor; }
       @keyframes tm-transcript-notify-in {
         0% { opacity: 0; transform: translate(-50%, -100%); }
         5%, 85% { opacity: 1; transform: translate(-50%, 0); }
@@ -65,11 +78,11 @@
       }
       .tm-transcript-notify {
         position: absolute; top: 12px; left: 50%; z-index: 2022;
+        transform: translateX(-50%);
         display: flex; align-items: center; gap: 10px;
         min-width: 260px; max-width: 400px; padding: 10px 14px;
         border-radius: 14px; pointer-events: none;
-        color: var(--yt-spec-text-primary);
-        background: var(--yt-spec-menu-background);
+        color: #0f0f0f; background: rgba(255,255,255,.92);
         box-shadow: 0 4px 24px rgba(0,0,0,.28);
         font-family: Roboto, Arial, sans-serif;
       }
@@ -80,8 +93,9 @@
       .tm-transcript-notify__title { font-size: 13px; font-weight: 600; }
       .tm-transcript-notify__msg { font-size: 12px; color: var(--yt-spec-text-secondary); }
       .tm-transcript-notify__time { margin-left: auto; align-self: flex-start; font-size: 11px; color: var(--yt-spec-text-secondary); }
-    `;
-    document.head.appendChild(style);
+      html[dark] .tm-transcript-notify { color: #f1f1f1; background: rgba(30,30,30,.88); }
+    `);
+    style.id = STYLE_ID;
   }
 
   function showNotify(message, stay = false) {
@@ -188,11 +202,15 @@
   function findLoadedPanel() {
     let loaded = null;
     for (const panel of document.querySelectorAll(PANEL_SELECTOR)) {
-      if (!panel.querySelector(SEGMENT)) continue;
+      if (!getDom(panel)) continue;
       if (panel.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED") return panel;
       loaded ||= panel;
     }
     return loaded;
+  }
+
+  function getDom(panel) {
+    return DOMS.find((dom) => panel.querySelector(dom.segment)) || null;
   }
 
   function makeButton(id, title, pathData, withTimestamps) {
@@ -215,7 +233,7 @@
   }
 
   function inject(panel = findLoadedPanel()) {
-    if (!panel?.querySelector(SEGMENT)) return;
+    if (!panel || !getDom(panel)) return;
     const target = panel.querySelector("ytd-engagement-panel-title-header-renderer #action-buttons");
     if (!target || target.querySelector(`#${BTN_WITH_TS},#${BTN_NO_TS}`)) return;
 
@@ -236,41 +254,38 @@
     }
     if (loadPromise) return loadPromise;
 
+    const panels = document.querySelector("ytd-watch-flexy #panels");
+    if (!panels) return Promise.resolve(false);
+
     const videoId = getVideoId();
-    const pending = new Promise((resolve) => requestAnimationFrame(resolve))
-      .then(() => {
-        if (getVideoId() !== videoId) return false;
-        const ready = findLoadedPanel();
-        if (ready) {
-          inject(ready);
-          return true;
-        }
-
-        const panel = findExpandedPanel() || document.querySelector(PANEL_SELECTOR);
-        if (!panel) return false;
-
-        return new Promise((resolve) => {
-          let finished = false;
-          let timer = 0;
-          const observer = new MutationObserver(() => {
-            if (panel.querySelector(SEGMENT)) finish(true);
-          });
-          const finish = (success) => {
-            if (finished) return;
-            finished = true;
-            observer.disconnect();
-            clearTimeout(timer);
-            if (cancelWait === finish) cancelWait = null;
-            if (success) inject(panel);
-            resolve(success);
-          };
-
-          cancelWait = finish;
-          observer.observe(panel, { childList: true, subtree: true });
-          if (panel.querySelector(SEGMENT)) finish(true);
-          else timer = setTimeout(() => finish(false), timeout);
-        });
+    const pending = new Promise((resolve) => {
+      let finished = false;
+      let timer = 0;
+      const observer = new MutationObserver(() => {
+        const panel = findLoadedPanel();
+        if (panel) finish(panel);
       });
+      const finish = (panel) => {
+        if (finished) return;
+        finished = true;
+        observer.disconnect();
+        clearTimeout(timer);
+        cancelWait = null;
+        if (panel) inject(panel);
+        resolve(Boolean(panel));
+      };
+
+      cancelWait = () => finish(null);
+      observer.observe(panels, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["visibility"],
+      });
+      const panel = getVideoId() === videoId && findLoadedPanel();
+      if (panel) finish(panel);
+      else timer = setTimeout(() => finish(null), timeout);
+    });
     loadPromise = pending;
     void pending.finally(() => {
       if (loadPromise === pending) loadPromise = null;
@@ -280,7 +295,7 @@
 
   async function openTranscriptPanel() {
     if (findLoadedPanel()) return true;
-    const button = document.querySelector(SHOW_BUTTON_SELECTOR);
+    const button = document.querySelector(PRIMARY_SHOW_BUTTON_SELECTOR);
     if (!button) return false;
     button.click();
     return waitForTranscript();
@@ -288,11 +303,11 @@
 
   function toggleTranscriptPanel() {
     const expanded = findExpandedPanel();
-    if (expanded?.querySelector('h2[aria-label="Transcript"]')) {
+    if (expanded) {
       expanded.querySelector("#visibility-button button")?.click();
       return;
     }
-    document.querySelector(SHOW_BUTTON_SELECTOR)?.click();
+    document.querySelector(PRIMARY_SHOW_BUTTON_SELECTOR)?.click();
   }
 
   function formatLrcTimestamp(value) {
@@ -308,13 +323,16 @@
     const link = document.createElement("a");
     link.href = url;
     link.download = filename;
+    document.body.appendChild(link);
     link.click();
+    link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
   function saveTranscript(withTimestamps) {
     const panel = findLoadedPanel();
-    if (!panel) {
+    const dom = panel && getDom(panel);
+    if (!panel || !dom) {
       alert("文字起こしを取得できませんでした。文字起こしパネルを開いてから再試行してください。");
       return;
     }
@@ -323,10 +341,10 @@
     let suffix;
     if (withTimestamps) {
       let timestampCount = 0;
-      for (const segment of panel.querySelectorAll(SEGMENT)) {
-        const text = norm(segment.querySelector(TEXT)?.textContent);
+      for (const segment of panel.querySelectorAll(dom.segment)) {
+        const text = norm(segment.querySelector(dom.text)?.textContent);
         if (!text) continue;
-        const timestamp = formatLrcTimestamp(norm(segment.querySelector(TIMESTAMP)?.textContent));
+        const timestamp = formatLrcTimestamp(norm(segment.querySelector(dom.timestamp)?.textContent));
         if (timestamp) timestampCount++;
         lines.push(timestamp ? timestamp + text : text);
       }
@@ -335,20 +353,22 @@
         return;
       }
       suffix = " - transcript.lrc";
-    } else if (panel.querySelector(CHAPTER)) {
-      for (const item of panel.querySelectorAll(`${CHAPTER},${SEGMENT}`)) {
-        if (item.matches(CHAPTER)) {
-          const title = norm(item.querySelector(CHAPTER_TITLE)?.textContent);
+    } else if (panel.querySelector(dom.chapter)) {
+      for (const item of panel.querySelectorAll(`${dom.chapter},${dom.segment}`)) {
+        if (item.matches(dom.chapter)) {
+          const title = dom.chapterTitle
+            ? norm(item.querySelector(dom.chapterTitle)?.textContent)
+            : norm(item.querySelector("#header")?.getAttribute("aria-label"));
           if (title) lines.push(lines.length ? `\n## ${title}\n` : `## ${title}\n`);
         } else {
-          const text = norm(item.querySelector(TEXT)?.textContent);
+          const text = norm(item.querySelector(dom.text)?.textContent);
           if (text) lines.push(text);
         }
       }
       suffix = " - transcript.md";
     } else {
-      for (const segment of panel.querySelectorAll(SEGMENT)) {
-        const text = norm(segment.querySelector(TEXT)?.textContent);
+      for (const segment of panel.querySelectorAll(dom.segment)) {
+        const text = norm(segment.querySelector(dom.text)?.textContent);
         if (text) lines.push(text);
       }
       suffix = " - transcript.txt";
