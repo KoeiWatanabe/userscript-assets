@@ -6,6 +6,7 @@
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにNGワードを設定する/script.js
 // @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにNGワードを設定する/script.js
+// @icon         https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeにNGワードを設定する/icon_128.png
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -361,7 +362,7 @@
     scheduleScan(0);
   }
 
-  function processCard(card, commonWords, accountWords) {
+  function processCard(card, accountInfo, commonWords, accountWords) {
     const info = getCardInfo(card);
     const videoId = getVideoId(card);
 
@@ -411,7 +412,7 @@
     const cards = needsFullScan ? getTargetCards() : pendingCards;
 
     for (const card of cards) {
-      processCard(card, commonWords, accountWords);
+      processCard(card, accountInfo, commonWords, accountWords);
     }
 
     pendingCards.clear();
