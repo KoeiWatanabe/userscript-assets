@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTubeのソートを改善する
 // @namespace    https://tampermonkey.net/
-// @version      1.2.8
-// @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）。プレイリスト人気順は別言語fetchで同点を再判定し精度向上。
+// @version      1.2.9
+// @description  チャンネル/サブスク/プレイリスト/検索結果に並べ替えチップと未視聴/視聴済み絞り込みを追加（Alt+U=未視聴 / Alt+W=視聴済み）。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
 // @grant        none
@@ -18,7 +18,6 @@
   const STYLE_ID = 'tm-yt-improve-sort-style';
   const CHIP_BAR_ID = 'tm-yt-chip-bar';
   const STATUS_ID = 'tm-yt-status';
-  const SORT_CONTAINER_ID = 'tm-yt-sort-results';
   const DUPLICATE_CLASS = 'tm-yt-duplicate';
   const FILTER_CLASS_PREFIX = 'tm-yt-filter-';
 
@@ -28,17 +27,12 @@
   const PROGRESS_SELECTORS = [
     'yt-thumbnail-overlay-progress-bar-view-model',
     'ytd-thumbnail-overlay-resume-playback-renderer',
-    'ytm-shorts-lockup-view-model #progress',
-    'ytm-shorts-lockup-view-model-v2 #progress',
   ];
 
   const HOST_SELECTORS = [
     'ytd-rich-item-renderer',
     'ytd-video-renderer',
-    'ytd-grid-video-renderer',
     'ytd-playlist-video-renderer',
-    'ytm-shorts-lockup-view-model',
-    'ytm-shorts-lockup-view-model-v2',
   ];
 
   const I18N = {
@@ -53,7 +47,6 @@
       sorted: (n) => `Sorted ${n} collected results.`,
       showing: (n) => `Showing ${n} collected results.`,
       stopped: (n) => `Stopped after collecting ${n} results.`,
-      refining: 'Refining ties using a finer-grained locale...',
     },
     ja: {
       latest: '新しい順', popular: '人気の動画', oldest: '古い順',
@@ -66,7 +59,6 @@
       sorted: (n) => `取得した ${n} 件を並べ替えました。`,
       showing: (n) => `取得した ${n} 件を表示中。`,
       stopped: (n) => `${n} 件取得した時点で停止しました。`,
-      refining: '同点の動画を別言語の表記で再判定中...',
     },
   };
 
@@ -75,9 +67,7 @@
   const SORT_FILTER_CHIPS = [...SORT_CHIPS, ...FILTER_CHIPS];
   const SORT_KEYS = new Set(SORT_CHIPS);
   const FILTER_KEYS = new Set(FILTER_CHIPS);
-  const ALT_FETCH_TIMEOUT_MS = 10000;
-  const ALT_FETCH_MAX_MS = 6000;
-  const ALT_CONTINUATION_PAGES = 5;
+  const COLLECTION_WAIT_TIMEOUT_MS = 5000;
 
   function getLocale() {
     const lang = String(document.documentElement.lang || navigator.language || 'en').toLowerCase();
@@ -136,6 +126,7 @@
       rootSelector: 'ytd-browse[role="main"][page-subtype="channels"] ytd-section-list-renderer',
       itemTag: 'YTD-ITEM-SECTION-RENDERER',
       videoSelector: 'ytd-video-renderer',
+      metricsSelector: '#metadata-line',
       dedupe: true,
       chipBarPaddingLeft: 0,
       findHeader(root) { return root.querySelector(':scope > #header-container'); },
@@ -154,11 +145,11 @@
         location.pathname === '/playlist' && new URLSearchParams(location.search).has('list'),
       chips: SORT_FILTER_CHIPS,
       sort: true,
-      altLanguageFetch: true,
       rootSelector:
         'ytd-browse[role="main"][page-subtype="playlist"] ytd-playlist-video-list-renderer',
       itemTag: 'YTD-PLAYLIST-VIDEO-RENDERER',
       videoSelector: null,
+      metricsSelector: '#video-info',
       dedupe: false,
       chipBarPaddingLeft: 36,
       findHeader() {
@@ -187,13 +178,19 @@
     originalIndexCounter: 0,
     observer: null,
     lastLocationKey: '',
-    setupRetryTimer: null,
     scanRafId: 0,
+    pendingSections: new Set(),
+    collectionWaiter: null,
     playlistExpectedCount: null,
-    altLang: null,
-    altByVideoId: new Map(),
-    altFetchPromise: null,
   };
+
+  function resolveCollectionWaiter(result) {
+    const waiter = state.collectionWaiter;
+    if (!waiter) return;
+    state.collectionWaiter = null;
+    clearTimeout(waiter.timer);
+    waiter.resolve(result);
+  }
 
   function resetState() {
     state.currentSort = null;
@@ -206,9 +203,8 @@
     state.runId += 1;
     state.originalIndexCounter = 0;
     state.playlistExpectedCount = null;
-    state.altLang = null;
-    state.altByVideoId = new Map();
-    state.altFetchPromise = null;
+    state.pendingSections.clear();
+    resolveCollectionWaiter(false);
     if (state.scanRafId) {
       cancelAnimationFrame(state.scanRafId);
       state.scanRafId = 0;
@@ -346,8 +342,6 @@
       #${STATUS_ID}[data-tone="progress"] { color: var(--tm-status-progress); }
       #${STATUS_ID}[data-tone="warn"] { color: var(--tm-status-warn); }
       #${STATUS_ID}[data-tone="done"] { color: var(--tm-status-done); }
-
-      #${SORT_CONTAINER_ID}[hidden] { display: none !important; }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
@@ -431,18 +425,8 @@
     if (!state.page) return null;
     return state.page.videoSelector ? item.querySelector(state.page.videoSelector) : item;
   }
-  function getVideoData(item) {
-    const node = getVideoNode(item);
-    return getRawVideoData(node);
-  }
-
-  function getRawVideoData(item) {
-    return item?.data || item?.__data || null;
-  }
-
-  function getVideoIdFromElement(item, data = getRawVideoData(item)) {
-    if (data?.videoId) return data.videoId;
-    const href = item?.querySelector?.('a[href*="watch?v="]')?.getAttribute('href');
+  function getVideoIdFromItem(item) {
+    const href = item?.querySelector?.('a#video-title[href*="watch?v="]')?.getAttribute('href');
     if (!href) return null;
     try {
       return new URL(href, location.origin).searchParams.get('v');
@@ -451,97 +435,33 @@
     }
   }
 
-  function getVideoIdFromItem(item) {
-    return getVideoIdFromElement(item, getVideoData(item));
-  }
-
-  function getPlaylistIndexFromItem(item) {
-    const data = getVideoData(item);
-    return data?.index?.simpleText || item?.querySelector?.('#index')?.textContent?.trim() || '';
-  }
-
-  function normalizeText(value) {
-    return String(value || '').replace(/\s+/g, ' ').trim();
-  }
-
-  function collectItemTexts(item, { data = getRawVideoData(item), includePublished = false } = {}) {
-    const texts = new Set();
-    const addText = (value) => {
-      const normalized = normalizeText(value);
-      if (normalized) texts.add(normalized);
-    };
-    if (includePublished) addText(data?.publishedTimeText?.simpleText);
-    addText(data?.viewCountText?.simpleText);
-    addText(data?.shortViewCountText?.simpleText);
-    if (Array.isArray(data?.videoInfo?.runs)) {
-      for (const run of data.videoInfo.runs) addText(run?.text);
-    }
-    item
-      ?.querySelectorAll?.(
-        '#metadata-line span, #video-info span, #byline span, span.inline-metadata-item, yt-formatted-string'
-      )
-      .forEach((node) => {
-        addText(node.textContent);
-        addText(node.getAttribute?.('aria-label'));
-      });
-    item?.querySelectorAll?.('a[aria-label]').forEach((node) => addText(node.getAttribute('aria-label')));
-    addText(item?.getAttribute?.('aria-label'));
-    return texts;
-  }
-
   function readMetricsFromItem(item) {
-    const texts = collectItemTexts(item, { data: getVideoData(item), includePublished: true });
-    let viewCount = null;
-    let ageSeconds = null;
-    for (const text of texts) {
-      if (viewCount === null) viewCount = parseViewCount(text);
-      if (ageSeconds === null) ageSeconds = parseRelativeAgeSeconds(text);
-      if (viewCount !== null && ageSeconds !== null) break;
-    }
-    if (viewCount === null || ageSeconds === null) {
-      // textContent fallback (innerText だと layout flush を誘発するため避ける)
-      const fallback = normalizeText(item.textContent);
-      if (fallback && !texts.has(fallback)) {
-        if (viewCount === null) viewCount = parseViewCount(fallback);
-        if (ageSeconds === null) ageSeconds = parseRelativeAgeSeconds(fallback);
-      }
-    }
-    return { viewCount, ageSeconds };
+    const text = item?.querySelector?.(state.page?.metricsSelector)?.textContent || '';
+    return {
+      viewCount: parseViewCount(text),
+      ageSeconds: parseRelativeAgeSeconds(text),
+    };
   }
 
   function upsertSectionEntry(section) {
     let entry = state.sectionEntryByNode.get(section);
-    if (!entry) {
-      const videoId = getVideoIdFromItem(section);
-      const isDuplicate = Boolean(state.page?.dedupe && videoId && state.seenVideoIds.has(videoId));
-      if (videoId && state.page?.dedupe && !isDuplicate) state.seenVideoIds.add(videoId);
-      section.classList.toggle(DUPLICATE_CLASS, isDuplicate);
-      entry = {
-        section,
-        originalIndex: state.originalIndexCounter++,
-        hasVideo: Boolean(getVideoNode(section)),
-        videoId,
-        playlistIndex: getPlaylistIndexFromItem(section),
-        isDuplicate,
-        viewCount: 0,
-        ageSeconds: Infinity,
-        metricsComplete: false,
-      };
-      state.sectionEntryByNode.set(section, entry);
-      state.sectionEntries.push(entry);
-    }
-    if (!entry.videoId) {
-      const videoId = getVideoIdFromItem(section);
-      if (videoId) entry.videoId = videoId;
-    }
-    if (!entry.playlistIndex) entry.playlistIndex = getPlaylistIndexFromItem(section);
-    entry.hasVideo = Boolean(getVideoNode(section));
-    if (!entry.metricsComplete) {
-      const { viewCount, ageSeconds } = readMetricsFromItem(section);
-      entry.viewCount = viewCount ?? 0;
-      entry.ageSeconds = ageSeconds ?? Infinity;
-      if (viewCount !== null && ageSeconds !== null) entry.metricsComplete = true;
-    }
+    if (entry) return entry;
+    const videoId = getVideoIdFromItem(section);
+    const isDuplicate = Boolean(state.page?.dedupe && videoId && state.seenVideoIds.has(videoId));
+    if (videoId && state.page?.dedupe && !isDuplicate) state.seenVideoIds.add(videoId);
+    section.classList.toggle(DUPLICATE_CLASS, isDuplicate);
+    const { viewCount, ageSeconds } = readMetricsFromItem(section);
+    entry = {
+      section,
+      originalIndex: state.originalIndexCounter++,
+      hasVideo: Boolean(getVideoNode(section)),
+      videoId,
+      isDuplicate,
+      viewCount: viewCount ?? 0,
+      ageSeconds: ageSeconds ?? Infinity,
+    };
+    state.sectionEntryByNode.set(section, entry);
+    state.sectionEntries.push(entry);
     return entry;
   }
 
@@ -553,11 +473,25 @@
     }
   }
 
-  function queueScanSections() {
+  function queueSections(sections) {
+    for (const section of sections) {
+      if (isItemRenderer(section) && !state.sectionEntryByNode.has(section)) {
+        state.pendingSections.add(section);
+      }
+    }
+    if (state.pendingSections.size === 0) return;
     if (state.scanRafId) return;
     state.scanRafId = requestAnimationFrame(() => {
       state.scanRafId = 0;
-      scanSections();
+      const pending = Array.from(state.pendingSections);
+      state.pendingSections.clear();
+      pending.forEach(upsertSectionEntry);
+      if (
+        state.collectionWaiter?.runId === state.runId &&
+        getRenderableEntries().length > state.collectionWaiter.previousCount
+      ) {
+        resolveCollectionWaiter(true);
+      }
     });
   }
 
@@ -565,25 +499,9 @@
     return state.sectionEntries.filter((e) => !e.isDuplicate);
   }
 
-  function getEntryAltViewCount(entry) {
-    if (!entry) return null;
-    const v =
-      (entry.videoId ? state.altByVideoId.get(entry.videoId) : null) ??
-      (entry.playlistIndex ? state.altByVideoId.get(`index:${entry.playlistIndex}`) : null);
-    return Number.isFinite(v) ? v : null;
-  }
-
   function compareEntries(a, b) {
     if (state.currentSort === 'popular') {
-      const va = getEntryAltViewCount(a);
-      const vb = getEntryAltViewCount(b);
-      const ca = va ?? a.viewCount;
-      const cb = vb ?? b.viewCount;
-      return (
-        cb - ca ||
-        b.viewCount - a.viewCount ||
-        a.originalIndex - b.originalIndex
-      );
+      return b.viewCount - a.viewCount || a.originalIndex - b.originalIndex;
     }
     if (state.currentSort === 'latest') return a.ageSeconds - b.ageSeconds || a.originalIndex - b.originalIndex;
     if (state.currentSort === 'oldest') return b.ageSeconds - a.ageSeconds || a.originalIndex - b.originalIndex;
@@ -601,56 +519,30 @@
     return videoEntries.concat(nonVideoEntries);
   }
 
-  function ensureSortContainer() {
-    const contents = getContents();
-    if (!contents) return null;
-    let container = document.getElementById(SORT_CONTAINER_ID);
-    if (!container) {
-      container = document.createElement('div');
-      container.id = SORT_CONTAINER_ID;
-      container.hidden = true;
-      contents.parentNode.insertBefore(container, contents);
-    }
-    return container;
-  }
-
   function resetDisplayState() {
-    const contents = getContents();
-    if (contents) contents.hidden = false;
-    const container = document.getElementById(SORT_CONTAINER_ID);
-    if (container) {
-      container.hidden = true;
-      container.replaceChildren();
-    }
     setStatus(state.collectionComplete ? t('collected', getRenderableEntries().length) : '');
   }
 
-  function renderOriginalContents() {
+  function replaceContents(entries) {
     const contents = getContents();
-    if (!contents) return;
+    if (!contents) return false;
+    const otherChildren = Array.from(contents.children).filter((child) => !isItemRenderer(child));
     const frag = document.createDocumentFragment();
-    state.sectionEntries
-      .slice()
-      .sort((a, b) => a.originalIndex - b.originalIndex)
-      .forEach((entry) => frag.appendChild(entry.section));
-    Array.from(contents.children)
-      .filter((child) => !isItemRenderer(child))
-      .forEach((child) => frag.appendChild(child));
+    entries.forEach((entry) => frag.appendChild(entry.section));
+    otherChildren.forEach((child) => frag.appendChild(child));
     contents.replaceChildren(frag);
+    return true;
+  }
+
+  function renderOriginalContents() {
+    replaceContents(state.sectionEntries.slice().sort((a, b) => a.originalIndex - b.originalIndex));
     resetDisplayState();
   }
 
   function renderSortedContents(runId = state.runId) {
     if (runId !== state.runId) return;
-    const contents = getContents();
-    const container = ensureSortContainer();
-    if (!contents || !container) return;
     const orderedEntries = getSortedEntries();
-    const frag = document.createDocumentFragment();
-    orderedEntries.forEach((entry) => frag.appendChild(entry.section));
-    container.replaceChildren(frag);
-    container.hidden = false;
-    contents.hidden = true;
+    if (!replaceContents(orderedEntries)) return;
     const messageKey = state.collectionComplete ? 'sorted' : 'showing';
     setStatus(t(messageKey, orderedEntries.length), state.collectionComplete ? 'done' : 'warn');
   }
@@ -658,23 +550,10 @@
   function getPlaylistExpectedCount() {
     if (state.page?.key !== 'playlist') return null;
     if (state.playlistExpectedCount !== null) return state.playlistExpectedCount;
-    for (const node of document.querySelectorAll(
-      'ytd-playlist-header-renderer, ytd-playlist-sidebar-primary-info-renderer, ytd-playlist-byline-renderer, yt-formatted-string, span'
-    )) {
-      const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!text) continue;
-      const ja = text.match(/([\d,]+)\s*本の動画/);
-      if (ja) {
-        state.playlistExpectedCount = parseInt(ja[1].replace(/,/g, ''), 10);
-        return state.playlistExpectedCount;
-      }
-      const en = text.match(/([\d,]+)\s+videos?\b/i);
-      if (en) {
-        state.playlistExpectedCount = parseInt(en[1].replace(/,/g, ''), 10);
-        return state.playlistExpectedCount;
-      }
-    }
-    return null;
+    const text = document.querySelector('ytd-playlist-byline-renderer')?.textContent || '';
+    const match = text.match(/([\d,]+)\s*(?:本の動画|videos?)/i);
+    if (match) state.playlistExpectedCount = parseInt(match[1].replace(/,/g, ''), 10);
+    return state.playlistExpectedCount;
   }
 
   function hasCollectedExpectedPlaylistCount() {
@@ -685,34 +564,23 @@
   function findContinuationNode() {
     if (hasCollectedExpectedPlaylistCount()) return null;
     const contents = getContents();
-    return (
-      contents?.querySelector(':scope > ytd-continuation-item-renderer') ||
-      contents?.querySelector('ytd-continuation-item-renderer') ||
-      null
-    );
+    return contents?.querySelector(':scope > ytd-continuation-item-renderer') || null;
   }
 
   function nudgeContinuation() {
     const continuation = findContinuationNode();
     if (!continuation) return false;
     continuation.scrollIntoView({ block: 'end', inline: 'nearest' });
-    const button = continuation.querySelector('button, tp-yt-paper-button, yt-button-shape button');
-    if (button) button.click();
-    else window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
     return true;
   }
 
-  function waitForMoreResults(previousCount, runId, timeoutMs = 2500) {
+  function waitForMoreResults(previousCount, runId) {
     return new Promise((resolve) => {
-      const startedAt = Date.now();
-      function tick() {
-        if (runId !== state.runId) { resolve(false); return; }
-        scanSections();
-        if (getRenderableEntries().length > previousCount) { resolve(true); return; }
-        if (!findContinuationNode() || Date.now() - startedAt >= timeoutMs) { resolve(false); return; }
-        setTimeout(tick, 150);
-      }
-      tick();
+      const timer = window.setTimeout(() => {
+        if (state.collectionWaiter?.resolve === resolve) state.collectionWaiter = null;
+        resolve(false);
+      }, COLLECTION_WAIT_TIMEOUT_MS);
+      state.collectionWaiter = { previousCount, runId, resolve, timer };
     });
   }
 
@@ -727,19 +595,17 @@
         return true;
       }
       setStatus(t('collecting', getRenderableEntries().length), 'progress');
-      let stalledRounds = 0;
-      for (let i = 0; i < 80 && runId === state.runId; i += 1) {
+      while (runId === state.runId) {
         if (!findContinuationNode()) { state.collectionComplete = true; break; }
         const previousCount = getRenderableEntries().length;
-        nudgeContinuation();
-        await waitForMoreResults(previousCount, runId);
+        const moreResultsPromise = waitForMoreResults(previousCount, runId);
+        if (!nudgeContinuation()) resolveCollectionWaiter(false);
+        if (!await moreResultsPromise) break;
         if (runId !== state.runId) return false;
         const currentCount = getRenderableEntries().length;
         setStatus(t('collecting', currentCount), 'progress');
         if (hasCollectedExpectedPlaylistCount()) { state.collectionComplete = true; break; }
         if (!findContinuationNode()) { state.collectionComplete = true; break; }
-        stalledRounds = currentCount > previousCount ? 0 : stalledRounds + 1;
-        if (stalledRounds >= 3) break;
       }
       if (runId === state.runId) window.scrollTo({ top: startScrollY, behavior: 'auto' });
       return state.collectionComplete;
@@ -747,257 +613,6 @@
     state.collectionPromise = promise;
     try { return await promise; }
     finally { if (state.collectionPromise === promise) state.collectionPromise = null; }
-  }
-
-  /* === Alt-language refinement (playlist popular sort tie-breaker) ===
-     YouTube のプレイリストでは丸めた表示しか露出していない（例: ja "18万回視聴"）。
-     別言語で同じプレイリストを fetch すると粒度が変わるレンジがあり、
-     ja の 10 万〜99 万帯の "18万" は en では "181K" "189K" の 1K 粒度になる。
-     人気順で同点が出たときだけ別言語を 1 回だけ fetch して 2 段目のソートキーに使う。 */
-
-  function getPopularTieVideoIds() {
-    const firstIdByCount = new Map();
-    const tiedIds = new Set();
-    for (const entry of getRenderableEntries()) {
-      if (!entry.hasVideo || !entry.videoId || !Number.isFinite(entry.viewCount)) continue;
-      const firstId = firstIdByCount.get(entry.viewCount);
-      if (firstId) {
-        tiedIds.add(firstId);
-        tiedIds.add(entry.videoId);
-      } else {
-        firstIdByCount.set(entry.viewCount, entry.videoId);
-      }
-    }
-    return tiedIds;
-  }
-
-  function walkObject(root, visit) {
-    const stack = [root];
-    while (stack.length) {
-      const node = stack.pop();
-      if (!node || typeof node !== 'object') continue;
-      visit(node);
-      if (Array.isArray(node)) {
-        for (const v of node) stack.push(v);
-        continue;
-      }
-      for (const k of Object.keys(node)) stack.push(node[k]);
-    }
-  }
-
-  function parseJsonObjectLiteral(source, prefixPattern) {
-    const startMatch = prefixPattern.exec(source);
-    if (!startMatch) return null;
-    const start = startMatch.index + startMatch[0].length - 1;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < source.length; i += 1) {
-      const ch = source[i];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') { inString = true; continue; }
-      if (ch === '{') depth += 1;
-      else if (ch === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          try { return JSON.parse(source.slice(start, i + 1)); }
-          catch { return null; }
-        }
-      }
-    }
-    return null;
-  }
-
-  function parseInitialData(html) {
-    return parseJsonObjectLiteral(html, /(?:var\s+ytInitialData|window\["ytInitialData"\])\s*=\s*\{/);
-  }
-
-  function parseInitialContinuationToken(html) {
-    const match = html.match(/"continuationCommand"\s*:\s*\{\s*"token"\s*:\s*"([^"]+)"/);
-    return parseJsonStringValue(match?.[1] || '');
-  }
-
-  function addPlaylistVideoCounts(data, map, onlyIds = null) {
-    walkObject(data, (node) => {
-      const r = node.playlistVideoRenderer;
-      if (
-        !r?.videoId ||
-        map.has(r.videoId) ||
-        (onlyIds && !onlyIds.has(r.videoId)) ||
-        !Array.isArray(r.videoInfo?.runs)
-      ) {
-        return;
-      }
-      const joined = r.videoInfo.runs.map((run) => run?.text || '').join('');
-      const joinedViewCount = parseViewCount(joined);
-      if (joinedViewCount !== null) {
-        map.set(r.videoId, joinedViewCount);
-        if (r.index?.simpleText) map.set(`index:${r.index.simpleText}`, joinedViewCount);
-        return;
-      }
-      for (const run of r.videoInfo.runs) {
-        const v = parseViewCount(run?.text);
-        if (v !== null) {
-          map.set(r.videoId, v);
-          if (r.index?.simpleText) map.set(`index:${r.index.simpleText}`, v);
-          break;
-        }
-      }
-    });
-  }
-
-  function findContinuationToken(data) {
-    const findInOrder = (getToken) => {
-      const stack = [data];
-      while (stack.length) {
-        const node = stack.pop();
-        if (!node || typeof node !== 'object') continue;
-        const token = getToken(node);
-        if (token) return token;
-        if (Array.isArray(node)) {
-          for (let i = node.length - 1; i >= 0; i -= 1) stack.push(node[i]);
-          continue;
-        }
-        const keys = Object.keys(node);
-        for (let i = keys.length - 1; i >= 0; i -= 1) stack.push(node[keys[i]]);
-      }
-      return null;
-    };
-    return (
-      findInOrder((node) =>
-        node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token ||
-        null
-      ) ||
-      findInOrder((node) =>
-        node.continuationEndpoint?.continuationCommand?.token ||
-        node.nextContinuationData?.continuation ||
-        node.reloadContinuationData?.continuation ||
-        null
-      )
-    );
-  }
-
-  function parseJsonStringValue(raw) {
-    if (!raw) return '';
-    try {
-      return JSON.parse(`"${raw}"`);
-    } catch {
-      return raw;
-    }
-  }
-
-  function parseYtcfgValue(html, key) {
-    const match = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`).exec(html);
-    return parseJsonStringValue(match?.[1] || '');
-  }
-
-  function getAltFetchConfig(html) {
-    return {
-      apiKey: parseYtcfgValue(html, 'INNERTUBE_API_KEY'),
-      clientName: parseYtcfgValue(html, 'INNERTUBE_CLIENT_NAME') || 'WEB',
-      clientVersion: parseYtcfgValue(html, 'INNERTUBE_CLIENT_VERSION'),
-      visitorData: parseYtcfgValue(html, 'VISITOR_DATA'),
-    };
-  }
-
-  async function fetchBrowseContinuation(token, cfg, altLang, timeoutMs) {
-    if (!token || !cfg.apiKey || !cfg.clientVersion) return null;
-    const body = {
-      context: {
-        client: {
-          clientName: cfg.clientName || 'WEB',
-          clientVersion: cfg.clientVersion,
-          hl: altLang,
-          ...(cfg.visitorData ? { visitorData: cfg.visitorData } : {}),
-        },
-      },
-      continuation: token,
-    };
-    const url = new URL('/youtubei/v1/browse', location.origin);
-    url.searchParams.set('key', cfg.apiKey);
-    const res = await fetchWithTimeout(
-      url.href,
-      {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'content-type': 'application/json',
-          'x-youtube-client-name': cfg.clientName || 'WEB',
-          'x-youtube-client-version': cfg.clientVersion,
-        },
-        body: JSON.stringify(body),
-      },
-      timeoutMs
-    );
-    return res.ok ? res.json() : null;
-  }
-
-  async function fetchWithTimeout(url, options = {}, timeoutMs = ALT_FETCH_TIMEOUT_MS) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async function fetchAltLanguageViewCounts(altLang, runId, tiedIds = getPopularTieVideoIds()) {
-    if (state.altLang === altLang && state.altByVideoId.size > 0) return true;
-    if (state.altFetchPromise) return state.altFetchPromise;
-    const url = new URL(location.href);
-    url.searchParams.set('hl', altLang);
-    url.searchParams.set('persist_hl', '1');
-    const promise = (async () => {
-      const startedAt = Date.now();
-      const remainingMs = () => Math.max(0, ALT_FETCH_MAX_MS - (Date.now() - startedAt));
-      try {
-        if (tiedIds.size === 0) return false;
-        const res = await fetchWithTimeout(
-          url.href,
-          { credentials: 'same-origin' },
-          Math.min(ALT_FETCH_TIMEOUT_MS, remainingMs())
-        );
-        if (!res.ok) return false;
-        const html = await res.text();
-        if (runId !== state.runId) return false;
-        const initialData = parseInitialData(html);
-        const cfg = getAltFetchConfig(html);
-        const map = new Map();
-        if (initialData) addPlaylistVideoCounts(initialData, map, tiedIds);
-        let continuationToken = parseInitialContinuationToken(html) || (initialData ? findContinuationToken(initialData) : null);
-        for (
-          let page = 0;
-          continuationToken && page < ALT_CONTINUATION_PAGES && runId === state.runId;
-          page += 1
-        ) {
-          if (remainingMs() <= 0) break;
-          const data = await fetchBrowseContinuation(
-            continuationToken,
-            cfg,
-            altLang,
-            Math.min(ALT_FETCH_TIMEOUT_MS, remainingMs())
-          );
-          if (!data || runId !== state.runId) break;
-          addPlaylistVideoCounts(data, map, tiedIds);
-          continuationToken = findContinuationToken(data);
-        }
-        if (map.size === 0) return false;
-        state.altByVideoId = map;
-        state.altLang = altLang;
-        return true;
-      } catch {
-        return false;
-      }
-    })();
-    state.altFetchPromise = promise;
-    try { return await promise; }
-    finally { if (state.altFetchPromise === promise) state.altFetchPromise = null; }
   }
 
   /* === Chip UI === */
@@ -1057,7 +672,7 @@
 
   function removeInjectedNodes() {
     document.getElementById(CHIP_BAR_ID)?.remove();
-    document.getElementById(SORT_CONTAINER_ID)?.remove();
+    document.getElementById(STYLE_ID)?.remove();
   }
 
   /* === Click / shortcut handling === */
@@ -1082,21 +697,6 @@
     if (!state.currentSort || runId !== state.runId) return;
     renderSortedContents(runId);
     if (!completed) setStatus(t('stopped', getRenderableEntries().length), 'warn');
-
-    if (
-      state.currentSort === 'popular' &&
-      state.page?.altLanguageFetch &&
-      state.altLang === null
-    ) {
-      const tiedIds = getPopularTieVideoIds();
-      if (tiedIds.size === 0) return;
-      const altLang = getLocale() === 'ja' ? 'en' : 'ja';
-      setStatus(t('refining'), 'progress');
-      const refined = await fetchAltLanguageViewCounts(altLang, runId, tiedIds);
-      if (state.currentSort !== 'popular' || runId !== state.runId) return;
-      if (refined) renderSortedContents(runId);
-      else if (completed) setStatus(t('sorted', getRenderableEntries().length), 'done');
-    }
   }
 
   function toggleFilter(key) {
@@ -1108,25 +708,19 @@
   /* === Setup / observation === */
 
   function startObserver() {
-    if (!state.page) return false;
+    if (!state.page?.sort) return false;
     if (state.observer) state.observer.disconnect();
-    state.observer = new MutationObserver(() => {
-      if (!state.page) return;
-      if (state.page.chips.length && !document.getElementById(CHIP_BAR_ID)) injectChipBar();
-      if (state.page.sort) queueScanSections();
+    state.observer = new MutationObserver((records) => {
+      const addedSections = [];
+      for (const record of records) {
+        for (const node of record.addedNodes) addedSections.push(node);
+      }
+      queueSections(addedSections);
     });
-    const target = state.page.sort ? getContents() : document.documentElement;
+    const target = getContents();
     if (!target) return false;
-    state.observer.observe(target, { childList: true, subtree: !state.page.sort });
+    state.observer.observe(target, { childList: true, subtree: false });
     return true;
-  }
-
-  function scheduleSetupRetry() {
-    if (state.setupRetryTimer) return;
-    state.setupRetryTimer = window.setTimeout(() => {
-      state.setupRetryTimer = null;
-      setup();
-    }, 200);
   }
 
   function setup() {
@@ -1140,17 +734,15 @@
 
     ensureStyle();
 
-    if (state.page.chips.length && !injectChipBar()) {
-      scheduleSetupRetry();
-      return;
-    }
+    if (state.page.chips.length && !injectChipBar()) return;
 
     if (state.page.sort) {
-      ensureSortContainer();
       scanSections();
+      startObserver();
+    } else {
+      state.observer?.disconnect();
     }
 
-    startObserver();
     applyFilterClass();
     updateActiveChips();
 
@@ -1173,7 +765,6 @@
   }
 
   document.addEventListener('yt-navigate-finish', onNavigate);
-  window.addEventListener('popstate', onNavigate);
 
   window.addEventListener(
     'keydown',
@@ -1193,6 +784,5 @@
   );
 
   state.lastLocationKey = `${location.pathname}${location.search}`;
-  ensureStyle();
   setup();
 })();
