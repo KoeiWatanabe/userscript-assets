@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         シアターモードを改善
 // @namespace    https://tampermonkey.net/
-// @version      1.7.1
+// @version      1.7.2
 // @description  YouTube のシアターモード（Theater mode）表示を Default view 相当に固定し、動画アスペクト比に追従して黒帯・クリップを排除する。プレイヤー周辺に Default view 相当の余白を確保し、チャット上部をプレイヤーに揃える。シアターモード時のヘッダー強制ダーク化も抑制
 // @match        https://www.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/シアターモードを改善/script.js
@@ -16,7 +16,7 @@
 
   const STYLE_ID = 'yt-tdv-style';
   const CSS = `
-ytd-watch-flexy[theater] {
+ytd-watch-flexy[theater]:not([fullscreen]) {
   position: relative !important;
   container-type: inline-size;
   --tdv-chat-w: 0px;
@@ -26,16 +26,16 @@ ytd-watch-flexy[theater] {
   --tdv-h: calc(var(--tdv-w) / var(--tdv-ratio, 1.77778));
 }
 
-ytd-watch-flexy[theater][live-chat-present-and-expanded] {
+ytd-watch-flexy[theater]:not([fullscreen])[live-chat-present-and-expanded] {
   --tdv-chat-w: var(--ytd-watch-flexy-sidebar-width);
 }
 
-ytd-watch-flexy[theater] #cinematics-full-bleed-container,
-ytd-watch-flexy[theater] #panels-full-bleed-container {
+ytd-watch-flexy[theater]:not([fullscreen]) #cinematics-full-bleed-container,
+ytd-watch-flexy[theater]:not([fullscreen]) #panels-full-bleed-container {
   display: none !important;
 }
 
-ytd-watch-flexy[theater] #full-bleed-container {
+ytd-watch-flexy[theater]:not([fullscreen]) #full-bleed-container {
   display: block !important;
   height: calc(var(--tdv-h) + 12px) !important;
   max-height: none !important;
@@ -44,14 +44,14 @@ ytd-watch-flexy[theater] #full-bleed-container {
   background-color: transparent !important;
 }
 
-ytd-watch-flexy[theater] #player-full-bleed-container {
+ytd-watch-flexy[theater]:not([fullscreen]) #player-full-bleed-container {
   display: block !important;
   position: relative !important;
   width: 100% !important;
   height: 100% !important;
 }
 
-ytd-watch-flexy[theater] #player-full-bleed-container > #player-container {
+ytd-watch-flexy[theater]:not([fullscreen]) #player-full-bleed-container > #player-container {
   position: absolute !important;
   top: 12px !important;
   left: 16px !important;
@@ -60,7 +60,7 @@ ytd-watch-flexy[theater] #player-full-bleed-container > #player-container {
   height: var(--tdv-h) !important;
 }
 
-ytd-watch-flexy[theater] #player-full-bleed-container > #player-container > ytd-player {
+ytd-watch-flexy[theater]:not([fullscreen]) #player-full-bleed-container > #player-container > ytd-player {
   display: block !important;
   width: var(--tdv-w) !important;
   height: var(--tdv-h) !important;
@@ -69,18 +69,18 @@ ytd-watch-flexy[theater] #player-full-bleed-container > #player-container > ytd-
   overflow: hidden !important;
 }
 
-ytd-watch-flexy[theater] #movie_player {
+ytd-watch-flexy[theater]:not([fullscreen]) #movie_player {
   background-color: transparent !important;
 }
 
-ytd-watch-flexy[theater] #movie_player .html5-video-container {
+ytd-watch-flexy[theater]:not([fullscreen]) #movie_player .html5-video-container {
   position: absolute !important;
   inset: 0 !important;
   width: 100% !important;
   height: 100% !important;
 }
 
-ytd-watch-flexy[theater] #movie_player .html5-main-video {
+ytd-watch-flexy[theater]:not([fullscreen]) #movie_player .html5-main-video {
   position: absolute !important;
   top: 0 !important;
   left: 0 !important;
@@ -89,7 +89,7 @@ ytd-watch-flexy[theater] #movie_player .html5-main-video {
   object-fit: cover !important;
 }
 
-ytd-watch-flexy[theater][live-chat-present-and-expanded] ytd-live-chat-frame#chat {
+ytd-watch-flexy[theater]:not([fullscreen])[live-chat-present-and-expanded] ytd-live-chat-frame#chat {
   margin-top: 12px !important;
   height: calc(100vh - 56px - 12px) !important;
 }
