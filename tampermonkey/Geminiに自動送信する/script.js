@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const DEFAULT_MODEL = 'pro';
+    const DEFAULT_MODEL = 'flash';
     const MAX_WAIT_MS = 15000;
 
     // メニュー項目のモデル名は日本語UIでも英語表記（例: "3.5 Flash あらゆる場面でサポート"）。
