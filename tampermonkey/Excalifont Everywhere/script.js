@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Excalifont Everywhere
 // @namespace    https://tampermonkey.net/
-// @version      1.2.1
+// @version      1.2.2
 // @description  Excalidraw風-可変幅 をページ全体のフォントとして適用します
 // @author       You
 // @match        *://*/*
@@ -10,6 +10,8 @@
 // @exclude      *://www.canva.com/*
 // @grant        GM_addStyle
 // @run-at       document-start
+// @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Excalifont Everywhere/script.js
+// @downloadURL  https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/Excalifont Everywhere/script.js
 // @icon         https://excalidraw.framalab.org/apple-touch-icon.png
 // ==/UserScript==
 
