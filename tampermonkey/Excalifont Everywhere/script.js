@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Excalifont Everywhere
 // @namespace    https://tampermonkey.net/
-// @version      1.2.0
+// @version      1.2.1
 // @description  Excalidraw風-可変幅 をページ全体のフォントとして適用します
 // @author       You
 // @match        *://*/*
@@ -80,6 +80,8 @@
       [class*="lucide" i],
       [class*="fa-" i],
       [class*="codicon" i],
+      .i[class^="i-"],
+      .i[class*=" i-"],
       i,
       svg,
       svg *
