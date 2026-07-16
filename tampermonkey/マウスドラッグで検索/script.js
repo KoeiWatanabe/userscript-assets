@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         マウスドラッグで検索
-// @version      1.2.0
+// @version      1.3.0
 // @description  選択した文字列をドラッグで検索
 // @match        *://*/*
 // @grant        GM_openInTab
@@ -48,113 +48,87 @@
    * Behavior
    **********************/
   const THRESHOLD = 50;
-  const QUIET_MS = 150; // selection が落ち着くまでの猶予（誤爆防止）
+  const THRESHOLD_SQUARED = THRESHOLD ** 2;
+  const HTTP_PROTOCOL = /^https?:\/\//i;
+  const BARE_DOMAIN = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?$/i;
+  const TAB_OPTIONS = { active: true, insert: true, setParent: true };
+  const LISTENER_OPTIONS = { capture: true, passive: true };
 
-  let armed = false, fired = false;
-  let sx = 0, sy = 0;
+  let dragCandidate = null;
+  let activeDrag = null;
 
-  let isPointerDown = false;
-  let selectionChangedDuringDrag = false;
+  const normalizeUrl = (text) => {
+    if (/\s/.test(text)) return null;
 
-  // 「このドラッグで動かしていい選択文字列」（pointerdown時点の固定スナップショット）
-  let snapshotText = "";
-
-  // 直近の selectionchange 時刻
-  let lastSelChange = 0;
-
-  const selText = () => (window.getSelection?.().toString().trim() || "");
-
-  const normalizeUrl = (raw) => {
-    if (!raw) return null;
-    let t = raw.trim();
-
-    // 改行/空白が混ざるならURL扱いしない（誤爆防止）
-    if (/\s/.test(t)) return null;
-
-    // 前後に付きがちな記号、末尾の句読点を落とす
-    t = t
+    let candidate = text
       .replace(/^[<\(\[\{「『"'`]+/, "")
       .replace(/[>\)\]\}」』"'`]+$/, "")
       .replace(/[.,;:!?]+$/, "");
 
-    if (!t) return null;
-
-    if (/^(https?:\/\/)/i.test(t)) return t;
-    if (/^\/\//.test(t)) return "https:" + t;
-    if (/^www\./i.test(t)) return "https://" + t;
-
-    if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?$/i.test(t)) {
-      return "https://" + t;
+    if (candidate.startsWith("//")) {
+      candidate = `https:${candidate}`;
+    } else if (/^www\./i.test(candidate) || BARE_DOMAIN.test(candidate)) {
+      candidate = `https://${candidate}`;
+    } else if (!HTTP_PROTOCOL.test(candidate)) {
+      return null;
     }
-    return null;
+
+    try {
+      const url = new URL(candidate);
+      return (url.protocol === "http:" || url.protocol === "https:") && url.hostname
+        ? url.href
+        : null;
+    } catch {
+      return null;
+    }
   };
 
-  const inSelection = (t) => {
-    const s = window.getSelection?.();
-    if (!s || s.rangeCount === 0 || !(t instanceof Node)) return false;
-    try { return s.getRangeAt(0).intersectsNode(t); } catch { return false; }
+  const isPointInRange = (range, x, y) => {
+    for (const rect of range.getClientRects()) {
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        return true;
+      }
+    }
+    return false;
   };
 
-  // 選択が変化したらタイムスタンプ更新＆「選択作業中」フラグ
-  document.addEventListener("selectionchange", () => {
-    lastSelChange = Date.now();
-    if (isPointerDown) selectionChangedDuringDrag = true;
-  }, true);
+  const openText = (text) => {
+    const targetUrl = normalizeUrl(text) ?? getSearchUrl() + encodeURIComponent(text);
+    GM_openInTab(targetUrl, TAB_OPTIONS);
+  };
 
   addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return; // 左ボタンのみ
+    dragCandidate = null;
+    activeDrag = null;
+    if (e.pointerType !== "mouse" || e.button !== 0) return;
 
-    isPointerDown = true;
-    selectionChangedDuringDrag = false;
-    armed = false;
-    fired = false;
+    const selection = getSelection();
+    if (selection.rangeCount === 0 || selection.isCollapsed) return;
 
-    // pointerdown時点で「すでに」選択があることが条件（＝初回の選択ドラッグは絶対に武装しない）
-    snapshotText = selText();
-    if (!snapshotText) return;
+    const text = selection.toString().trim();
+    if (!text || !isPointInRange(selection.getRangeAt(0), e.clientX, e.clientY)) return;
 
-    // 選択範囲の上から開始した時だけ武装（＝選択済み文字列を“つかんで”ドラッグ）
-    if (!inSelection(e.target)) return;
+    dragCandidate = { text, x: e.clientX, y: e.clientY };
+  }, LISTENER_OPTIONS);
 
-    armed = true;
-    sx = e.clientX;
-    sy = e.clientY;
-  }, true);
+  addEventListener("dragstart", () => {
+    activeDrag = null;
+    if (!dragCandidate) return;
 
-  addEventListener("pointermove", (e) => {
-    if (!armed || fired) return;
-
-    // selectionが落ち着いてない間は絶対発火しない
-    if (Date.now() - lastSelChange < QUIET_MS) return;
-
-    // ドラッグ中に選択が変化していたら、そのドラッグは「選択作業」なので発火しない
-    if (selectionChangedDuringDrag) return;
-
-    // 「pointerdown時点の選択」と同じ文字列が保たれている時だけ発火
-    // （選択範囲を伸ばしてる途中＝文字列が変わるケースを確実に潰す）
-    const nowText = selText();
-    if (!nowText || nowText !== snapshotText) return;
-
-    const dx = e.clientX - sx, dy = e.clientY - sy;
-    if (Math.hypot(dx, dy) < THRESHOLD) return;
-
-    fired = true;
-
-    const url = normalizeUrl(nowText);
-    if (url) {
-      GM_openInTab(url, { active: true, insert: true, setParent: true });
-      return;
+    if (getSelection().toString().trim() === dragCandidate.text) {
+      activeDrag = dragCandidate;
     }
+    dragCandidate = null;
+  }, LISTENER_OPTIONS);
 
-    const base = getSearchUrl();
-    GM_openInTab(base + encodeURIComponent(nowText), { active: true, insert: true, setParent: true });
-  }, true);
+  addEventListener("dragend", (e) => {
+    const drag = activeDrag;
+    dragCandidate = null;
+    activeDrag = null;
+    if (!drag) return;
 
-  addEventListener("pointerup", () => {
-    isPointerDown = false;
-    selectionChangedDuringDrag = false;
-    armed = false;
-    fired = false;
-    snapshotText = "";
-  }, true);
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
+    if (dx * dx + dy * dy >= THRESHOLD_SQUARED) openText(drag.text);
+  }, LISTENER_OPTIONS);
 })();
