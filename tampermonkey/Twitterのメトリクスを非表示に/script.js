@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    https://tampermonkey.net/
-// @version      1.17.0
+// @version      1.17.1
 // @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示・プロフィールのおすすめユーザー非表示・フォロー中タブクリックでトップへスクロール
 // @author       Gemini & Claude
 // @match        https://x.com/*
@@ -586,9 +586,13 @@
     if (text !== 'フォロー中' && text !== 'following') return;
     if (tab.getAttribute('aria-selected') !== 'true') return;
     const arrow = tab.querySelector('svg');
-    if (arrow && (event.target.closest('svg')
-      || event.clientX >= arrow.getBoundingClientRect().left - ARROW_CLICK_MARGIN)) {
-      return;
+    if (arrow) {
+      const arrowRect = arrow.getBoundingClientRect();
+      if (event.target.closest('svg')
+        || (event.clientX >= arrowRect.left - ARROW_CLICK_MARGIN
+          && event.clientX <= arrowRect.right + ARROW_CLICK_MARGIN)) {
+        return;
+      }
     }
     event.preventDefault();
     event.stopPropagation();
