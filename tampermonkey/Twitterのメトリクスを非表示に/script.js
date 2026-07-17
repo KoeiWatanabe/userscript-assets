@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    https://tampermonkey.net/
-// @version      1.17.1
+// @version      1.17.2
 // @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示・プロフィールのおすすめユーザー非表示・フォロー中タブクリックでトップへスクロール
 // @author       Gemini & Claude
 // @match        https://x.com/*
@@ -112,6 +112,13 @@
 
     [data-testid="ScrollSnap-List"] {
       justify-content: center !important;
+    }
+
+    html[data-tmx-page="home"] ${PRIMARY_SELECTOR} :is(
+      [data-testid="ScrollSnap-prevButtonWrapper"],
+      [data-testid="ScrollSnap-nextButtonWrapper"]
+    ) {
+      display: none !important;
     }
 
     .${FOR_YOU_CLASS},
