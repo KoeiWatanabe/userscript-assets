@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Twitterのレイアウト調整
 // @namespace    https://tampermonkey.net/
-// @version      1.16.3
-// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示・プロフィールのおすすめユーザー非表示
+// @version      1.17.0
+// @description  メトリクス非表示（ホバー時表示）・認証バッジ非表示・サイドバー整理・おすすめタブ削除・原文デフォルト表示・プロフィールのリツイート切替・プレミアム勧誘リダイレクト・「もっと見つける」非表示・プロフィールのおすすめユーザー非表示・フォロー中タブクリックでトップへスクロール
 // @author       Gemini & Claude
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -575,6 +575,27 @@
     tabLists.forEach(syncForYouTab);
     profileRoots.forEach(syncProfileHeader);
   }
+
+  const ARROW_CLICK_MARGIN = 8;
+
+  function handleFollowingTabClick(event) {
+    if (currentPage !== 'home' || event.detail === 0) return;
+    const tab = event.target.closest?.('[role="tab"]');
+    if (!tab || !tab.closest(PRIMARY_SELECTOR)) return;
+    const text = normalizeText(tab.textContent);
+    if (text !== 'フォロー中' && text !== 'following') return;
+    if (tab.getAttribute('aria-selected') !== 'true') return;
+    const arrow = tab.querySelector('svg');
+    if (arrow && (event.target.closest('svg')
+      || event.clientX >= arrow.getBoundingClientRect().left - ARROW_CLICK_MARGIN)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    window.scrollTo(0, 0);
+  }
+
+  document.addEventListener('click', handleFollowingTabClick, true);
 
   const observer = new MutationObserver(processMutations);
 
