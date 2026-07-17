@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ニコニコにシアターモードを追加
 // @namespace    https://tampermonkey.net/
-// @version      1.1.0
+// @version      1.2.0
 // @description  ニコニコ動画の watch ページを常時シアターモード風に変更する。プレイヤーをヘッダー下の縦空間いっぱいに動画の実アスペクト比で表示して黒帯を排除し、右側パネル（コメントリスト等）はプレイヤー下へ移動する
 // @match        https://www.nicovideo.jp/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/ニコニコにシアターモードを追加/script.js
@@ -71,6 +71,21 @@ body:not(:fullscreen) [data-styling-name="fullscreen-target"]:not(:fullscreen) d
   width: 100% !important;
   height: 100% !important;
   transform: none !important;
+}
+
+/* 動画プレイヤー設定パネル（歯車ボタンのポップアップ）:
+   サイト JS が標準レイアウト（サイドバー右隣）前提で position:fixed の
+   left/top をインライン計算するため、変更後レイアウトでは画面外に飛ぶ。
+   プレイヤー右端の外側 8px に置き、入りきらない場合はビューポート右端に
+   クランプ（16:9 などプレイヤーが広い時はプレイヤー右側に重なる） */
+body:not(:fullscreen) [data-nvpc-scope="watch-floating-panel"][data-nvpc-part="floating"] {
+  left: min(
+    calc((100vw - var(--scrollbar-width, 0px) + var(--watch-player-width)) / 2 + 8px),
+    calc(100vw - var(--scrollbar-width, 0px) - var(--watch-sidebar-width) - 8px)
+  ) !important;
+  top: calc(var(--common-header-height) + var(--web-header-height) + var(--watch-layout-gap-height, 16px)) !important;
+  max-height: calc(100vh - var(--common-header-height) - var(--web-header-height) - var(--watch-layout-gap-height, 16px) - 24px) !important;
+  overflow-y: auto !important;
 }
 `;
 
