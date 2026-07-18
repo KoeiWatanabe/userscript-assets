@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeに字幕を表示する
 // @namespace    https://tampermonkey.net/
-// @version      2.3.0
+// @version      2.3.1
 // @description  自作の .srt / .lrc 字幕を YouTube 動画にネイティブ字幕トラック風に統合表示する。Alt+C: 字幕ファイル読み込み。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -39,16 +39,18 @@
   const CUSTOM_NATIVE_ROW_ID = "ytsrt-native-custom-row";
   const PLAYER_SELECTOR = "#movie_player";
   const VIDEO_SELECTOR = "video.html5-main-video";
-  const RIGHT_CONTROLS_SELECTOR = `${PLAYER_SELECTOR} .ytp-right-controls`;
   const SUBTITLES_BUTTON_SELECTOR = ".ytp-subtitles-button";
   const SETTINGS_BUTTON_SELECTOR = ".ytp-settings-button";
   const SETTINGS_POPUP_SELECTOR = `${PLAYER_SELECTOR} .ytp-popup.ytp-settings-menu`;
   const MENU_ITEM_SELECTOR = ".ytp-menuitem";
   const LOAD_BUTTON_SHORTCUT = "Alt+C";
-  const LOAD_BUTTON_PATH_SCALE = 1.25;
+  const LOAD_BUTTON_PATH_TRANSFORM = "translate(480 -480) scale(1.25) translate(-480 480)";
   const MISSING_ATTRIBUTE_VALUE = "__ytsrt_missing__";
-  const LOAD_BUTTON_SVG_PATH = "M480-480Zm120 288H216q-29.7 0-50.85-21.16Q144-234.32 144-264.04v-432.24Q144-726 165.15-747T216-768h528q29.7 0 50.85 21.15Q816-725.7 816-696v288h-72v-288H216v432h384v72Zm144 72v-72h-72v-72h72v-72h72v72h72v72h-72v72h-72ZM293.29-368h111.86Q421-368 432-378.78q11-10.78 11-26.72V-443h-56.14v19H312v-112h75v19h56v-37.89q0-16.11-10.64-26.61Q421.73-592 406-592H293.01q-16.01 0-26.51 10.71-10.5 10.7-10.5 26.52v148.95Q256-390 266.72-379t26.57 11Zm261.22 0h112.55q15.94 0 26.44-10.78Q704-389.56 704-405.5V-443h-56.14v19H573v-112h75v19h56v-37.89q0-16.11-10.72-26.61T666.71-592H554.85Q539-592 528-581.29q-11 10.7-11 26.52v148.95Q517-390 527.79-379q10.78 11 26.72 11Z";
-  const DELETE_BUTTON_SVG_PATH = "M480-480Zm120 288H216q-29.7 0-50.85-21.16Q144-234.32 144-264.04v-432.24Q144-726 165.15-747T216-768h528q29.7 0 50.85 21.15Q816-725.7 816-696v288h-72v-288H216v432h384v72Zm72 -54v-72h216v72h-216ZM293.29-368h111.86Q421-368 432-378.78q11-10.78 11-26.72V-443h-56.14v19H312v-112h75v19h56v-37.89q0-16.11-10.64-26.61Q421.73-592 406-592H293.01q-16.01 0-26.51 10.71-10.5 10.7-10.5 26.52v148.95Q256-390 266.72-379t26.57 11Zm261.22 0h112.55q15.94 0 26.44-10.78Q704-389.56 704-405.5V-443h-56.14v19H573v-112h75v19h56v-37.89q0-16.11-10.72-26.61T666.71-592H554.85Q539-592 528-581.29q-11 10.7-11 26.52v148.95Q517-390 527.79-379q10.78 11 26.72 11Z";
+  // Shared frame + "CC" glyph; the load/delete variants differ only in the +/- mark.
+  const BUTTON_ICON_FRAME_PATH = "M480-480Zm120 288H216q-29.7 0-50.85-21.16Q144-234.32 144-264.04v-432.24Q144-726 165.15-747T216-768h528q29.7 0 50.85 21.15Q816-725.7 816-696v288h-72v-288H216v432h384v72";
+  const BUTTON_ICON_CC_PATH = "M293.29-368h111.86Q421-368 432-378.78q11-10.78 11-26.72V-443h-56.14v19H312v-112h75v19h56v-37.89q0-16.11-10.64-26.61Q421.73-592 406-592H293.01q-16.01 0-26.51 10.71-10.5 10.7-10.5 26.52v148.95Q256-390 266.72-379t26.57 11Zm261.22 0h112.55q15.94 0 26.44-10.78Q704-389.56 704-405.5V-443h-56.14v19H573v-112h75v19h56v-37.89q0-16.11-10.72-26.61T666.71-592H554.85Q539-592 528-581.29q-11 10.7-11 26.52v148.95Q517-390 527.79-379q10.78 11 26.72 11Z";
+  const LOAD_BUTTON_SVG_PATH = `${BUTTON_ICON_FRAME_PATH}Zm144 72v-72h-72v-72h72v-72h72v72h72v72h-72v72h-72Z${BUTTON_ICON_CC_PATH}`;
+  const DELETE_BUTTON_SVG_PATH = `${BUTTON_ICON_FRAME_PATH}Zm72 -54v-72h216v72h-216Z${BUTTON_ICON_CC_PATH}`;
   const YOUTUBE_ACTIVE_SUBTITLE_ICON_PATH = "M21 3H3C2.46 3 1.96 3.21 1.58 3.58C1.21 3.96 1 4.46 1 5V19C1 19.53 1.21 20.03 1.58 20.41C1.96 20.78 2.46 21 3 21H21C21.53 21 22.03 20.78 22.41 20.41C22.78 20.03 23 19.53 23 19V5C23 4.46 22.78 3.96 22.41 3.58C22.03 3.21 21.53 3 21 3ZM6 11H8C8.26 11 8.51 11.10 8.70 11.29C8.89 11.48 9 11.73 9 12C9 12.26 8.89 12.51 8.70 12.70C8.51 12.89 8.26 13 8 13H6C5.73 13 5.48 12.89 5.29 12.70C5.10 12.51 5 12.26 5 12C5 11.73 5.10 11.48 5.29 11.29C5.48 11.10 5.73 11 6 11ZM12 11H18C18.26 11 18.51 11.10 18.70 11.29C18.89 11.48 19 11.73 19 12C19 12.26 18.89 12.51 18.70 12.70C18.51 12.89 18.26 13 18 13H12C11.73 13 11.48 12.89 11.29 12.70C11.10 12.51 11 12.26 11 12C11 11.73 11.10 11.48 11.29 11.29C11.48 11.10 11.73 11 12 11ZM16 15H18C18.26 15 18.51 15.10 18.70 15.29C18.89 15.48 19 15.73 19 16C19 16.26 18.89 16.51 18.70 16.70C18.51 16.89 18.26 17 18 17H16C15.73 17 15.48 16.89 15.29 16.70C15.10 16.51 15 16.26 15 16C15 15.73 15.10 15.48 15.29 15.29C15.48 15.10 15.73 15 16 15ZM6 15H12C12.26 15 12.51 15.10 12.70 15.29C12.89 15.48 13 15.73 13 16C13 16.26 12.89 16.51 12.70 16.70C12.51 16.89 12.26 17 12 17H6C5.73 17 5.48 16.89 5.29 16.70C5.10 16.51 5 16.26 5 16C5 15.73 5.10 15.48 5.29 15.29C5.48 15.10 5.73 15 6 15Z";
   const BACK_ICON_PATH = "m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z";
 
@@ -80,30 +82,38 @@
   };
 
   // ── State ─────────────────────────────────────────────────────────────────
+  // Fields reset to their initial values on detach().
+  function createResettableState() {
+    return {
+      cues: [],
+      captionMode: CAPTION_MODE.OFF,
+      currentVideoId: "",
+      currentPageIsLive: false,
+      nativeCaptionsAvailable: false,
+      nativeCaptionsKnown: false,
+      lastKnownNativeTrackLabel: "",
+      cueRangeStart: Number.POSITIVE_INFINITY,
+      cueRangeEnd: Number.NEGATIVE_INFINITY,
+      cueRangeValue: null,
+      pendingCaptionSelection: null,
+      renderedBody: null,
+      player: null,
+      video: null,
+      rightControls: null,
+      subtitlesButton: null,
+      settingsButton: null,
+      settingsPopup: null,
+      loadButton: null,
+      tooltip: null,
+      overlay: null,
+      overlayBody: null,
+      lastOverlayFontSize: -1,
+      ignoreNextSubtitlesButtonClick: false,
+    };
+  }
+
   const state = {
-    cues: [],
-    captionMode: CAPTION_MODE.OFF,
-    currentVideoId: "",
-    currentPageIsLive: false,
-    nativeCaptionsAvailable: false,
-    nativeCaptionsKnown: false,
-    lastKnownNativeTrackLabel: "",
-    cueRangeStart: Number.POSITIVE_INFINITY,
-    cueRangeEnd: Number.NEGATIVE_INFINITY,
-    cueRangeValue: null,
-    pendingCaptionSelection: null,
-    renderedBody: null,
-    player: null,
-    video: null,
-    rightControls: null,
-    subtitlesButton: null,
-    settingsButton: null,
-    settingsPopup: null,
-    loadButton: null,
-    tooltip: null,
-    overlay: null,
-    overlayBody: null,
-    lastOverlayFontSize: -1,
+    ...createResettableState(),
     resizeObs: null,
     controlsObs: null,
     controlsObsTarget: null,
@@ -112,7 +122,6 @@
     menuSyncFrame: 0,
     boundVideo: null,
     routeToken: 0,
-    ignoreNextSubtitlesButtonClick: false,
   };
   const SUBTITLES_BUTTON_STASHED_ATTRIBUTES = [
     ["aria-label", "ytsrtOriginalAriaLabel"],
@@ -145,19 +154,21 @@
     return m ? m[1] : "";
   }
 
-  function getPlayer() {
-    if (!state.player?.isConnected) {
-      state.player = document.querySelector(PLAYER_SELECTOR);
-    }
-    return state.player;
+  function cachedElement(key, find) {
+    if (!state[key]?.isConnected) state[key] = find() || null;
+    return state[key];
   }
 
-  function getVideo() {
-    if (!state.video?.isConnected) {
-      state.video = getPlayer()?.querySelector(VIDEO_SELECTOR) || document.querySelector(VIDEO_SELECTOR);
-    }
-    return state.video;
-  }
+  const getPlayer = () => cachedElement("player", () => document.querySelector(PLAYER_SELECTOR));
+  const getVideo = () => cachedElement("video", () => getPlayer()?.querySelector(VIDEO_SELECTOR));
+  const getRightControls = () =>
+    cachedElement("rightControls", () => getPlayer()?.querySelector(".ytp-right-controls"));
+  const getSubtitlesButton = () =>
+    cachedElement("subtitlesButton", () => getRightControls()?.querySelector(SUBTITLES_BUTTON_SELECTOR));
+  const getSettingsButton = () =>
+    cachedElement("settingsButton", () => getPlayer()?.querySelector(SETTINGS_BUTTON_SELECTOR));
+  const getLoadButton = () => cachedElement("loadButton", () => document.getElementById(LOAD_BUTTON_ID));
+  const getTooltip = () => cachedElement("tooltip", () => document.getElementById(TOOLTIP_ID));
 
   function readPlayerMediaInfo(expectedVideoId = "") {
     const pageDocument = unsafeWindow.document;
@@ -207,42 +218,6 @@
       state.overlayBody = state.overlay?.firstElementChild || null;
     }
     return state.overlay;
-  }
-
-  function getRightControls() {
-    if (!state.rightControls?.isConnected) {
-      state.rightControls = getPlayer()?.querySelector(".ytp-right-controls") ||
-        document.querySelector(RIGHT_CONTROLS_SELECTOR);
-    }
-    return state.rightControls;
-  }
-
-  function getSubtitlesButton() {
-    if (!state.subtitlesButton?.isConnected) {
-      state.subtitlesButton = getRightControls()?.querySelector(SUBTITLES_BUTTON_SELECTOR) || null;
-    }
-    return state.subtitlesButton;
-  }
-
-  function getSettingsButton() {
-    if (!state.settingsButton?.isConnected) {
-      state.settingsButton = getPlayer()?.querySelector(SETTINGS_BUTTON_SELECTOR) || null;
-    }
-    return state.settingsButton;
-  }
-
-  function getLoadButton() {
-    if (!state.loadButton?.isConnected) {
-      state.loadButton = document.getElementById(LOAD_BUTTON_ID);
-    }
-    return state.loadButton;
-  }
-
-  function getTooltip() {
-    if (!state.tooltip?.isConnected) {
-      state.tooltip = document.getElementById(TOOLTIP_ID);
-    }
-    return state.tooltip;
   }
 
   function getSettingsPopup() {
@@ -316,16 +291,14 @@
     );
   }
 
-  function applyCueState(cues = [], { syncUi = true } = {}) {
+  function applyCueState(cues = []) {
     state.cues = cues;
     state.cueRangeStart = Number.POSITIVE_INFINITY;
     state.cueRangeEnd = Number.NEGATIVE_INFINITY;
     state.cueRangeValue = null;
     state.renderedBody = null;
-    if (syncUi) {
-      syncLoadButtonState();
-      scheduleSyncSettingsUi();
-    }
+    syncLoadButtonState();
+    scheduleSyncSettingsUi();
   }
 
   function isEditableTarget(el = document.activeElement) {
@@ -647,13 +620,7 @@
 
     for (const block of blocks) {
       const lines = block.split("\n");
-      let tsIdx = -1;
-      for (let i = 0; i < lines.length; i++) {
-        if (/-->/.test(lines[i])) {
-          tsIdx = i;
-          break;
-        }
-      }
+      const tsIdx = lines.findIndex((line) => line.includes("-->"));
       if (tsIdx < 0) continue;
 
       const m = lines[tsIdx].match(
@@ -748,11 +715,9 @@
   function parseCaption(raw) {
     if (!raw) return [];
     const sample = raw.slice(0, 2048);
-    if (/-->/.test(sample)) return parseSRT(raw);
-    if (/^\s*\[\d+:\d+/m.test(sample) || /^\s*\[[a-z]+:/im.test(sample)) {
-      return parseLRC(raw);
-    }
-    return parseSRT(raw);
+    const looksLikeLrc = !/-->/.test(sample) &&
+      (/^\s*\[\d+:\d+/m.test(sample) || /^\s*\[[a-z]+:/im.test(sample));
+    return looksLikeLrc ? parseLRC(raw) : parseSRT(raw);
   }
 
   // ── Body rendering ────────────────────────────────────────────────────────
@@ -1072,10 +1037,6 @@
     return svg;
   }
 
-  function getLoadButtonPathTransform() {
-    return `translate(480 -480) scale(${LOAD_BUTTON_PATH_SCALE}) translate(-480 480)`;
-  }
-
   function cloneSubtitleIcon() {
     const button = getSubtitlesButton();
     const sourceIcon = getSubtitlesButtonIconContainer(button);
@@ -1088,9 +1049,6 @@
       });
       return svg;
     }
-
-    const glyph = sourceIcon?.querySelector(".ytsrt-subtitle-glyph");
-    if (glyph) return glyph.cloneNode(true);
 
     const span = document.createElement("span");
     span.className = "ytsrt-subtitle-glyph";
@@ -1239,11 +1197,7 @@
     button.setAttribute("aria-keyshortcuts", LOAD_BUTTON_SHORTCUT);
     button.dataset.titleNoTooltip = getLoadButtonLabel();
 
-    const svg = createSvgIcon(
-      LOAD_BUTTON_SVG_PATH,
-      "-30 -960 1020 960",
-      getLoadButtonPathTransform()
-    );
+    const svg = createSvgIcon(LOAD_BUTTON_SVG_PATH, "-30 -960 1020 960", LOAD_BUTTON_PATH_TRANSFORM);
     svg.setAttribute("class", "ytsrt-load-button__icon");
     button.appendChild(svg);
 
@@ -1869,8 +1823,7 @@
       label: t("customTrack"),
       checked: state.captionMode === CAPTION_MODE.CUSTOM,
     });
-    row.classList.add("ytsrt-custom-track-row");
-    row.classList.add("ytsrt-choice-row");
+    row.classList.add("ytsrt-custom-track-row", "ytsrt-choice-row");
     row.dataset.ytsrtChoice = CAPTION_MODE.CUSTOM;
     return row;
   }
@@ -1894,7 +1847,7 @@
   }
 
   function getMenuItemLabel(item) {
-    return normalizeLabelText(item?.querySelector(".ytp-menuitem-label")?.textContent || "");
+    return normalizeLabelText(getCaptionMenuItemLabelText(item));
   }
 
   function isNativeCaptionsTopRow(item) {
@@ -2176,9 +2129,7 @@
         : state.captionMode === CAPTION_MODE.NATIVE
           ? CAPTION_MODE.NATIVE
           : getStoredCustomMode(),
-      {
-      persist: false,
-      }
+      { persist: false }
     );
     renderCurrentCue();
     return true;
@@ -2248,27 +2199,8 @@
     const overlay = getOverlay();
     if (overlay) overlay.remove();
 
-    applyCueState([], { syncUi: false });
-    state.captionMode = CAPTION_MODE.OFF;
     state.captionTransitionToken += 1;
-    state.currentVideoId = "";
-    state.currentPageIsLive = false;
-    state.lastKnownNativeTrackLabel = "";
-    state.nativeCaptionsAvailable = false;
-    state.nativeCaptionsKnown = false;
-    state.pendingCaptionSelection = null;
-    state.ignoreNextSubtitlesButtonClick = false;
-    state.player = null;
-    state.video = null;
-    state.rightControls = null;
-    state.subtitlesButton = null;
-    state.settingsButton = null;
-    state.settingsPopup = null;
-    state.loadButton = null;
-    state.tooltip = null;
-    state.overlay = null;
-    state.overlayBody = null;
-    state.lastOverlayFontSize = -1;
+    Object.assign(state, createResettableState());
   }
 
   async function handleRouteChange() {
