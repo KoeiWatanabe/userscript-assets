@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ニコニコにシアターモードを追加
 // @namespace    https://tampermonkey.net/
-// @version      1.2.0
+// @version      1.3.0
 // @description  ニコニコ動画の watch ページを常時シアターモード風に変更する。プレイヤーをヘッダー下の縦空間いっぱいに動画の実アスペクト比で表示して黒帯を排除し、右側パネル（コメントリスト等）はプレイヤー下へ移動する
 // @match        https://www.nicovideo.jp/*
 // @updateURL    https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/ニコニコにシアターモードを追加/script.js
@@ -18,10 +18,15 @@
   // watch ページのレイアウトは <section> のインライン CSS 変数
   // (--watch-player-width 等) で駆動されているため、スタイルシート側の
   // !important で変数ごと上書きする（インライン style の通常宣言には勝てる）。
-  // フルスクリーンは body が fullscreenElement になるため、
-  // body:not(:fullscreen) で全ルールを無効化してニコニコ標準の挙動に戻す。
+  // フルスクリーン中は全ルールを無効化してニコニコ標準の挙動に戻す:
+  // - フルスクリーンサイズ「画面」: body が fullscreenElement になる → :not(:fullscreen)
+  // - フルスクリーンサイズ「ブラウザ」: Fullscreen API を使わず、watch セクション
+  //   直下に動的な <style>（祖先を position:fixed 化し他を隠すルール群）を
+  //   挿入して実現している。解除時に削除されるので、その有無を :has() で検知する
+  const OFF = 'body:not(:fullscreen):not(:has(section[style*="--watch-player-width"] > style))';
+
   const CSS = `
-body:not(:fullscreen) section[style*="--watch-player-width"] {
+${OFF} section[style*="--watch-player-width"] {
   /* プレイヤー下にタイトル + 投稿日時・再生数・コメント数の行
      (計約56px + グリッド間隔) が見える高さを確保する */
   --ntm-bottom-reserve: 80px;
@@ -49,24 +54,24 @@ body:not(:fullscreen) section[style*="--watch-player-width"] {
   grid-template-columns: minmax(0, 1fr) var(--watch-sidebar-width) !important;
 }
 
-body:not(:fullscreen) section[style*="--watch-player-width"] > [data-styling-name="fullscreen-target"]:not(:fullscreen) > div {
+${OFF} section[style*="--watch-player-width"] > [data-styling-name="fullscreen-target"]:not(:fullscreen) > div {
   width: var(--watch-player-width) !important;
   max-width: 100% !important;
   margin-inline: auto !important;
 }
 
-body:not(:fullscreen) section[style*="--watch-player-width"] [data-styling-name="fullscreen-target"]:not(:fullscreen) .asp_16\\:9 {
+${OFF} section[style*="--watch-player-width"] [data-styling-name="fullscreen-target"]:not(:fullscreen) .asp_16\\:9 {
   aspect-ratio: var(--ntm-ratio, 1.77778) !important;
 }
 
-body:not(:fullscreen) [data-styling-name="fullscreen-target"]:not(:fullscreen) [data-name="stage"] {
+${OFF} [data-styling-name="fullscreen-target"]:not(:fullscreen) [data-name="stage"] {
   --aspect-ratio: var(--ntm-ratio, 1.77778) !important;
   --stage-aspect-ratio: var(--ntm-ratio, 1.77778) !important;
 }
 
 /* stage の親は top/left 50% + translate(-50%,-50%) + 16:9 計算サイズで
    中央配置されているため、枠いっぱいに固定し直す */
-body:not(:fullscreen) [data-styling-name="fullscreen-target"]:not(:fullscreen) div:has(> div[data-name="stage"]) {
+${OFF} [data-styling-name="fullscreen-target"]:not(:fullscreen) div:has(> div[data-name="stage"]) {
   inset: 0 !important;
   width: 100% !important;
   height: 100% !important;
@@ -78,7 +83,7 @@ body:not(:fullscreen) [data-styling-name="fullscreen-target"]:not(:fullscreen) d
    left/top をインライン計算するため、変更後レイアウトでは画面外に飛ぶ。
    プレイヤー右端の外側 8px に置き、入りきらない場合はビューポート右端に
    クランプ（16:9 などプレイヤーが広い時はプレイヤー右側に重なる） */
-body:not(:fullscreen) [data-nvpc-scope="watch-floating-panel"][data-nvpc-part="floating"] {
+${OFF} [data-nvpc-scope="watch-floating-panel"][data-nvpc-part="floating"] {
   left: min(
     calc((100vw - var(--scrollbar-width, 0px) + var(--watch-player-width)) / 2 + 8px),
     calc(100vw - var(--scrollbar-width, 0px) - var(--watch-sidebar-width) - 8px)
