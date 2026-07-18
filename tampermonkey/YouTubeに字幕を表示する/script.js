@@ -814,24 +814,6 @@
         fill: currentColor;
         opacity: 1;
       }
-      #${LOAD_BUTTON_ID} .ytsrt-load-button__indicator {
-        position: absolute;
-        top: 9px;
-        right: 8px;
-        width: 6px;
-        height: 6px;
-        border-radius: 999px;
-        background: #8ab4f8;
-        opacity: 0;
-        transform: scale(0.6);
-        transition: opacity 120ms ease, transform 120ms ease;
-        box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.85);
-        pointer-events: none;
-      }
-      #${LOAD_BUTTON_ID}.--loaded .ytsrt-load-button__indicator {
-        opacity: 1;
-        transform: scale(1);
-      }
       #${LOAD_BUTTON_ID}:hover .ytsrt-load-button__icon,
       #${LOAD_BUTTON_ID}:focus-visible .ytsrt-load-button__icon {
         transform: scale(1.03);
@@ -1177,11 +1159,6 @@
     svg.setAttribute("class", "ytsrt-load-button__icon");
     button.appendChild(svg);
 
-    const indicator = document.createElement("span");
-    indicator.className = "ytsrt-load-button__indicator";
-    indicator.setAttribute("aria-hidden", "true");
-    button.appendChild(indicator);
-
     button.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1309,7 +1286,6 @@
     button.setAttribute("aria-label", label);
     button.dataset.titleNoTooltip = label;
     const loaded = hasCustomCaptions();
-    button.classList.toggle("--loaded", loaded);
     const path = button.querySelector(".ytsrt-load-button__icon path");
     if (path) {
       const desired = loaded ? DELETE_BUTTON_SVG_PATH : LOAD_BUTTON_SVG_PATH;
