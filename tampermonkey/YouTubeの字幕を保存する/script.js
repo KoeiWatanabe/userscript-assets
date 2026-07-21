@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeの字幕を保存する
 // @namespace    https://tampermonkey.net/
-// @version      1.8.7
+// @version      1.8.8
 // @description  Adds 2 save buttons to YouTube transcript panel header. Timestamped save → plain .lrc, no-timestamp save → chaptered .md or plain .txt. Shortcuts: Ctrl+Alt+T (toggle panel) / Alt+T (with timestamps) / Alt+Shift+T (no timestamps). Shorts で押した場合は /watch に遷移してから自動実行。
 // @match        https://www.youtube.com/*
 // @run-at       document-end
@@ -21,8 +21,7 @@
   const PENDING_TTL = 15000;
   const NOTIFY_ICON = "https://raw.githubusercontent.com/KoeiWatanabe/userscript-assets/main/tampermonkey/YouTubeの字幕を保存する/icon_128.png";
 
-  const PANEL_SELECTOR =
-    '[target-id="PAmodern_transcript_view"],[target-id="engagement-panel-searchable-transcript"]';
+  const PANEL_SELECTOR = "ytd-engagement-panel-section-list-renderer";
   const SHOW_BUTTON_SELECTOR =
     "ytd-video-description-transcript-section-renderer #primary-button button";
   const PRIMARY_SHOW_BUTTON_SELECTOR = `ytd-watch-metadata ${SHOW_BUTTON_SELECTOR}`;
@@ -194,7 +193,10 @@
 
   function findExpandedPanel() {
     for (const panel of document.querySelectorAll(PANEL_SELECTOR)) {
-      if (panel.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED") return panel;
+      if (
+        getDom(panel) &&
+        panel.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"
+      ) return panel;
     }
     return null;
   }
