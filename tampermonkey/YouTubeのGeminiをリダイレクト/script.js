@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTubeのGeminiをリダイレクト
 // @namespace    http://tampermonkey.net/
-// @version      1.2.2
+// @version      1.2.3
 // @description  YouTubeのAskボタンからGemini・ChatGPT・Claudeを選び、動画URLまたはトランスクリプトを入力する（送信はしない）
 // @author       You
 // @match        https://www.youtube.com/*
@@ -129,6 +129,15 @@
         if (button) button.title = `${PROVIDERS[selectedProvider].label}に聞く`;
     }
 
+    function syncTriggerAppearance(trigger, askButton) {
+        const style = getComputedStyle(askButton);
+        trigger.style.setProperty('--tm-youtube-ask-control-background', style.backgroundColor);
+        trigger.style.color = style.color;
+        trigger.style.borderStyle = style.borderStyle;
+        trigger.style.borderWidth = style.borderTopWidth;
+        trigger.style.borderColor = style.borderTopColor;
+    }
+
     function addStyle() {
         if (document.getElementById(STYLE_ID)) return;
         const style = document.createElement('style');
@@ -160,11 +169,12 @@
                 align-items: center;
                 justify-content: center;
                 box-sizing: border-box;
-                min-width: 28px;
-                margin: 0 0 0 1px;
-                padding: 0 7px;
-                border: 0;
-                border-radius: 4px 18px 18px 4px;
+                min-width: 30px;
+                margin: 0 0 0 2px;
+                padding: 0 8px;
+                border-width: 0;
+                border-style: solid;
+                border-radius: 4px 9999px 9999px 4px;
                 color: var(--tm-youtube-ask-foreground);
                 background: var(--tm-youtube-ask-control-background);
                 cursor: pointer;
@@ -182,8 +192,8 @@
             }
             .tm-youtube-ask-trigger svg {
                 display: block;
-                width: 16px;
-                height: 16px;
+                width: 18px;
+                height: 18px;
                 fill: currentColor;
                 pointer-events: none;
             }
@@ -262,7 +272,7 @@
         svg.setAttribute('viewBox', '0 0 24 24');
         svg.setAttribute('aria-hidden', 'true');
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.setAttribute('d', 'M7 10l5 5 5-5z');
+        path.setAttribute('d', 'M18.707 8.793a1 1 0 00-1.414 0L12 14.086 6.707 8.793a1 1 0 10-1.414 1.414L12 16.914l6.707-6.707a1 1 0 000-1.414Z');
         svg.appendChild(path);
         trigger.appendChild(svg);
         return trigger;
@@ -281,17 +291,22 @@
         }
         for (const host of document.querySelectorAll(ASK_BUTTON_SELECTOR)) {
             if (host.closest('yt-player-quick-action-buttons')) continue;
+            const askButton = host.querySelector('button');
             if (host.dataset.tmYoutubeAsk) {
                 const svg = host.querySelector('.ytSpecButtonShapeNextIcon svg');
                 if (svg?.dataset.tmYoutubeAskProvider !== selectedProvider) replaceAskIcon(host);
+                const trigger = host.nextElementSibling;
+                if (askButton && trigger?.matches('.tm-youtube-ask-trigger')) syncTriggerAppearance(trigger, askButton);
                 continue;
             }
             const parent = host.parentElement;
             if (!parent) continue;
             host.dataset.tmYoutubeAsk = 'true';
             parent.classList.add('tm-youtube-ask-split');
-            host.insertAdjacentElement('afterend', makeTrigger());
+            const trigger = makeTrigger();
+            host.insertAdjacentElement('afterend', trigger);
             replaceAskIcon(host);
+            if (askButton) syncTriggerAppearance(trigger, askButton);
         }
     }
 
